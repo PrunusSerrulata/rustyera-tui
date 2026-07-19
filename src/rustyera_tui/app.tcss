@@ -1,0 +1,201 @@
+Screen {
+    background: #05070a;
+    color: #d8d8d8;
+    min-width: 80;
+    layers: base menu overlay;
+}
+
+#app-root {
+    width: 100%;
+    height: 100%;
+    min-width: 100;
+    layer: base;
+}
+
+#menu-bar {
+    height: 1;
+    width: 100%;
+    background: #243447;
+    color: #f8fafc;
+}
+
+#menu-line-number {
+    width: 2;
+    height: 1;
+    color: #94a3b8;
+    background: #172334;
+    text-align: right;
+}
+
+.menu-button {
+    height: 1;
+    min-width: 0;
+    width: auto;
+    border: none;
+    padding: 0 1;
+    margin: 0;
+    background: #243447;
+    color: #f8fafc;
+}
+
+.menu-button:hover, .menu-button:focus {
+    background: #38bdf8;
+    color: #07111f;
+    text-style: bold;
+}
+
+.dropdown {
+    display: none;
+    layer: menu;
+    dock: top;
+    width: 34;
+    height: auto;
+    background: #1e293b;
+    border: solid #38bdf8;
+    padding: 0;
+}
+
+.dropdown.visible {
+    display: block;
+}
+
+#file-menu {
+    offset: 2 1;
+}
+
+#debug-menu {
+    offset: 10 1;
+}
+
+.menu-item {
+    height: 1;
+    min-width: 0;
+    width: 100%;
+    border: none;
+    padding: 0 1;
+    margin: 0;
+    background: #1e293b;
+    color: #e2e8f0;
+    text-align: left;
+}
+
+.menu-item:hover, .menu-item:focus {
+    background: #0ea5e9;
+    color: #020617;
+}
+
+.menu-item:disabled {
+    color: #64748b;
+    background: #1e293b;
+}
+
+#game-viewport {
+    width: 100%;
+    height: 1fr;
+    min-width: 100;
+    overflow-x: auto;
+    overflow-y: auto;
+    background: #000000;
+    scrollbar-color: #475569;
+    scrollbar-color-hover: #38bdf8;
+}
+
+.game-line {
+    width: auto;
+    min-width: 120;
+    height: auto;
+    min-height: 1;
+    padding: 0;
+    margin: 0;
+    background: #000000;
+    text-wrap: nowrap;
+}
+
+.game-line:focus {
+    background: #07111f;
+}
+
+#separator-line {
+    height: 1;
+    width: 100%;
+    background: #0f172a;
+    color: #64748b;
+}
+
+#prompt-row {
+    height: 1;
+    width: 100%;
+    background: #111827;
+}
+
+#prompt-label {
+    width: 6;
+    height: 1;
+    color: #38bdf8;
+    background: #111827;
+    text-style: bold;
+}
+
+#prompt {
+    height: 1;
+    width: 1fr;
+    border: none;
+    padding: 0;
+    background: #111827;
+    color: #f8fafc;
+}
+
+#prompt:focus {
+    border: none;
+}
+
+ModalScreen {
+    align: center middle;
+    background: #020617 70%;
+    layer: overlay;
+}
+
+.dialog {
+    width: 80%;
+    height: 80%;
+    max-width: 120;
+    background: #111827;
+    border: round #38bdf8;
+    padding: 1;
+}
+
+.wide-dialog {
+    width: 90%;
+    height: 88%;
+}
+
+.dialog-title {
+    height: 1;
+    color: #7dd3fc;
+    text-style: bold;
+}
+
+.dialog-buttons {
+    height: 3;
+    align-horizontal: right;
+}
+
+.dialog-buttons Button, .dialog > Button {
+    min-width: 10;
+    margin: 0 1;
+}
+
+#path-tree, #log-view, #console-output, #variable-table,
+#fiber-table, #frame-table, #operand-table {
+    height: 1fr;
+    border: solid #334155;
+}
+
+#path-value, #console-input {
+    height: 3;
+}
+
+#variable-status, #stack-status {
+    height: 1;
+    color: #94a3b8;
+}
