@@ -61,7 +61,7 @@ class RustyEraTui(App[None]):
         self.logs: list[str] = []
         self.debug_enabled = False
         self.single_step = False
-        self.environment_revision = 1
+        self.environment_revision = 0
         self.exit_pending = False
         self.variable_dialog: VariableDialog | None = None
         self.stack_dialog: StackDialog | None = None
@@ -112,14 +112,7 @@ class RustyEraTui(App[None]):
             await viewport.set_lines(self.presentation.lines)
             self.title = self.presentation.title or self.TITLE
             viewport.styles.background = self.presentation.background
-            self.worker.send(
-                "projection",
-                (
-                    max(1, viewport.size.width - 7),
-                    max(1, viewport.size.height),
-                    self.environment_revision,
-                ),
-            )
+            self._send_projection(viewport.size.width, viewport.size.height)
 
     def _handle_worker_event(self, event: FrontendEvent) -> bool:
         kind, value = event.kind, event.value
@@ -356,12 +349,18 @@ class RustyEraTui(App[None]):
         self.worker.send("debug_action", ("read_variable", event.descriptor))
 
     def on_resize(self, event: events.Resize) -> None:
+        self._send_projection(event.size.width, event.size.height - 3)
+
+    def _send_projection(self, width: int, height: int) -> None:
+        # Each observation is bound to the currently applied presentation revision. The
+        # runtime therefore treats this as a causal observation revision, even when only
+        # presentation content (rather than terminal geometry) changed.
         self.environment_revision += 1
         self.worker.send(
             "projection",
             (
-                max(1, event.size.width - 7),
-                max(1, event.size.height - 3),
+                max(1, width),
+                max(1, height),
                 self.environment_revision,
             ),
         )

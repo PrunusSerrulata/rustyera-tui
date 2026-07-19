@@ -50,7 +50,9 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         assert not app.query("#menu-line-number")
         assert str(app.query_one("#prompt-label").render()) == "> "
         separator = app.query_one("#separator-line")
+        prompt_row = app.query_one("#prompt-row")
         assert separator.size.width == app.size.width
+        assert separator.region.bottom == prompt_row.region.y
         assert app.query_one("#file-restart").styles.content_align[0] == "left"
         assert app.query_one("#menu-file").styles.content_align[0] == "left"
 
@@ -110,3 +112,9 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         assert await pilot.hover(".game-line", offset=(1, 0))
         assert await pilot.click(".game-line", offset=(1, 0))
         assert ("activate", token) in worker.commands
+        projection_revisions = [value[2] for kind, value in worker.commands if kind == "projection"]
+        assert len(projection_revisions) >= 2
+        assert all(
+            current > previous
+            for previous, current in zip(projection_revisions, projection_revisions[1:])
+        )

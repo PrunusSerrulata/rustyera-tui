@@ -113,6 +113,8 @@ Screen {
 #separator-line {
     height: 1;
     width: 100%;
+    margin: 0;
+    padding: 0;
     background: #0f172a;
     color: #64748b;
     border: none;

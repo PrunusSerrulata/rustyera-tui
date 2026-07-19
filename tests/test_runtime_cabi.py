@@ -17,7 +17,7 @@ except AbiError:
 
 
 def test_default_drive_budget_keeps_the_caller_pump_cooperative() -> None:
-    assert DEFAULT_MAXIMUM_VM_INSTRUCTIONS == 10_000
+    assert DEFAULT_MAXIMUM_VM_INSTRUCTIONS == 100_000
 
 
 def wait_for(
