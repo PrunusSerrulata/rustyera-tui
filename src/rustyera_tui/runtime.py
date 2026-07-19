@@ -18,7 +18,7 @@ import blake3
 from rich.cells import cell_len
 
 from .abi import RuntimeAbi
-from .presentation import PresentationModel
+from .presentation import ServicePresentationModel, coalesce_presentation_deltas, plain_line
 from .project import ProjectBundle, StorageBackend
 from .wire import (
     CHANNEL_DEBUG,
@@ -72,7 +72,7 @@ class RuntimeClient:
         self.pending_bundle: ProjectBundle | None = None
         self.reload_candidate: ProjectBundle | None = None
         self.storage: StorageBackend | None = None
-        self.presentation = PresentationModel()
+        self.presentation = ServicePresentationModel()
         self.active_wait: dict[int, Any] | None = None
         self.pending_restore: tuple[Path, bytes] | None = None
         self.pending_export: tuple[Path, bytearray, dict[int, Any] | None] | None = None
@@ -86,6 +86,8 @@ class RuntimeClient:
         self.debug_pending_by_message: dict[int, str] = {}
         self.last_time_advance_ns = 0
         self.shutting_down = False
+        self._pending_presentation_events: list[tuple[str, dict[int, Any]]] = []
+        self._wait_event_dirty = False
         self._send_hello()
 
     def _reset_wire_state(self) -> None:
@@ -97,7 +99,7 @@ class RuntimeClient:
         self.phase = 0
         self.expected_runtime_output = 0
         self.expected_debug_output = 0
-        self.presentation = PresentationModel()
+        self.presentation = ServicePresentationModel()
         self.active_wait = None
         self.debug_requested = False
         self.debug_grant = None
@@ -106,6 +108,8 @@ class RuntimeClient:
         self.pending_debug_actions.clear()
         self.debug_pending_by_message.clear()
         self.shutting_down = False
+        self._pending_presentation_events.clear()
+        self._wait_event_dirty = False
 
     def recreate(self, bundle: ProjectBundle, restore: tuple[Path, bytes] | None = None) -> None:
         self.events.put(FrontendEvent("status", "正在创建新的 Runtime session…"))
@@ -199,6 +203,8 @@ class RuntimeClient:
         return message_id
 
     def pump(self) -> bool:
+        self._pending_presentation_events.clear()
+        self._wait_event_dirty = False
         report = self.abi.drive()
         emitted = False
         acknowledge_through: int | None = None
@@ -207,6 +213,7 @@ class RuntimeClient:
             runtime_sequence = self._handle_envelope(data)
             if runtime_sequence is not None:
                 acknowledge_through = runtime_sequence
+        self._flush_presentation_events()
         # Runtime output acknowledgement is cumulative. Deferring it until the complete poll
         # batch also ensures an epoch-changing reload is acknowledged with its final epoch,
         # even when an earlier message in the same batch was emitted before the commit.
@@ -214,6 +221,25 @@ class RuntimeClient:
             self.send_runtime(93, {0: acknowledge_through})
         self._advance_deadline()
         return emitted or report.state in (1, 2)
+
+    def _flush_presentation_events(self) -> None:
+        if self._pending_presentation_events:
+            snapshot: dict[int, Any] | None = None
+            deltas: list[dict[int, Any]] = []
+            for kind, value in self._pending_presentation_events:
+                if kind == "snapshot":
+                    snapshot = value
+                    deltas.clear()
+                else:
+                    deltas.append(value)
+            if snapshot is not None:
+                self.events.put(FrontendEvent("presentation_snapshot", snapshot))
+            if deltas:
+                self.events.put(
+                    FrontendEvent("presentation_delta", coalesce_presentation_deltas(deltas))
+                )
+        if self._wait_event_dirty:
+            self.events.put(FrontendEvent("wait", copy.deepcopy(self.active_wait)))
 
     def _handle_envelope(self, data: bytes) -> int | None:
         envelope = decode_envelope(data)
@@ -276,8 +302,11 @@ class RuntimeClient:
         elif tag == 40:
             self.presentation.apply_snapshot(value)
             self.active_wait = self.presentation.input_wait
-            self.events.put(FrontendEvent("presentation_snapshot", copy.deepcopy(value)))
-            self.events.put(FrontendEvent("wait", copy.deepcopy(self.active_wait)))
+            # Decoded envelopes are immutable after dispatch. Presentation events are batched
+            # until the poll queue is empty so superseded pending-line updates cross threads
+            # only once.
+            self._pending_presentation_events = [("snapshot", value)]
+            self._wait_event_dirty = True
         elif tag == 41:
             try:
                 self.presentation.apply_delta(value)
@@ -286,8 +315,8 @@ class RuntimeClient:
                 self.send_runtime(94, {0: self.expected_runtime_output - 1})
             else:
                 self.active_wait = self.presentation.input_wait
-                self.events.put(FrontendEvent("presentation_delta", copy.deepcopy(value)))
-                self.events.put(FrontendEvent("wait", copy.deepcopy(self.active_wait)))
+                self._pending_presentation_events.append(("delta", value))
+                self._wait_event_dirty = True
         elif tag == 42:  # Effects are intentionally unsupported but must be acknowledged.
             self._acknowledge_effects(value)
         elif tag == 50:
@@ -313,8 +342,8 @@ class RuntimeClient:
             self.phase = value[1]
             self.presentation.apply_snapshot(value[3])
             self.active_wait = self.presentation.input_wait
-            self.events.put(FrontendEvent("presentation_snapshot", copy.deepcopy(value[3])))
-            self.events.put(FrontendEvent("wait", copy.deepcopy(self.active_wait)))
+            self._pending_presentation_events = [("snapshot", value[3])]
+            self._wait_event_dirty = True
         elif tag == 97:
             source = value.get(3)
             location = f" ({source.get(0)}:{source.get(3, '?')})" if source else ""
@@ -363,7 +392,7 @@ class RuntimeClient:
             self.active_wait = fields[0]
         elif tag == 2 and self.active_wait and self.active_wait.get(0) == fields[0]:
             self.active_wait = None
-        self.events.put(FrontendEvent("wait", copy.deepcopy(self.active_wait)))
+        self._wait_event_dirty = True
 
     def _acknowledge_effects(self, batch: dict[int, Any]) -> None:
         # The TUI cannot play device effects. Reporting Unsupported is semantically different
@@ -405,12 +434,11 @@ class RuntimeClient:
                 index = query[1]
                 text = ""
                 if 0 <= index < len(self.presentation.lines):
-                    text = self._plain_line(self.presentation.lines[index])
+                    text = plain_line(self.presentation.lines[index])
                 response = {0: query[0], 1: text}
             elif kind == 10 and operation == "serialize_physical_history":
                 query = decode(request[4])
-                lines = [self._plain_line(line) for line in self.presentation.lines]
-                body = "\n".join(lines)
+                body = "\n".join(plain_line(line) for line in self.presentation.lines)
                 response = {0: query[0], 1: body if query[2] else f"{query[1]}\n\n{body}"}
             elif kind == 0 and operation == "gget_text_size":
                 query = decode(request[4])
@@ -421,10 +449,6 @@ class RuntimeClient:
         except Exception as error:  # noqa: BLE001 - external-service boundary
             result = variant(1, {0: "frontend.unsupported_service", 1: str(error)})
         self.send_runtime(53, {0: request_id, 1: result}, correlation_id=correlation_id)
-
-    @staticmethod
-    def _plain_line(line: Any) -> str:
-        return "".join(segment.text for segment in line.segments)
 
     def _advance_deadline(self) -> None:
         if not self.active_wait or self.active_wait.get(8) is None:

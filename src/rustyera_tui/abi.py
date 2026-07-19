@@ -12,6 +12,7 @@ ABI_MINOR = 0
 
 STATUS_OK = 0
 STATUS_EMPTY = 1
+DEFAULT_MAXIMUM_VM_INSTRUCTIONS = 10_000
 
 
 class AbiError(RuntimeError):
@@ -189,7 +190,7 @@ class RuntimeAbi:
         )
         self._check(status, "session_submit")
 
-    def drive(self, maximum_instructions: int = 250_000) -> EraDriveResult:
+    def drive(self, maximum_instructions: int = DEFAULT_MAXIMUM_VM_INSTRUCTIONS) -> EraDriveResult:
         options = EraDriveOptions(
             _header(ctypes.sizeof(EraDriveOptions)), maximum_instructions, 1024, 0
         )

@@ -6,6 +6,7 @@ from typing import Any
 
 from rustyera_tui.app import RustyEraTui
 from rustyera_tui.runtime import FrontendEvent
+from rustyera_tui.widgets import GameLine
 from rustyera_tui.wire import variant
 
 
@@ -45,6 +46,13 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         assert app.query_one("#debug-console").disabled
         await pilot.click("#debug-toggle")
         assert ("debug_enable", None) in worker.commands
+
+        assert not app.query("#menu-line-number")
+        assert str(app.query_one("#prompt-label").render()) == "> "
+        separator = app.query_one("#separator-line")
+        assert separator.size.width == app.size.width
+        assert app.query_one("#file-restart").styles.content_align[0] == "left"
+        assert app.query_one("#menu-file").styles.content_align[0] == "left"
 
 
 async def test_prompt_submits_through_worker(tmp_path: Path) -> None:
@@ -96,6 +104,9 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
     async with app.run_test(size=(100, 30)) as pilot:
         worker.events.put(FrontendEvent("presentation_snapshot", snapshot))
         await pilot.pause(0.1)
-        assert await pilot.hover(".game-line", offset=(8, 0))
-        assert await pilot.click(".game-line", offset=(8, 0))
+        game_line = app.query_one(GameLine)
+        assert game_line.regions[0].start == 0
+        assert str(game_line.render()).startswith("开始")
+        assert await pilot.hover(".game-line", offset=(1, 0))
+        assert await pilot.click(".game-line", offset=(1, 0))
         assert ("activate", token) in worker.commands

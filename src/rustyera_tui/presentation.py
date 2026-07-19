@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .wire import unwrap_variant
+from .wire import unwrap_variant, variant
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,12 +46,14 @@ class PresentationModel:
     input_wait: dict[int, Any] | None = None
     background: str = "#000000"
     button_focus: str = "#000000"
+    _line_indices: dict[int, int] = field(default_factory=dict, init=False, repr=False)
 
     def apply_snapshot(self, snapshot: dict[int, Any]) -> None:
         self.revision = snapshot[0]
         self.title = snapshot[1]
         history = snapshot[2]
         self.lines = [parse_line(line) for line in history.get(0, [])]
+        self._rebuild_line_indices()
         self.input_wait = snapshot.get(5)
         self._apply_settings(snapshot.get(6))
 
@@ -63,35 +65,188 @@ class PresentationModel:
         for operation in delta[2]:
             tag, fields = unwrap_variant(operation)
             if tag == 0:
-                self.lines.append(parse_line(fields[0]))
+                line = parse_line(fields[0])
+                self._line_indices[line.line_id] = len(self.lines)
+                self.lines.append(line)
             elif tag == 1:
                 count = min(fields[0], len(self.lines))
                 if count:
+                    for line in self.lines[-count:]:
+                        self._line_indices.pop(line.line_id, None)
                     del self.lines[-count:]
             elif tag == 2:
                 self.lines.clear()
+                self._line_indices.clear()
             elif tag == 3:
                 self.title = fields[0]
             elif tag == 6:
-                self.input_wait = fields[0]
+                # minicbor omits an enum tuple field when Option is None. Consequently,
+                # SetInputWait(None) is encoded as a zero-field variant, not `[None]`.
+                self.input_wait = fields[0] if fields else None
             elif tag == 7:
                 line_id, replacement = fields
                 parsed = parse_line(replacement)
-                for index, line in enumerate(self.lines):
-                    if line.line_id == line_id:
-                        self.lines[index] = parsed
-                        break
+                index = self._line_indices.get(line_id)
+                if index is not None:
+                    self.lines[index] = parsed
+                    if parsed.line_id != line_id:
+                        self._line_indices.pop(line_id, None)
+                        self._line_indices[parsed.line_id] = index
             elif tag == 8:
                 self._apply_settings(fields[0])
             # Background images, audio, resource replay, HTML islands, redraw state, and
             # button generations have no standalone terminal rendering operation.
         self.revision = delta[1]
 
+    def _rebuild_line_indices(self) -> None:
+        # Line IDs are runtime-issued stable identities. Indexing them avoids an O(history)
+        # scan for every update to the pending logical line during output-heavy game startup.
+        self._line_indices = {line.line_id: index for index, line in enumerate(self.lines)}
+
     def _apply_settings(self, settings: dict[int, Any] | None) -> None:
         if not settings:
             return
         self.background = color_hex(settings[2])
         self.button_focus = color_hex(settings[3])
+
+
+@dataclass(slots=True)
+class ServicePresentationModel:
+    """Raw worker-side history used only to answer frontend service requests.
+
+    Both rich and plain conversion are deferred until they are actually needed. Retaining
+    decoded line values makes high-frequency PRINT updates cheap on the C ABI worker thread.
+    """
+
+    revision: int = 0
+    lines: list[dict[int, Any]] = field(default_factory=list)
+    input_wait: dict[int, Any] | None = None
+    _line_indices: dict[int, int] = field(default_factory=dict, init=False, repr=False)
+
+    def apply_snapshot(self, snapshot: dict[int, Any]) -> None:
+        self.revision = snapshot[0]
+        raw_lines = snapshot[2].get(0, [])
+        self.lines = list(raw_lines)
+        self._line_indices = {line[0]: index for index, line in enumerate(raw_lines)}
+        self.input_wait = snapshot.get(5)
+
+    def apply_delta(self, delta: dict[int, Any]) -> None:
+        if delta[0] != self.revision:
+            raise ValueError(
+                f"presentation delta starts at {delta[0]}, but local revision is {self.revision}"
+            )
+        for operation in delta[2]:
+            tag, fields = unwrap_variant(operation)
+            if tag == 0:
+                raw_line = fields[0]
+                self._line_indices[raw_line[0]] = len(self.lines)
+                self.lines.append(raw_line)
+            elif tag == 1:
+                count = min(fields[0], len(self.lines))
+                if count:
+                    first_removed = len(self.lines) - count
+                    self._line_indices = {
+                        line_id: index
+                        for line_id, index in self._line_indices.items()
+                        if index < first_removed
+                    }
+                    del self.lines[-count:]
+            elif tag == 2:
+                self.lines.clear()
+                self._line_indices.clear()
+            elif tag == 6:
+                self.input_wait = fields[0] if fields else None
+            elif tag == 7:
+                line_id, raw_line = fields
+                index = self._line_indices.get(line_id)
+                if index is not None:
+                    self.lines[index] = raw_line
+                    if raw_line[0] != line_id:
+                        self._line_indices.pop(line_id, None)
+                        self._line_indices[raw_line[0]] = index
+        self.revision = delta[1]
+
+
+def plain_line(line: dict[int, Any]) -> str:
+    return "".join(plain_run(run) for run in line.get(5, []))
+
+
+def plain_run(run: list[Any]) -> str:
+    tag, fields = unwrap_variant(run)
+    if tag == 0:
+        return fields[0]
+    if tag == 1:
+        return "".join(plain_run(child) for child in fields[0])
+    if tag == 2:
+        return "".join(_collect_strings(fields[0]))
+    if tag == 3:
+        return fields[1] or "[图片]"
+    if tag == 4:
+        return "[图形]"
+    if tag == 5:
+        content, alignment, preferred_columns = fields
+        text = "".join(plain_run(child) for child in content)
+        padding = " " * max(0, preferred_columns - len(text))
+        return f"{padding}{text}" if alignment == 1 else f"{text}{padding}"
+    if tag == 6:
+        pattern = fields[0] or "-"
+        return pattern * max(1, 120 // len(pattern))
+    if tag == 7:
+        width_tag, width_fields = unwrap_variant(fields[0])
+        raw = width_fields[0]
+        if isinstance(raw, list):
+            raw = raw[0]
+        columns = max(1, round(raw / (1000 if width_tag == 0 else 100)))
+        return " " * columns
+    return f"[未支持的显示片段 {tag}]"
+
+
+def coalesce_presentation_deltas(deltas: list[dict[int, Any]]) -> dict[int, Any]:
+    """Merge a contiguous poll batch while discarding superseded state operations."""
+
+    if not deltas:
+        raise ValueError("at least one presentation delta is required")
+    operations: list[list[Any]] = []
+    appended_lines: dict[int, int] = {}
+    replaced_lines: dict[int, int] = {}
+    state_operations: dict[int, int] = {}
+    expected_revision = deltas[0][0]
+    for delta in deltas:
+        if delta[0] != expected_revision:
+            raise ValueError(
+                f"presentation delta batch expected revision {expected_revision}, got {delta[0]}"
+            )
+        expected_revision = delta[1]
+        for operation in delta[2]:
+            tag, fields = unwrap_variant(operation)
+            if tag == 0:
+                line_id = fields[0][0]
+                appended_lines[line_id] = len(operations)
+                replaced_lines.pop(line_id, None)
+                operations.append(operation)
+            elif tag == 7:
+                line_id = fields[0]
+                if line_id in appended_lines:
+                    operations[appended_lines[line_id]] = variant(0, fields[1])
+                elif line_id in replaced_lines:
+                    operations[replaced_lines[line_id]] = operation
+                else:
+                    replaced_lines[line_id] = len(operations)
+                    operations.append(operation)
+            elif tag in (3, 4, 5, 6, 8, 9, 10, 11, 12, 13):
+                previous = state_operations.get(tag)
+                if previous is None:
+                    state_operations[tag] = len(operations)
+                    operations.append(operation)
+                else:
+                    operations[previous] = operation
+            else:
+                # Deletion and clear alter which line an ID refers to. Retain the operation
+                # and start a fresh line-coalescing region rather than guessing its target.
+                appended_lines.clear()
+                replaced_lines.clear()
+                operations.append(operation)
+    return {0: deltas[0][0], 1: deltas[-1][1], 2: operations}
 
 
 def color_hex(color: dict[int, int] | None) -> str:

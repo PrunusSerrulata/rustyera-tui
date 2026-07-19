@@ -1,4 +1,9 @@
-from rustyera_tui.presentation import PresentationModel
+from rustyera_tui.presentation import (
+    PresentationModel,
+    ServicePresentationModel,
+    coalesce_presentation_deltas,
+    plain_line,
+)
 from rustyera_tui.wire import variant
 
 
@@ -62,3 +67,89 @@ def test_delta_append_replace_delete_and_revision_check() -> None:
     assert model.lines[-1].segments[0].text == "载入"
     model.apply_delta({0: 3, 1: 4, 2: [variant(1, 1)]})
     assert [item.line_id for item in model.lines] == [1]
+
+
+def test_delta_can_clear_an_optional_input_wait() -> None:
+    model = PresentationModel()
+    initial = snapshot()
+    initial[5] = {0: 9, 1: 2, 11: {0: 1, 1: 7}}
+    model.apply_snapshot(initial)
+
+    # minicbor omits a `None` tuple field, so SetInputWait(None) has no fields.
+    model.apply_delta({0: 1, 1: 2, 2: [variant(6)]})
+
+    assert model.input_wait is None
+
+
+def test_line_index_stays_valid_across_replace_delete_and_append() -> None:
+    model = PresentationModel()
+    model.apply_snapshot(snapshot())
+    model.apply_delta(
+        {
+            0: 1,
+            1: 2,
+            2: [variant(0, line(2, "two")), variant(0, line(3, "three"))],
+        }
+    )
+    model.apply_delta(
+        {
+            0: 2,
+            1: 3,
+            2: [variant(1, 2), variant(0, line(4, "four")), variant(7, 1, line(1, "one"))],
+        }
+    )
+
+    assert [item.line_id for item in model.lines] == [1, 4]
+    assert model.lines[0].segments[0].text == "one"
+    assert model._line_indices == {1: 0, 4: 1}
+
+
+def test_raw_worker_projection_tracks_rich_text_and_wait_state() -> None:
+    rich = PresentationModel()
+    service = ServicePresentationModel()
+    initial = snapshot()
+    rich.apply_snapshot(initial)
+    service.apply_snapshot(initial)
+    delta = {
+        0: 1,
+        1: 2,
+        2: [variant(7, 1, line(1, "loaded")), variant(6, {0: 2, 1: 2})],
+    }
+    rich.apply_delta(delta)
+    service.apply_delta(delta)
+
+    assert [plain_line(line) for line in service.lines] == [
+        "".join(segment.text for segment in rich.lines[0].segments)
+    ]
+    assert service.input_wait == rich.input_wait == {0: 2, 1: 2}
+
+
+def test_delta_coalescing_preserves_state_and_discards_superseded_lines() -> None:
+    original = [
+        {
+            0: 1,
+            1: 2,
+            2: [variant(0, line(2, "draft")), variant(7, 1, line(1, "old"))],
+        },
+        {
+            0: 2,
+            1: 3,
+            2: [
+                variant(7, 2, line(2, "final")),
+                variant(7, 1, line(1, "new")),
+                variant(6, {0: 4}),
+                variant(6),
+            ],
+        },
+    ]
+    sequential = PresentationModel()
+    sequential.apply_snapshot(snapshot())
+    for delta in original:
+        sequential.apply_delta(delta)
+    combined = PresentationModel()
+    combined.apply_snapshot(snapshot())
+    coalesced = coalesce_presentation_deltas(original)
+    combined.apply_delta(coalesced)
+
+    assert combined == sequential
+    assert len(coalesced[2]) < sum(len(delta[2]) for delta in original)

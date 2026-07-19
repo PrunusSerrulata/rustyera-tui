@@ -11,7 +11,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Input, Static
+from textual.widgets import Button, Input, Rule, Static
 
 from .dialogs import (
     DebugConsoleDialog,
@@ -70,13 +70,12 @@ class RustyEraTui(App[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="app-root"):
             with Horizontal(id="menu-bar"):
-                yield Static("1", id="menu-line-number")
                 yield Button("文件", id="menu-file", classes="menu-button")
                 yield Button("调试", id="menu-debug", classes="menu-button")
             yield GameViewport()
-            yield Static("-2 " + "─" * 116, id="separator-line")
+            yield Rule(id="separator-line")
             with Horizontal(id="prompt-row"):
-                yield Static("-1 > ", id="prompt-label")
+                yield Static("> ", id="prompt-label")
                 yield Input(placeholder="等待 Runtime…", id="prompt", disabled=True)
         with Vertical(id="file-menu", classes="dropdown"):
             for item_id, label in self.FILE_ITEMS:

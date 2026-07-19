@@ -47,9 +47,8 @@ class GameLine(Static):
             super().__init__()
             self.token = token
 
-    def __init__(self, number: int, line: DisplayLineModel) -> None:
+    def __init__(self, line: DisplayLineModel) -> None:
         super().__init__("", markup=False, classes="game-line")
-        self.number = number
         self.line = line
         self.regions: list[ClickRegion] = []
         self.hovered_region: int | None = None
@@ -57,22 +56,20 @@ class GameLine(Static):
     def on_mount(self) -> None:
         self._render_line()
 
-    def set_line(self, number: int, line: DisplayLineModel) -> None:
-        self.number = number
+    def set_line(self, line: DisplayLineModel) -> None:
         self.line = line
         self.hovered_region = None
         self._render_line()
 
     def _render_line(self) -> None:
-        gutter = f"{self.number:>6} "
-        output = Text(gutter, style="dim #64748b", no_wrap=True, overflow="ignore")
+        output = Text(no_wrap=True, overflow="ignore")
         self.regions = []
         content_width = sum(cell_len(segment.text) for segment in self.line.segments)
-        available = max(0, self.size.width - cell_len(gutter) - content_width)
+        available = max(0, self.size.width - content_width)
         alignment_padding = {0: 0, 1: available // 2, 2: available}.get(self.line.alignment, 0)
         if alignment_padding:
             output.append(" " * alignment_padding)
-        cursor = cell_len(gutter) + alignment_padding
+        cursor = alignment_padding
         for segment in self.line.segments:
             hovered = (
                 segment.token is not None
@@ -155,20 +152,15 @@ class GameViewport(ScrollableContainer):
             if len(lines) < len(old):
                 await self.remove_children(children[len(lines) :])
             elif len(lines) > len(old):
-                await self.mount(
-                    *(
-                        GameLine(index + 2, line)
-                        for index, line in enumerate(lines[len(old) :], len(old))
-                    )
-                )
+                await self.mount(*(GameLine(line) for line in lines[len(old) :]))
         elif len(old) == len(lines) and len(children) == len(lines):
             for index in range(common, len(lines)):
                 child = children[index]
                 if isinstance(child, GameLine) and old[index] != lines[index]:
-                    child.set_line(index + 2, lines[index])
+                    child.set_line(lines[index])
         else:
             await self.remove_children()
-            await self.mount(*(GameLine(index + 2, line) for index, line in enumerate(lines)))
+            await self.mount(*(GameLine(line) for line in lines))
         self.models = list(lines)
         if was_at_end or not old:
             self.call_after_refresh(self.scroll_end, animate=False, x_axis=False)

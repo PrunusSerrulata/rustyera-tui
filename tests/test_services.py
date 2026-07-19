@@ -2,25 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from rustyera_tui.presentation import DisplayLineModel, DisplaySegment, PresentationModel
+from rustyera_tui.presentation import ServicePresentationModel
 from rustyera_tui.runtime import RuntimeClient
 from rustyera_tui.wire import decode, encode, unwrap_variant
 
 
 def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client = object.__new__(RuntimeClient)
-    client.presentation = PresentationModel(
+    client.presentation = ServicePresentationModel(
         revision=7,
-        lines=[
-            DisplayLineModel(
-                line_id=1,
-                temporary=False,
-                logical_line_start=True,
-                line_end=True,
-                alignment=0,
-                segments=(DisplaySegment("你好 RustyEra"),),
-            )
-        ],
+        lines=[{0: 1, 5: [[0, ["你好 RustyEra", None, None]]]}],
     )
     captured: list[tuple[int, Any]] = []
     client.send_runtime = (  # type: ignore[method-assign]

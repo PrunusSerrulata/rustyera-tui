@@ -7,13 +7,17 @@ from typing import Callable
 
 import pytest
 
-from rustyera_tui.abi import AbiError, discover_library
+from rustyera_tui.abi import DEFAULT_MAXIMUM_VM_INSTRUCTIONS, AbiError, discover_library
 from rustyera_tui.runtime import FrontendEvent, RuntimeWorker
 
 try:
     RUNTIME_LIBRARY = discover_library()
 except AbiError:
     RUNTIME_LIBRARY = None
+
+
+def test_default_drive_budget_keeps_the_caller_pump_cooperative() -> None:
+    assert DEFAULT_MAXIMUM_VM_INSTRUCTIONS == 10_000
 
 
 def wait_for(
