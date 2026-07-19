@@ -50,6 +50,28 @@ class FrontendCommand:
     value: Any = None
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeFailure:
+    """Terminal runtime fault retained as structured frontend-observable state."""
+
+    code: int
+    message: str
+    command: str | None = None
+    function: str | None = None
+    source_path: str | None = None
+    source_line: int | None = None
+
+    def display(self) -> str:
+        location = ""
+        if self.source_path:
+            location = f"（{self.source_path}"
+            if self.source_line is not None:
+                location += f":{self.source_line}"
+            location += "）"
+        context = f" [{self.function}]" if self.function else ""
+        return f"Runtime 故障{context}：{self.message}{location}"
+
+
 class RuntimeClient:
     """Translate frontend intent to the public runtime and debug wire protocols."""
 
@@ -88,6 +110,7 @@ class RuntimeClient:
         self.shutting_down = False
         self._pending_presentation_events: list[tuple[str, dict[int, Any]]] = []
         self._wait_event_dirty = False
+        self._projection_messages: set[int] = set()
         self._send_hello()
 
     def _reset_wire_state(self) -> None:
@@ -110,6 +133,7 @@ class RuntimeClient:
         self.shutting_down = False
         self._pending_presentation_events.clear()
         self._wait_event_dirty = False
+        self._projection_messages.clear()
 
     def recreate(self, bundle: ProjectBundle, restore: tuple[Path, bytes] | None = None) -> None:
         self.events.put(FrontendEvent("status", "正在创建新的 Runtime session…"))
@@ -334,9 +358,31 @@ class RuntimeClient:
         elif tag == 91:
             self.events.put(FrontendEvent("shutdown_ready", value))
         elif tag == 92:
-            self.events.put(FrontendEvent("error", f"Runtime 故障：{value.get(1, '')}"))
+            origin = value.get(2) or {}
+            source = origin.get(4) or {}
+            failure = RuntimeFailure(
+                code=value.get(0, -1),
+                message=value.get(1, ""),
+                command=origin.get(0),
+                function=origin.get(1),
+                source_path=source.get(0),
+                source_line=source.get(3),
+            )
+            self.events.put(FrontendEvent("runtime_fault", failure))
         elif tag == 95:
-            self.events.put(FrontendEvent("error", f"命令被拒绝：{value.get(1, '')}"))
+            rejection = value.get(1, "")
+            stale_projection = rejection in {
+                "projection environment revision is not newer",
+                "projection observation does not match the canonical presentation",
+            }
+            projection_request = correlation_id in self._projection_messages
+            if projection_request:
+                self._projection_messages.discard(correlation_id)
+            # A presentation may advance after the frontend rendered an observation but
+            # before the caller-pumped runtime handles it. This is a benign stale sample;
+            # a later rendered revision will submit a replacement observation.
+            if not (projection_request and value.get(0) == 2 and stale_projection):
+                self.events.put(FrontendEvent("error", f"命令被拒绝：{rejection}"))
         elif tag == 96:
             self.epoch = value[0]
             self.phase = value[1]
@@ -513,14 +559,20 @@ class RuntimeClient:
         if token is not None:
             self.send_runtime(37, {0: token})
 
-    def projection(self, width: int, height: int, environment_revision: int) -> None:
-        if self.session is None:
+    def projection(
+        self,
+        width: int,
+        height: int,
+        environment_revision: int,
+        presentation_revision: int,
+    ) -> None:
+        if self.session is None or presentation_revision != self.presentation.revision:
             return
-        self.send_runtime(
+        message_id = self.send_runtime(
             35,
             {
                 0: environment_revision,
-                1: self.presentation.revision,
+                1: presentation_revision,
                 2: {0: width, 1: height},
                 3: environment_revision,
                 4: max(1, width),
@@ -528,6 +580,9 @@ class RuntimeClient:
                 6: {0: 1, 1: 1000, 2: 1, 3: 1000, 4: 0, 5: 0},
             },
         )
+        if len(self._projection_messages) >= 256:
+            self._projection_messages.clear()
+        self._projection_messages.add(message_id)
 
     def reload_all(self) -> None:
         if self.bundle is None:

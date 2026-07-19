@@ -189,6 +189,12 @@ ModalScreen {
     border: solid #334155;
 }
 
+#log-view {
+    padding: 0;
+    background: #05070a;
+    color: #d8d8d8;
+}
+
 #path-value, #console-input {
     height: 3;
 }

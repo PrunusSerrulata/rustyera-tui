@@ -9,7 +9,16 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, DirectoryTree, Input, Label, RichLog, Static
+from textual.widgets import (
+    Button,
+    DataTable,
+    DirectoryTree,
+    Input,
+    Label,
+    RichLog,
+    Static,
+    TextArea,
+)
 
 
 class PathDialog(ModalScreen[Path | None]):
@@ -62,13 +71,14 @@ class LogDialog(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide-dialog"):
             yield Label("Runtime / 前端日志", classes="dialog-title")
-            yield RichLog(id="log-view", wrap=False, highlight=True)
+            yield TextArea(
+                "\n".join(self.lines),
+                read_only=True,
+                soft_wrap=False,
+                show_line_numbers=False,
+                id="log-view",
+            )
             yield Button("关闭", id="dialog-close")
-
-    def on_mount(self) -> None:
-        view = self.query_one("#log-view", RichLog)
-        for line in self.lines:
-            view.write(line)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "dialog-close":

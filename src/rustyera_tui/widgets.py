@@ -135,9 +135,16 @@ class GameLine(Static):
 class GameViewport(ScrollableContainer):
     """Incrementally reconcile presentation lines while retaining scroll position."""
 
+    class ContinueRequested(Message):
+        """A non-button viewport click may satisfy a pure Enter wait."""
+
     def __init__(self) -> None:
         super().__init__(id="game-viewport")
         self.models: list[DisplayLineModel] = []
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.post_message(self.ContinueRequested())
 
     async def set_lines(self, lines: list[DisplayLineModel]) -> None:
         was_at_end = self.is_vertical_scroll_end

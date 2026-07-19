@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from rustyera_tui.app import RustyEraTui
-from rustyera_tui.runtime import FrontendEvent
+from rustyera_tui.runtime import FrontendEvent, RuntimeFailure
 from rustyera_tui.widgets import GameLine
 from rustyera_tui.wire import variant
+from textual.widgets import Input, TextArea
 
 
 class FakeWorker:
@@ -67,6 +68,55 @@ async def test_prompt_submits_through_worker(tmp_path: Path) -> None:
         prompt.focus()
         await pilot.press("1", "2", "enter")
         assert ("submit_text", "12") in worker.commands
+
+
+async def test_viewport_click_submits_only_a_plain_enter_wait(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.active_wait = {0: 7, 1: 0}
+        await pilot.click("#game-viewport", offset=(10, 5))
+        assert ("submit_text", "") in worker.commands
+
+        worker.commands.clear()
+        app.active_wait = {0: 8, 1: 2}
+        await pilot.click("#game-viewport", offset=(10, 5))
+        assert ("submit_text", "") not in worker.commands
+
+
+async def test_log_dialog_uses_selectable_read_only_text(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    app.logs = ["first line", "second line"]
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.click("#menu-debug")
+        await pilot.click("#debug-logs")
+        view = app.screen.query_one("#log-view", TextArea)
+        assert view.read_only
+        view.select_all()
+        assert view.selected_text == "first line\nsecond line"
+
+
+async def test_runtime_fault_remains_visible_in_the_prompt(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    failure = RuntimeFailure(
+        code=3,
+        message="place storage is unavailable",
+        function="EVENTTRAIN",
+        source_path="BEFORETRAIN.ERB",
+        source_line=28,
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        worker.events.put(FrontendEvent("runtime_fault", failure))
+        await pilot.pause(0.1)
+        prompt = app.query_one("#prompt", Input)
+        assert prompt.disabled
+        assert app.blocking_error == failure.display()
+        assert prompt.placeholder == failure.display()
 
 
 async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path) -> None:

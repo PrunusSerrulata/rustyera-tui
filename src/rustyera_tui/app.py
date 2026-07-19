@@ -57,6 +57,7 @@ class RustyEraTui(App[None]):
         self.worker = RuntimeWorker(runtime_library, self.project)
         self.presentation = PresentationModel()
         self.active_wait: dict[int, Any] | None = None
+        self.blocking_error: str | None = None
         self.input_undo_token: dict[int, Any] | None = None
         self.logs: list[str] = []
         self.debug_enabled = False
@@ -135,6 +136,9 @@ class RustyEraTui(App[None]):
             if not prompt.value:
                 prompt.value = value
         elif kind == "phase":
+            if value != 11 and self.blocking_error is not None:
+                self.blocking_error = None
+                self._update_prompt()
             self._log(f"Runtime phase -> {value}")
         elif kind == "status":
             self._set_status(str(value))
@@ -146,6 +150,12 @@ class RustyEraTui(App[None]):
         elif kind == "error":
             self._log(f"ERROR: {value}")
             self.notify(str(value), title="RustyEra", severity="error", timeout=8)
+        elif kind == "runtime_fault":
+            self.active_wait = None
+            self.blocking_error = value.display()
+            self._log(f"ERROR: {self.blocking_error}")
+            self._update_prompt()
+            self.notify(self.blocking_error, title="RustyEra", severity="error", timeout=12)
         elif kind == "debug_enabled":
             self._set_debug_enabled(bool(value))
         elif kind == "debug_stopped":
@@ -182,6 +192,10 @@ class RustyEraTui(App[None]):
 
     def _update_prompt(self) -> None:
         prompt = self.query_one("#prompt", Input)
+        if self.blocking_error is not None:
+            prompt.disabled = True
+            prompt.placeholder = self.blocking_error
+            return
         prompt.disabled = self.active_wait is None
         if self.active_wait is None:
             prompt.placeholder = "Runtime 正在运行…"
@@ -338,6 +352,10 @@ class RustyEraTui(App[None]):
     def on_game_line_activated(self, event: GameLine.Activated) -> None:
         self.worker.send("activate", event.token)
 
+    def on_game_viewport_continue_requested(self, _event: GameViewport.ContinueRequested) -> None:
+        if self.active_wait is not None and self.active_wait.get(1) == 0:
+            self.worker.send("submit_text", "")
+
     def on_debug_console_dialog_submitted(self, event: DebugConsoleDialog.Submitted) -> None:
         action = "console_execute" if event.execute else "console_evaluate"
         self.worker.send("debug_action", (action, event.source))
@@ -362,6 +380,7 @@ class RustyEraTui(App[None]):
                 max(1, width),
                 max(1, height),
                 self.environment_revision,
+                self.presentation.revision,
             ),
         )
 

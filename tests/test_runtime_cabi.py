@@ -31,10 +31,10 @@ def wait_for(
             event = worker.events.get(timeout=0.2)
         except queue.Empty:
             continue
-        if event.kind == "error":
-            raise AssertionError(event.value)
         if predicate(event):
             return event
+        if event.kind in ("error", "runtime_fault"):
+            raise AssertionError(event.value)
     raise AssertionError("timed out waiting for runtime event")
 
 
@@ -104,6 +104,27 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
             lambda event: event.kind == "debug_response" and event.value[0] == "console",
         )
         assert console.value[1] == 8
+    finally:
+        worker.stop()
+        worker.join(timeout=3)
+
+
+@pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
+def test_real_c_abi_reports_a_terminal_runtime_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "fault-project"
+    project.mkdir()
+    (project / "main.erb").write_text(
+        '@SYSTEM_TITLE\nRESULT = CSVNAME(999) == ""\nRETURN\n', encoding="utf-8"
+    )
+    worker = RuntimeWorker(RUNTIME_LIBRARY, project)
+    worker.start()
+    try:
+        fault = wait_for(worker, lambda event: event.kind == "runtime_fault")
+        assert "character CSV number 999 does not exist" in fault.value.message
+        assert fault.value.function == "SYSTEM_TITLE"
     finally:
         worker.stop()
         worker.join(timeout=3)
