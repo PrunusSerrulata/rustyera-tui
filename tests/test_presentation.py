@@ -2,6 +2,7 @@ from rustyera_tui.presentation import (
     PresentationModel,
     ServicePresentationModel,
     coalesce_presentation_deltas,
+    parse_line,
     plain_line,
 )
 from rustyera_tui.wire import variant
@@ -56,6 +57,39 @@ def test_snapshot_preserves_color_and_button_token() -> None:
     assert model.lines[0].segments[0].text == "开始"
     assert model.lines[0].segments[0].style.foreground == "#00ff80"
     assert model.lines[0].segments[0].token == {0: 1, 1: 1}
+
+
+def test_column_cells_use_terminal_width_and_keep_padding_clickable() -> None:
+    token = {0: 7, 1: 9}
+    button = variant(
+        1,
+        [variant(0, "界[1]", style(color(0, 255, 128)), None)],
+        token,
+        "选择",
+        None,
+        variant(0, 1),
+        0,
+        True,
+    )
+    raw = {
+        0: 4,
+        1: False,
+        2: True,
+        3: True,
+        4: 0,
+        5: [
+            variant(5, [button], 1, 8),
+            variant(5, [variant(0, "中文", style(color(255, 255, 255)), None)], 0, 6),
+        ],
+    }
+
+    parsed = parse_line(raw)
+
+    assert "".join(segment.text for segment in parsed.segments) == "   界[1]中文  "
+    assert parsed.segments[0].text == "   "
+    assert parsed.segments[0].token == token
+    assert parsed.segments[0].title == "选择"
+    assert plain_line(raw) == "   界[1]中文  "
 
 
 def test_delta_append_replace_delete_and_revision_check() -> None:

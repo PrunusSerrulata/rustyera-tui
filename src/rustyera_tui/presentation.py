@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from rich.cells import cell_len
+
 from .wire import unwrap_variant, variant
 
 
@@ -209,7 +211,7 @@ def plain_run(run: list[Any]) -> str:
     if tag == 5:
         content, alignment, preferred_columns = fields
         text = "".join(plain_run(child) for child in content)
-        padding = " " * max(0, preferred_columns - len(text))
+        padding = " " * max(0, preferred_columns - cell_len(text))
         return f"{padding}{text}" if alignment == 1 else f"{text}{padding}"
     if tag == 6:
         pattern = fields[0] or "-"
@@ -350,9 +352,10 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
         for child in content:
             nested.extend(parse_run(child, inherited))
         plain = "".join(part.text for part in nested)
-        padding = max(0, preferred_columns - len(plain))
+        padding = max(0, preferred_columns - cell_len(plain))
         if padding:
-            space = DisplaySegment(" " * padding)
+            edge = nested[0 if alignment == 1 else -1] if nested else None
+            space = replace(edge, text=" " * padding) if edge else DisplaySegment(" " * padding)
             nested = ([space] + nested) if alignment == 1 else (nested + [space])
         return nested
     if tag == 6:  # Width-independent separator
