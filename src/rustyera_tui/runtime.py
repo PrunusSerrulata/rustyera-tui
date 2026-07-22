@@ -20,6 +20,15 @@ from rich.cells import cell_len
 from .abi import RuntimeAbi
 from .presentation import ServicePresentationModel, coalesce_presentation_deltas, plain_line
 from .project import ProjectBundle, StorageBackend
+from .protocol_text import (
+    COMMAND_ERROR_CODES,
+    DIAGNOSTIC_SEVERITIES,
+    FAULT_CODES,
+    SERVICE_KINDS,
+    SNAPSHOT_INELIGIBLE_REASONS,
+    enum_list_text,
+    enum_text,
+)
 from .wire import (
     CHANNEL_DEBUG,
     CHANNEL_RUNTIME,
@@ -69,7 +78,8 @@ class RuntimeFailure:
                 location += f":{self.source_line}"
             location += "）"
         context = f" [{self.function}]" if self.function else ""
-        return f"Runtime 故障{context}：{self.message}{location}"
+        code = enum_text(self.code, FAULT_CODES, "FaultCode")
+        return f"Runtime 故障 [{code}]{context}：{self.message}{location}"
 
 
 class RuntimeClient:
@@ -382,7 +392,8 @@ class RuntimeClient:
             # before the caller-pumped runtime handles it. This is a benign stale sample;
             # a later rendered revision will submit a replacement observation.
             if not (projection_request and value.get(0) == 2 and stale_projection):
-                self.events.put(FrontendEvent("error", f"命令被拒绝：{rejection}"))
+                code = enum_text(value.get(0), COMMAND_ERROR_CODES, "CommandErrorCode")
+                self.events.put(FrontendEvent("error", f"命令被拒绝 [{code}]：{rejection}"))
         elif tag == 96:
             self.epoch = value[0]
             self.phase = value[1]
@@ -393,14 +404,24 @@ class RuntimeClient:
         elif tag == 97:
             source = value.get(3)
             location = f" ({source.get(0)}:{source.get(3, '?')})" if source else ""
-            self.events.put(FrontendEvent("log", f"{value.get(0)}: {value.get(2)}{location}"))
+            severity = enum_text(
+                value.get(1), DIAGNOSTIC_SEVERITIES, "DiagnosticSeverity"
+            )
+            self.events.put(
+                FrontendEvent("log", f"{severity} {value.get(0)}: {value.get(2)}{location}")
+            )
 
     def _handle_project_report(self, report: dict[int, Any]) -> None:
         for diagnostic in report.get(2, []):
             source = diagnostic.get(3)
             location = f" {source.get(0)}" if source else ""
+            severity = enum_text(
+                diagnostic.get(1), DIAGNOSTIC_SEVERITIES, "DiagnosticSeverity"
+            )
             self.events.put(
-                FrontendEvent("log", f"{diagnostic.get(0)}:{location} {diagnostic.get(2)}")
+                FrontendEvent(
+                    "log", f"{severity} {diagnostic.get(0)}:{location} {diagnostic.get(2)}"
+                )
             )
         if not report[1]:
             self.reload_candidate = None
@@ -490,7 +511,8 @@ class RuntimeClient:
                 query = decode(request[4])
                 response = {0: query[0], 1: cell_len(query[1]), 2: 1}
             else:
-                raise NotImplementedError(f"unsupported frontend service {kind}/{operation}")
+                service = enum_text(kind, SERVICE_KINDS, "ServiceKind")
+                raise NotImplementedError(f"unsupported frontend service {service}/{operation}")
             result = variant(0, encode(response))
         except Exception as error:  # noqa: BLE001 - external-service boundary
             result = variant(1, {0: "frontend.unsupported_service", 1: str(error)})
@@ -609,7 +631,10 @@ class RuntimeClient:
             return
         result_tag, fields = unwrap_variant(ready[1])
         if result_tag == 1:
-            self.events.put(FrontendEvent("error", f"当前状态不能生成快照：{fields[0]}"))
+            reasons = enum_list_text(
+                fields[0], SNAPSHOT_INELIGIBLE_REASONS, "SnapshotIneligibleReason"
+            )
+            self.events.put(FrontendEvent("error", f"当前状态不能生成快照：{reasons}"))
             self.pending_export = None
             return
         descriptor = fields[0]

@@ -119,6 +119,18 @@ async def test_runtime_fault_remains_visible_in_the_prompt(tmp_path: Path) -> No
         assert prompt.placeholder == failure.display()
 
 
+async def test_log_uses_text_for_runtime_and_debug_enums(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        worker.events.put(FrontendEvent("phase", 5))
+        worker.events.put(FrontendEvent("debug_stopped", {1: [2, []]}))
+        await pilot.pause(0.1)
+        assert any("Runtime phase -> WaitingInput（等待输入）" in log for log in app.logs)
+        assert any("调试暂停：StepCompleted（单步完成）" in log for log in app.logs)
+
+
 async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()

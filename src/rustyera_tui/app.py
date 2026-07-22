@@ -22,6 +22,7 @@ from .dialogs import (
     VariableRefresh,
 )
 from .presentation import PresentationModel
+from .protocol_text import DEBUG_STOP_REASONS, RUNTIME_PHASES, enum_text, variant_enum_text
 from .runtime import FrontendEvent, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
@@ -139,7 +140,8 @@ class RustyEraTui(App[None]):
             if value != 11 and self.blocking_error is not None:
                 self.blocking_error = None
                 self._update_prompt()
-            self._log(f"Runtime phase -> {value}")
+            phase = enum_text(value, RUNTIME_PHASES, "RuntimePhase")
+            self._log(f"Runtime phase -> {phase}")
         elif kind == "status":
             self._set_status(str(value))
         elif kind == "project_loaded":
@@ -159,8 +161,8 @@ class RustyEraTui(App[None]):
         elif kind == "debug_enabled":
             self._set_debug_enabled(bool(value))
         elif kind == "debug_stopped":
-            reason = value.get(1)
-            self._set_status(f"调试暂停：{reason!r}（F10 单步）")
+            reason = variant_enum_text(value.get(1), DEBUG_STOP_REASONS, "StopReason")
+            self._set_status(f"调试暂停：{reason}（F10 单步）")
         elif kind == "debug_response":
             self._handle_debug_response(value)
         elif kind == "exit_requested":

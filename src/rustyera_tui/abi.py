@@ -7,12 +7,18 @@ import os
 import sys
 from pathlib import Path
 
+from .protocol_text import ERA_STATUSES, enum_text
+
 ABI_MAJOR = 3
 ABI_MINOR = 0
 
 STATUS_OK = 0
 STATUS_EMPTY = 1
 DEFAULT_MAXIMUM_VM_INSTRUCTIONS = 100_000
+
+
+def _status_text(status: int) -> str:
+    return enum_text(status, ERA_STATUSES, "EraStatus")
 
 
 class AbiError(RuntimeError):
@@ -148,7 +154,7 @@ class RuntimeAbi:
         api = EraRuntimeApi()
         status = get_api(EraAbiVersion(ABI_MAJOR, ABI_MINOR), ctypes.byref(api))
         if status != STATUS_OK:
-            raise AbiError(f"era_runtime_get_api failed with status {status}")
+            raise AbiError(f"era_runtime_get_api failed with status {_status_text(status)}")
         if api.abi_version.major != ABI_MAJOR:
             raise AbiError(f"runtime returned incompatible ABI {api.abi_version.major}")
         self.api = api
@@ -213,7 +219,9 @@ class RuntimeAbi:
         finally:
             release_status = self._release(header, output)
             if release_status != STATUS_OK:
-                raise AbiError(f"release_buffer failed with status {release_status}")
+                raise AbiError(
+                    f"release_buffer failed with status {_status_text(release_status)}"
+                )
 
     def last_error(self) -> str:
         if not self.handle.value:
@@ -222,7 +230,7 @@ class RuntimeAbi:
         header = _header(ctypes.sizeof(EraOwnedBuffer))
         status = self._last_error(header, self.handle, ctypes.byref(output))
         if status != STATUS_OK:
-            return f"last_error failed with status {status}"
+            return f"last_error failed with status {_status_text(status)}"
         try:
             return ctypes.string_at(output.data, output.len).decode("utf-8", "replace")
         finally:
@@ -233,7 +241,7 @@ class RuntimeAbi:
             return
         status = self._destroy(_header(ctypes.sizeof(EraCallHeader)), self.handle)
         if status != STATUS_OK:
-            raise AbiError(f"session_destroy failed with status {status}")
+            raise AbiError(f"session_destroy failed with status {_status_text(status)}")
         self.handle = EraSessionHandle()
 
     def close(self) -> None:
@@ -244,7 +252,7 @@ class RuntimeAbi:
             return
         detail = self.last_error() if handle and self.handle.value else ""
         suffix = f": {detail}" if detail else ""
-        raise AbiError(f"{operation} failed with status {status}{suffix}")
+        raise AbiError(f"{operation} failed with status {_status_text(status)}{suffix}")
 
     def __enter__(self) -> RuntimeAbi:
         return self
