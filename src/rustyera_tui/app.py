@@ -37,6 +37,7 @@ class RustyEraTui(App[None]):
         "prompt-running",
         "prompt-running-bright",
         "prompt-number",
+        "prompt-enter",
         "prompt-other",
         "prompt-error",
     )
@@ -225,7 +226,13 @@ class RustyEraTui(App[None]):
             "输入 type,result1,result2,result3,result4",
         ]
         kind = self.active_wait.get(1, 0)
-        self._set_prompt_state("prompt-number" if kind in (2, 6) else "prompt-other")
+        if kind in (2, 6):
+            prompt_state = "prompt-number"
+        elif kind == 0:
+            prompt_state = "prompt-enter"
+        else:
+            prompt_state = "prompt-other"
+        self._set_prompt_state(prompt_state)
         prompt.placeholder = kind_names[kind] if kind < len(kind_names) else "输入"
         prompt.focus()
 

@@ -159,23 +159,28 @@ async def test_prompt_color_tracks_runtime_and_input_state(tmp_path: Path) -> No
     async with app.run_test(size=(100, 30)):
         label = app.query_one("#prompt-label")
         assert label.has_class("prompt-running")
-        assert label.styles.color.hex6 == "#94A3B8"
+        assert label.styles.color.hex6 == "#A9A9A9"
 
         app._toggle_prompt_blink()
         assert label.has_class("prompt-running-bright")
         assert label.styles.color.hex6 == "#F8FAFC"
         app._toggle_prompt_blink()
-        assert label.styles.color.hex6 == "#94A3B8"
+        assert label.styles.color.hex6 == "#A9A9A9"
 
         app.active_wait = {0: 1, 1: 2}
         app._update_prompt()
         assert label.has_class("prompt-number")
         assert label.styles.color.hex6 == "#F8FAFC"
 
-        app.active_wait = {0: 2, 1: 3}
+        app.active_wait = {0: 2, 1: 0}
+        app._update_prompt()
+        assert label.has_class("prompt-enter")
+        assert label.styles.color.hex6 == "#7FFFD4"
+
+        app.active_wait = {0: 3, 1: 3}
         app._update_prompt()
         assert label.has_class("prompt-other")
-        assert label.styles.color.hex6 == "#00FFFF"
+        assert label.styles.color.hex6 == "#800080"
 
 
 async def test_log_uses_text_for_runtime_and_debug_enums(tmp_path: Path) -> None:

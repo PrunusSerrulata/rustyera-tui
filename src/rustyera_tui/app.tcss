@@ -134,7 +134,7 @@ Screen {
 }
 
 #prompt-label.prompt-running {
-    color: #94a3b8;
+    color: #a9a9a9;
 }
 
 #prompt-label.prompt-running.prompt-running-bright,
@@ -142,8 +142,12 @@ Screen {
     color: #f8fafc;
 }
 
+#prompt-label.prompt-enter {
+    color: #7fffd4;
+}
+
 #prompt-label.prompt-other {
-    color: aqua;
+    color: #800080;
 }
 
 #prompt-label.prompt-error {
