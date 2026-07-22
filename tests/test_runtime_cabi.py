@@ -47,6 +47,25 @@ def test_compiled_cache_persistence_waits_until_the_deferred_deadline(
     assert requested == ["background"]
 
 
+def test_gameplay_input_defers_pending_cache_compression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(RuntimeClient)
+    client.cache_refresh_pending = True
+    client.cache_refresh_after_ns = 100
+
+    monkeypatch.setattr("rustyera_tui.runtime.COMPILED_CACHE_PERSIST_DELAY_NS", 500)
+    monkeypatch.setattr("rustyera_tui.runtime.time.monotonic_ns", lambda: 50)
+    client.defer_compiled_cache_refresh()
+
+    assert client.cache_refresh_after_ns == 550
+
+    client.cache_refresh_pending = False
+    monkeypatch.setattr("rustyera_tui.runtime.time.monotonic_ns", lambda: 1_000)
+    client.defer_compiled_cache_refresh()
+    assert client.cache_refresh_after_ns == 550
+
+
 def wait_for(
     worker: RuntimeWorker,
     predicate: Callable[[FrontendEvent], bool],

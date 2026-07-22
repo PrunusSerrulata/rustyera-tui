@@ -46,7 +46,7 @@ from .wire import (
     version_range,
 )
 
-COMPILED_CACHE_PERSIST_DELAY_NS = 5_000_000_000
+COMPILED_CACHE_PERSIST_DELAY_NS = 10_000_000_000
 COMPILED_CACHE_RETRY_NS = 250_000_000
 
 
@@ -562,6 +562,15 @@ class RuntimeClient:
         ):
             self._refresh_compiled_cache("background")
 
+    def defer_compiled_cache_refresh(self) -> None:
+        """Keep cache compression out of latency-sensitive gameplay transitions."""
+
+        if self.cache_refresh_pending:
+            self.cache_refresh_after_ns = max(
+                self.cache_refresh_after_ns,
+                time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS,
+            )
+
     def _handle_wait_change(self, change: list[Any]) -> None:
         tag, fields = unwrap_variant(change)
         if tag in (0, 1):
@@ -1051,6 +1060,8 @@ class RuntimeWorker(threading.Thread):
         if client is None:
             return
         try:
+            if command.kind in {"submit_text", "skip_enter_waits", "activate", "input_undo"}:
+                client.defer_compiled_cache_refresh()
             match command.kind:
                 case "load_project":
                     self._load_project(Path(command.value))
