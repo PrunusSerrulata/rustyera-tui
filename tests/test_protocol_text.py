@@ -13,22 +13,20 @@ from rustyera_tui.runtime import RuntimeClient
 
 
 def test_known_wire_enums_use_textual_protocol_names() -> None:
-    assert enum_text(5, RUNTIME_PHASES, "RuntimePhase") == "WaitingInput（等待输入）"
+    assert enum_text(5, RUNTIME_PHASES, "RuntimePhase") == "WaitingInput"
     assert (
         enum_list_text([3], SNAPSHOT_INELIGIBLE_REASONS, "SnapshotIneligibleReason")
-        == "SnapshotStateUnavailable（当前快照状态不可用）"
+        == "SnapshotStateUnavailable"
     )
     assert (
         variant_enum_text([2, []], DEBUG_STOP_REASONS, "StopReason")
-        == "StepCompleted（单步完成）"
+        == "StepCompleted"
     )
-    assert enum_text(4, ERA_STATUSES, "EraStatus") == "AbiMismatch（ABI 不匹配）"
+    assert enum_text(4, ERA_STATUSES, "EraStatus") == "AbiMismatch"
 
 
 def test_unknown_wire_enums_remain_readable_without_numeric_only_output() -> None:
-    assert enum_text(99, RUNTIME_PHASES, "RuntimePhase") == (
-        "UnknownRuntimePhase（未知值 99）"
-    )
+    assert enum_text(99, RUNTIME_PHASES, "RuntimePhase") == "UnknownRuntimePhase[99]"
 
 
 def test_snapshot_rejection_event_uses_reason_names() -> None:
@@ -41,6 +39,6 @@ def test_snapshot_rejection_event_uses_reason_names() -> None:
     event = client.events.get_nowait()
     assert event.kind == "error"
     assert event.value == (
-        "当前状态不能生成快照：SnapshotStateUnavailable（当前快照状态不可用）"
+        "当前状态不能生成快照：SnapshotStateUnavailable"
     )
     assert client.pending_export is None

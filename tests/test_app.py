@@ -117,18 +117,44 @@ async def test_horizontal_scrollbar_replaces_the_prompt_separator(tmp_path: Path
         assert separator.display
 
 
+async def test_viewport_update_always_scrolls_to_the_bottom(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    lines = [
+        DisplayLineModel(index, False, True, True, 0, (DisplaySegment(f"line {index}"),))
+        for index in range(40)
+    ]
+    async with app.run_test(size=(100, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines(lines)
+        await pilot.pause()
+        assert viewport.is_vertical_scroll_end
+
+        viewport.scroll_home(animate=False, x_axis=False)
+        await pilot.pause()
+        assert not viewport.is_vertical_scroll_end
+
+        await viewport.set_lines([*lines, DisplayLineModel(40, False, True, True, 0, ())])
+        await pilot.pause()
+        assert viewport.is_vertical_scroll_end
+
+
 async def test_log_dialog_uses_selectable_read_only_text(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
-    app.logs = ["first line", "second line"]
+    app.logs = [f"line {index}" for index in range(100)]
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.click("#menu-debug")
         await pilot.click("#debug-logs")
         view = app.screen.query_one("#log-view", TextArea)
         assert view.read_only
+        await pilot.pause()
+        assert view.scroll_y > 0
+        assert view.is_vertical_scroll_end
         view.select_all()
-        assert view.selected_text == "first line\nsecond line"
+        assert view.selected_text == "\n".join(app.logs)
 
 
 async def test_runtime_fault_remains_visible_in_the_prompt(tmp_path: Path) -> None:
@@ -191,8 +217,8 @@ async def test_log_uses_text_for_runtime_and_debug_enums(tmp_path: Path) -> None
         worker.events.put(FrontendEvent("phase", 5))
         worker.events.put(FrontendEvent("debug_stopped", {1: [2, []]}))
         await pilot.pause(0.1)
-        assert any("Runtime phase -> WaitingInput（等待输入）" in log for log in app.logs)
-        assert any("调试暂停：StepCompleted（单步完成）" in log for log in app.logs)
+        assert any("Runtime phase -> WaitingInput" in log for log in app.logs)
+        assert any("调试暂停：StepCompleted" in log for log in app.logs)
 
 
 async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path) -> None:

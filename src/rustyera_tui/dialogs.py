@@ -80,6 +80,14 @@ class LogDialog(ModalScreen[None]):
             )
             yield Button("关闭", id="dialog-close")
 
+    def on_mount(self) -> None:
+        self.call_after_refresh(
+            self.query_one("#log-view", TextArea).scroll_end,
+            animate=False,
+            immediate=True,
+            x_axis=False,
+        )
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "dialog-close":
             self.dismiss(None)

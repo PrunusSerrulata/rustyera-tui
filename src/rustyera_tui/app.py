@@ -172,7 +172,7 @@ class RustyEraTui(App[None]):
             self._set_debug_enabled(bool(value))
         elif kind == "debug_stopped":
             reason = variant_enum_text(value.get(1), DEBUG_STOP_REASONS, "StopReason")
-            self._set_status(f"调试暂停：{reason}（F10 单步）")
+            self._set_status(f"调试暂停：{reason}")
         elif kind == "debug_response":
             self._handle_debug_response(value)
         elif kind == "exit_requested":

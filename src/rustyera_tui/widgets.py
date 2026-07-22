@@ -165,7 +165,6 @@ class GameViewport(ScrollableContainer):
         self.post_message(self.HorizontalScrollbarChanged(visible))
 
     async def set_lines(self, lines: list[DisplayLineModel]) -> None:
-        was_at_end = self.is_vertical_scroll_end
         old = self.models
         children = list(self.children)
         common = 0
@@ -187,5 +186,6 @@ class GameViewport(ScrollableContainer):
             await self.remove_children()
             await self.mount(*(GameLine(line) for line in lines))
         self.models = list(lines)
-        if was_at_end or not old:
-            self.call_after_refresh(self.scroll_end, animate=False, x_axis=False)
+        # Re-anchor after every presentation change so the next layout pass follows
+        # the newly appended content even when the user had scrolled into history.
+        self.anchor()
