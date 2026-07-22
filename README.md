@@ -24,8 +24,9 @@ project. The frontend scans `.erb`, `.erh`, `.csv`, and `.config` files as UTF-8
 GlobalSave, Data, Log, and writable Project-overlay storage is kept in an OS-appropriate,
 per-project user data directory, so games installed read-only remain playable. Set
 `ERA_TUI_DATA_DIR` to override its base directory. Resource reads continue to use the selected
-project directory. Images, video, and audio are intentionally not advertised to the runtime
-and are represented by alt text when they occur in a portable presentation projection.
+project directory. The frontend renders normalized HTML text, styles, spacing, line breaks,
+and buttons. Images, video, and audio remain intentionally unadvertised and use terminal
+placeholders when they occur inside HTML presentation content.
 
 ## Controls
 

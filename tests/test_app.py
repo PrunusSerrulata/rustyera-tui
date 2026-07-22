@@ -297,3 +297,41 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         assert game_line.hovered_region is None
         assert await pilot.click(".game-line", offset=(1, 0))
         assert not any(kind == "activate" for kind, _value in worker.commands)
+
+
+async def test_multiline_button_regions_merge_padding_and_use_row_coordinates(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    first = {0: 3, 1: 1}
+    second = {0: 3, 1: 2}
+    line = DisplayLineModel(
+        1,
+        False,
+        True,
+        True,
+        0,
+        (
+            DisplaySegment("   ", token=first, title="first"),
+            DisplaySegment("body\n", token=first, title="first"),
+            DisplaySegment("next", token=second, title="second"),
+        ),
+    )
+    app.presentation.lines = [line]
+    app.active_wait = {0: 4, 1: 2}
+    async with app.run_test(size=(100, 30)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([line])
+        await pilot.pause()
+        game_line = app.query_one(GameLine)
+
+        assert len(game_line.regions) == 2
+        assert game_line.regions[0].row == 0
+        assert (game_line.regions[0].start, game_line.regions[0].end) == (0, 7)
+        assert game_line.regions[1].row == 1
+        assert game_line._region_at(1, 0) == 0
+        assert game_line._region_at(1, 1) == 1
+        assert await pilot.click(".game-line", offset=(1, 1))
+        assert ("activate", second) in worker.commands

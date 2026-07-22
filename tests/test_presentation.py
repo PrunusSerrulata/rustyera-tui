@@ -59,7 +59,7 @@ def test_snapshot_preserves_color_and_button_token() -> None:
     assert model.lines[0].segments[0].token == {0: 1, 1: 1}
 
 
-def test_column_cells_use_terminal_width_and_keep_padding_clickable() -> None:
+def test_column_cells_merge_terminal_padding_into_the_edge_segment() -> None:
     token = {0: 7, 1: 9}
     button = variant(
         1,
@@ -86,10 +86,81 @@ def test_column_cells_use_terminal_width_and_keep_padding_clickable() -> None:
     parsed = parse_line(raw)
 
     assert "".join(segment.text for segment in parsed.segments) == "   界[1]中文  "
-    assert parsed.segments[0].text == "   "
+    assert parsed.segments[0].text == "   界[1]"
     assert parsed.segments[0].token == token
     assert parsed.segments[0].title == "选择"
+    assert parsed.segments[1].text == "中文  "
     assert plain_line(raw) == "   界[1]中文  "
+
+
+def test_structured_html_preserves_rows_styles_spaces_and_buttons() -> None:
+    token = {0: 8, 1: 13}
+    html = {
+        0: [
+            variant(
+                1,
+                5,
+                [{0: "align", 1: "left"}],
+                [
+                    variant(1, 13, [], [], None, 0, 0, variant(10)),
+                    variant(
+                        1,
+                        11,
+                        [],
+                        [],
+                        None,
+                        0,
+                        0,
+                        variant(8, "space", [variant(1, 100)], None, None),
+                    ),
+                    variant(
+                        1,
+                        7,
+                        [{0: "value", 1: "0"}],
+                        [
+                            variant(0, "[  0] ", 0, 0),
+                            variant(
+                                1,
+                                0,
+                                [],
+                                [variant(0, "选择", 0, 0)],
+                                None,
+                                0,
+                                0,
+                                variant(0),
+                            ),
+                        ],
+                        {0: 8, 1: 13, 2: 0, 4: 2, 5: True},
+                        0,
+                        0,
+                        variant(4, "0", "选项", None),
+                    ),
+                    variant(1, 13, [], [], None, 0, 0, variant(10)),
+                ],
+                None,
+                0,
+                0,
+                variant(2, 0),
+            )
+        ]
+    }
+    raw = {
+        0: 9,
+        1: False,
+        2: True,
+        3: True,
+        4: 0,
+        5: [variant(2, html)],
+    }
+
+    parsed = parse_line(raw)
+
+    assert "".join(segment.text for segment in parsed.segments) == "\n  [  0] 选择\n"
+    button_segments = [segment for segment in parsed.segments if segment.token == token]
+    assert "".join(segment.text for segment in button_segments) == "[  0] 选择"
+    assert all(segment.generation == 2 and segment.title == "选项" for segment in button_segments)
+    assert any(segment.style.bold for segment in button_segments)
+    assert plain_line(raw) == "\n  [  0] 选择\n"
 
 
 def test_delta_append_replace_delete_and_revision_check() -> None:

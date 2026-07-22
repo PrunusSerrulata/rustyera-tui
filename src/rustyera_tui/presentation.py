@@ -29,6 +29,7 @@ class DisplaySegment:
     title: str | None = None
     hover_style: SegmentStyle | None = None
     generation: int | None = None
+    alignment: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +204,7 @@ def plain_run(run: list[Any]) -> str:
     if tag == 1:
         return "".join(plain_run(child) for child in fields[0])
     if tag == 2:
-        return "".join(_collect_strings(fields[0]))
+        return "".join(segment.text for segment in parse_html_document(fields[0]))
     if tag == 3:
         return fields[1] or "[图片]"
     if tag == 4:
@@ -337,8 +338,7 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
             result.extend(parse_run(child, button))
         return result
     if tag == 2:  # HTML document fallback for non-HTML clients
-        text = "".join(_collect_strings(fields[0]))
-        return [DisplaySegment(text=text, style=inherited.style if inherited else SegmentStyle())]
+        return parse_html_document(fields[0], inherited)
     if tag == 3:  # Image
         alt = fields[1] or "[图片]"
         return [DisplaySegment(text=alt, style=inherited.style if inherited else SegmentStyle())]
@@ -355,8 +355,12 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
         padding = max(0, preferred_columns - cell_len(plain))
         if padding:
             edge = nested[0 if alignment == 1 else -1] if nested else None
-            space = replace(edge, text=" " * padding) if edge else DisplaySegment(" " * padding)
-            nested = ([space] + nested) if alignment == 1 else (nested + [space])
+            if edge is None:
+                nested = [DisplaySegment(" " * padding)]
+            elif alignment == 1:
+                nested[0] = replace(edge, text=" " * padding + edge.text)
+            else:
+                nested[-1] = replace(edge, text=edge.text + " " * padding)
         return nested
     if tag == 6:  # Width-independent separator
         pattern = fields[0] or "-"
@@ -371,17 +375,120 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
     return [DisplaySegment(f"[未支持的显示片段 {tag}]")]
 
 
-def _collect_strings(value: Any) -> list[str]:
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, dict):
-        result: list[str] = []
-        for item in value.values():
-            result.extend(_collect_strings(item))
-        return result
-    if isinstance(value, list):
-        result = []
-        for item in value:
-            result.extend(_collect_strings(item))
-        return result
-    return []
+def parse_html_document(
+    document: dict[int, Any], inherited: DisplaySegment | None = None
+) -> list[DisplaySegment]:
+    """Project the normalized Emuera HTML tree into terminal display spans."""
+
+    base = inherited or DisplaySegment("")
+    result: list[DisplaySegment] = []
+    for node in document.get(0, []):
+        result.extend(_parse_html_node(node, base))
+    return result
+
+
+def _parse_html_node(node: list[Any], context: DisplaySegment) -> list[DisplaySegment]:
+    tag, fields = unwrap_variant(node)
+    if tag == 0:  # Text
+        return [replace(context, text=fields[0])]
+    if tag != 1:
+        return []
+
+    kind = fields[0]
+    children = fields[2]
+    interaction = fields[3] if len(fields) > 3 else None
+    semantic = fields[6] if len(fields) > 6 else None
+
+    if kind == 13:  # br
+        return [replace(context, text="\n", token=None, alignment=context.alignment)]
+    if kind == 10:  # img
+        return [replace(context, text="[图片]")]
+    if kind == 11:  # shape
+        return [_html_shape_segment(semantic, context)]
+
+    nested = context
+    if kind == 0:  # b
+        nested = replace(nested, style=replace(nested.style, bold=True))
+    elif kind == 1:  # i
+        nested = replace(nested, style=replace(nested.style, italic=True))
+    elif kind == 2:  # u
+        nested = replace(nested, style=replace(nested.style, underline=True))
+    elif kind == 3:  # s
+        nested = replace(nested, style=replace(nested.style, strike=True))
+    elif kind == 4:  # font
+        nested = _html_font_context(semantic, nested)
+    elif kind == 5:  # p
+        alignment = _semantic_field(semantic, 0, 0)
+        nested = replace(nested, alignment=int(alignment))
+    elif kind == 7:  # button
+        nested = _html_button_context(semantic, interaction, nested)
+    elif kind in (8, 9):  # nonbutton / clearbutton
+        nested = replace(
+            nested,
+            token=None,
+            enabled=True,
+            title=None,
+            hover_style=None,
+            generation=None,
+        )
+
+    result: list[DisplaySegment] = []
+    for child in children:
+        result.extend(_parse_html_node(child, nested))
+    return result
+
+
+def _html_font_context(semantic: Any, context: DisplaySegment) -> DisplaySegment:
+    foreground = _semantic_field(semantic, 1)
+    button_color = _semantic_field(semantic, 2)
+    style = context.style
+    hover_style = context.hover_style
+    if isinstance(foreground, int):
+        style = replace(style, foreground=_packed_color_hex(foreground))
+    if isinstance(button_color, int):
+        hover_style = replace(style, foreground=_packed_color_hex(button_color))
+    return replace(context, style=style, hover_style=hover_style)
+
+
+def _html_button_context(
+    semantic: Any, interaction: dict[int, Any] | None, context: DisplaySegment
+) -> DisplaySegment:
+    if not interaction:
+        return context
+    title = _semantic_field(semantic, 1)
+    return replace(
+        context,
+        token={0: int(interaction[0]), 1: int(interaction[1])},
+        enabled=bool(interaction.get(5, True)),
+        title=title if isinstance(title, str) else None,
+        generation=int(interaction.get(4, 0)),
+    )
+
+
+def _html_shape_segment(semantic: Any, context: DisplaySegment) -> DisplaySegment:
+    kind = _semantic_field(semantic, 0, "")
+    parameters = _semantic_field(semantic, 1, [])
+    if kind == "space" and parameters:
+        width_tag, width_fields = unwrap_variant(parameters[0])
+        raw = width_fields[0]
+        if isinstance(raw, list):
+            raw = raw[0]
+        # A unitless HTML space uses hundredths of font height. eraTW's helper
+        # deliberately emits 50 per requested half-width terminal cell.
+        columns = max(1, round(raw / (1 if width_tag == 0 else 50)))
+        return replace(context, text=" " * columns)
+    return replace(context, text="[图形]")
+
+
+def _semantic_field(semantic: Any, index: int, default: Any = None) -> Any:
+    if semantic is None:
+        return default
+    try:
+        _tag, fields = unwrap_variant(semantic)
+    except ValueError:
+        return default
+    return fields[index] if index < len(fields) else default
+
+
+def _packed_color_hex(value: int) -> str:
+    return f"#{(value >> 16) & 0xff:02x}{(value >> 8) & 0xff:02x}{value & 0xff:02x}"

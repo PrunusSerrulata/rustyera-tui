@@ -12,11 +12,12 @@ from textual.containers import ScrollableContainer
 from textual.message import Message
 from textual.widgets import Static
 
-from .presentation import DisplayLineModel, SegmentStyle
+from .presentation import DisplayLineModel, DisplaySegment, SegmentStyle
 
 
 @dataclass(frozen=True, slots=True)
 class ClickRegion:
+    row: int
     start: int
     end: int
     token: dict[int, int]
@@ -75,51 +76,105 @@ class GameLine(Static):
     def _render_line(self) -> None:
         output = Text(no_wrap=True, overflow="ignore")
         self.regions = []
-        content_width = sum(cell_len(segment.text) for segment in self.line.segments)
-        available = max(0, self.size.width - content_width)
-        alignment_padding = {0: 0, 1: available // 2, 2: available}.get(self.line.alignment, 0)
-        if alignment_padding:
-            output.append(" " * alignment_padding)
-        cursor = alignment_padding
+        rows: list[list[tuple[str, DisplaySegment]]] = [[]]
+        alignments = [self.line.alignment]
         for segment in self.line.segments:
-            hovered = (
-                segment.token is not None
-                and self.hovered_region is not None
-                and self.hovered_region == len(self.regions)
-            )
-            selected_style = (
-                segment.hover_style if hovered and segment.hover_style else segment.style
-            )
-            output.append(
-                segment.text,
-                _rich_style(
-                    selected_style,
-                    disabled=segment.token is not None
-                    and (not segment.enabled or not self.interactions_enabled),
-                    hovered=hovered,
-                ),
-            )
-            width = cell_len(segment.text)
-            if segment.token is not None:
-                self.regions.append(
-                    ClickRegion(
-                        cursor, cursor + width, segment.token, segment.enabled, segment.title
+            parts = segment.text.split("\n")
+            for index, part in enumerate(parts):
+                if segment.alignment is not None:
+                    alignments[-1] = segment.alignment
+                if part:
+                    rows[-1].append((part, segment))
+                if index + 1 < len(parts):
+                    rows.append([])
+                    alignments.append(
+                        segment.alignment
+                        if segment.alignment is not None
+                        else self.line.alignment
                     )
+
+        layouts: list[list[tuple[str, DisplaySegment, int | None]]] = []
+        for row_index, (row, alignment) in enumerate(zip(rows, alignments, strict=True)):
+            content_width = sum(cell_len(text) for text, _segment in row)
+            available = max(0, self.size.width - content_width)
+            alignment_padding = {0: 0, 1: available // 2, 2: available}.get(alignment, 0)
+            cursor = alignment_padding
+            layout: list[tuple[str, DisplaySegment, int | None]] = []
+            for text, segment in row:
+                width = cell_len(text)
+                region_index = None
+                if segment.token is not None:
+                    if (
+                        self.regions
+                        and self.regions[-1].row == row_index
+                        and self.regions[-1].end == cursor
+                        and self.regions[-1].token == segment.token
+                        and self.regions[-1].enabled == segment.enabled
+                        and self.regions[-1].title == segment.title
+                    ):
+                        previous = self.regions[-1]
+                        self.regions[-1] = ClickRegion(
+                            previous.row,
+                            previous.start,
+                            cursor + width,
+                            previous.token,
+                            previous.enabled,
+                            previous.title,
+                        )
+                        region_index = len(self.regions) - 1
+                    else:
+                        self.regions.append(
+                            ClickRegion(
+                                row_index,
+                                cursor,
+                                cursor + width,
+                                segment.token,
+                                segment.enabled,
+                                segment.title,
+                            )
+                        )
+                        region_index = len(self.regions) - 1
+                layout.append((text, segment, region_index))
+                cursor += width
+            layouts.append(layout)
+
+        for row_index, (layout, alignment) in enumerate(
+            zip(layouts, alignments, strict=True)
+        ):
+            content_width = sum(cell_len(text) for text, _segment, _region in layout)
+            available = max(0, self.size.width - content_width)
+            alignment_padding = {0: 0, 1: available // 2, 2: available}.get(alignment, 0)
+            if alignment_padding:
+                output.append(" " * alignment_padding)
+            for text, segment, region_index in layout:
+                hovered = region_index is not None and self.hovered_region == region_index
+                selected_style = (
+                    segment.hover_style if hovered and segment.hover_style else segment.style
                 )
-            cursor += width
+                output.append(
+                    text,
+                    _rich_style(
+                        selected_style,
+                        disabled=segment.token is not None
+                        and (not segment.enabled or not self.interactions_enabled),
+                        hovered=hovered,
+                    ),
+                )
+            if row_index + 1 < len(layouts):
+                output.append("\n")
         self.update(output)
 
     def on_resize(self, _event: events.Resize) -> None:
         self._render_line()
 
-    def _region_at(self, x: int) -> int | None:
+    def _region_at(self, x: int, y: int) -> int | None:
         for index, region in enumerate(self.regions):
-            if region.start <= x < region.end:
+            if region.row == y and region.start <= x < region.end:
                 return index
         return None
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        index = self._region_at(event.offset.x)
+        index = self._region_at(event.offset.x, event.offset.y)
         if index is not None and (
             not self.interactions_enabled or not self.regions[index].enabled
         ):
@@ -141,7 +196,7 @@ class GameLine(Static):
     def on_click(self, event: events.Click) -> None:
         if event.button != 1:
             return
-        index = self._region_at(event.offset.x)
+        index = self._region_at(event.offset.x, event.offset.y)
         if index is None:
             return
         region = self.regions[index]
