@@ -9,7 +9,7 @@ import pytest
 
 from rustyera_tui.abi import DEFAULT_MAXIMUM_VM_INSTRUCTIONS, AbiError, discover_library
 from rustyera_tui.project import StorageBackend
-from rustyera_tui.runtime import FrontendCommand, FrontendEvent, RuntimeWorker
+from rustyera_tui.runtime import FrontendCommand, FrontendEvent, RuntimeClient, RuntimeWorker
 
 try:
     RUNTIME_LIBRARY = discover_library()
@@ -25,6 +25,26 @@ def test_worker_applies_backpressure_to_presentation_events() -> None:
     worker = RuntimeWorker(None, None)
 
     assert worker.events.maxsize == 4_096
+
+
+def test_compiled_cache_persistence_waits_until_the_deferred_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(RuntimeClient)
+    client.cache_refresh_pending = True
+    client.cache_ready = False
+    client.cache_refresh_after_ns = 100
+    client.pending_export = None
+    requested: list[str] = []
+    client._refresh_compiled_cache = requested.append  # type: ignore[method-assign]
+
+    monkeypatch.setattr("rustyera_tui.runtime.time.monotonic_ns", lambda: 99)
+    client.maybe_refresh_compiled_cache()
+    assert requested == []
+
+    monkeypatch.setattr("rustyera_tui.runtime.time.monotonic_ns", lambda: 100)
+    client.maybe_refresh_compiled_cache()
+    assert requested == ["background"]
 
 
 def wait_for(
@@ -43,6 +63,34 @@ def wait_for(
         if event.kind in ("error", "runtime_fault"):
             raise AssertionError(event.value)
     raise AssertionError("timed out waiting for runtime event")
+
+
+def wait_for_path(worker: RuntimeWorker, path: Path, timeout: float = 15) -> None:
+    deadline = time.monotonic() + timeout
+    observed: list[FrontendEvent] = []
+    while time.monotonic() < deadline:
+        if path.is_file():
+            return
+        try:
+            event = worker.events.get(timeout=0.02)
+        except queue.Empty:
+            continue
+        observed.append(event)
+        if event.kind in ("error", "runtime_fault"):
+            raise AssertionError(event.value)
+    client = worker.client
+    state = (
+        None
+        if client is None
+        else {
+            "pending": client.cache_refresh_pending,
+            "ready": client.cache_ready,
+            "after": client.pending_cache_after,
+            "export_kind": client.pending_export_kind,
+            "export_message": client.pending_cache_export_message,
+        }
+    )
+    raise AssertionError(f"timed out waiting for {path}; state={state}; events={observed[-20:]}")
 
 
 def test_title_and_snapshot_restore_do_not_scan_project(
@@ -82,6 +130,7 @@ def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr("rustyera_tui.runtime.COMPILED_CACHE_PERSIST_DELAY_NS", 0)
     project = Path(__file__).parent / "fixtures" / "minimal"
     cache_path = StorageBackend(project).compiled_cache_path()
 
@@ -90,7 +139,7 @@ def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
     try:
         wait_for(first, lambda event: event.kind == "project_loaded")
         wait_for(first, lambda event: event.kind == "wait" and event.value is not None)
-        assert cache_path.is_file()
+        wait_for_path(first, cache_path)
     finally:
         first.stop()
         first.join(timeout=5)
@@ -114,6 +163,7 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr("rustyera_tui.runtime.COMPILED_CACHE_PERSIST_DELAY_NS", 0)
     project = Path(__file__).parent / "fixtures" / "minimal"
     worker = RuntimeWorker(RUNTIME_LIBRARY, project)
     worker.start()
@@ -121,7 +171,7 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
         wait_for(worker, lambda event: event.kind == "project_loaded")
         wait = wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
         assert wait.value[1] == 0
-        assert StorageBackend(project).compiled_cache_path().is_file()
+        wait_for_path(worker, StorageBackend(project).compiled_cache_path())
 
         worker.send("restart")
         cache_hit = wait_for(

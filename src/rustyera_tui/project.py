@@ -276,10 +276,14 @@ class StorageBackend:
     def compiled_cache_path(self) -> Path:
         """Return the frontend-private opaque compiler cache path for this project."""
 
-        return self.data_root / ".rustyera" / "cache" / "compiled-project-v2.bin.zst"
+        return self.data_root / ".rustyera" / "cache" / "compiled-project-v3.bin.zst"
 
-    def obsolete_compiled_cache_path(self) -> Path:
-        return self.data_root / ".rustyera" / "cache" / "compiled-project-v1.bin.gz"
+    def obsolete_compiled_cache_paths(self) -> tuple[Path, ...]:
+        root = self.data_root / ".rustyera" / "cache"
+        return (
+            root / "compiled-project-v2.bin.zst",
+            root / "compiled-project-v1.bin.gz",
+        )
 
     def _namespace_root(self, namespace: int) -> Path:
         roots = {

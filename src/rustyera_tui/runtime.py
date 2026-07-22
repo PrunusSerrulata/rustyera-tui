@@ -46,6 +46,9 @@ from .wire import (
     version_range,
 )
 
+COMPILED_CACHE_PERSIST_DELAY_NS = 5_000_000_000
+COMPILED_CACHE_RETRY_NS = 250_000_000
+
 
 @dataclass(frozen=True, slots=True)
 class FrontendEvent:
@@ -114,6 +117,10 @@ class RuntimeClient:
         self.pending_export_kind: int | None = None
         self.pending_cache_after: str | None = None
         self.pending_cache_export_message: int | None = None
+        self.cache_refresh_pending = False
+        self.cache_ready = False
+        self.cache_refresh_after_ns = 0
+        self.cache_preparation_started = False
         self.debug_requested = False
         self.debug_grant: dict[int, Any] | None = None
         self.stop_token: dict[int, Any] | None = None
@@ -152,6 +159,10 @@ class RuntimeClient:
         self._projection_messages.clear()
         self._message_skip_active = False
         self._message_skip_wait_id = None
+        self.cache_refresh_pending = False
+        self.cache_ready = False
+        self.cache_refresh_after_ns = 0
+        self.cache_preparation_started = False
 
     def recreate(self, bundle: ProjectBundle, restore: tuple[Path, bytes] | None = None) -> None:
         self.events.put(FrontendEvent("status", "正在创建新的 Runtime session…"))
@@ -415,7 +426,16 @@ class RuntimeClient:
             if cache_export_rejection:
                 self.pending_export = None
                 self.pending_cache_export_message = None
-                self._finish_cache_export(False)
+                if value.get(0) == 0:  # InvalidState: retry the caller-pumped preparation.
+                    self.pending_cache_after = None
+                    self.pending_export_kind = None
+                    self.cache_refresh_pending = True
+                    self.cache_ready = False
+                    self.cache_refresh_after_ns = (
+                        time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
+                    )
+                else:
+                    self._finish_cache_export(False)
             # A presentation may advance after the frontend rendered an observation but
             # before the caller-pumped runtime handles it. This is a benign stale sample;
             # a later rendered revision will submit a replacement observation.
@@ -440,6 +460,9 @@ class RuntimeClient:
             self.events.put(
                 FrontendEvent("log", f"{severity} {value.get(0)}: {value.get(2)}{location}")
             )
+            if value.get(0) == "runtime.compiled_cache_ready":
+                self.cache_ready = True
+                self.cache_refresh_after_ns = 0
 
     def _handle_project_report(self, report: dict[int, Any]) -> None:
         cache_hit = False
@@ -471,7 +494,12 @@ class RuntimeClient:
             self.bundle = self.reload_candidate
             self.reload_candidate = None
             self.storage = StorageBackend(self.bundle.root)
-            self._refresh_compiled_cache("reload")
+            self.cache_refresh_pending = True
+            self.cache_preparation_started = False
+            self.cache_refresh_after_ns = (
+                time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
+            )
+            self.events.put(FrontendEvent("status", "脚本热重载完成。"))
             return
         if self.pending_bundle is not None:
             self.bundle = self.pending_bundle
@@ -479,10 +507,19 @@ class RuntimeClient:
             self.storage = StorageBackend(self.bundle.root)
         self.events.put(FrontendEvent("project_loaded", self.bundle.root if self.bundle else None))
         if cache_hit:
+            self.cache_refresh_pending = False
+            self.cache_ready = False
+            self.cache_preparation_started = False
             self.events.put(FrontendEvent("status", "编译缓存命中，正在进入标题画面…"))
             self.send_runtime(20, {0: variant(0, None)})
         else:
-            self._refresh_compiled_cache("start")
+            self.cache_refresh_pending = True
+            self.cache_preparation_started = False
+            self.cache_refresh_after_ns = (
+                time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
+            )
+            self.events.put(FrontendEvent("status", "项目编译完成，正在进入标题画面…"))
+            self.send_runtime(20, {0: variant(0, None)})
 
     def _submit_project(self, cache_transfer_id: int | None) -> None:
         if self.pending_bundle is None:
@@ -504,14 +541,26 @@ class RuntimeClient:
         )
 
     def _refresh_compiled_cache(self, after: str) -> None:
+        self.cache_refresh_pending = False
+        self.cache_ready = False
         self.pending_cache_after = after
         self.pending_export_kind = 2
         if self.storage is None:
             self._finish_cache_export(False)
             return
         self.pending_export = (self.storage.compiled_cache_path(), bytearray(), None)
-        self.events.put(FrontendEvent("status", "正在保存编译缓存…"))
+        if not self.cache_preparation_started:
+            self.cache_preparation_started = True
+            self.events.put(FrontendEvent("status", "正在后台生成编译缓存…"))
         self.pending_cache_export_message = self.send_runtime(60, {0: 2})
+
+    def maybe_refresh_compiled_cache(self) -> None:
+        if (
+            self.cache_refresh_pending
+            and self.pending_export is None
+            and time.monotonic_ns() >= self.cache_refresh_after_ns
+        ):
+            self._refresh_compiled_cache("background")
 
     def _handle_wait_change(self, change: list[Any]) -> None:
         tag, fields = unwrap_variant(change)
@@ -763,11 +812,13 @@ class RuntimeClient:
         self.pending_cache_after = None
         self.pending_export_kind = None
         self.pending_cache_export_message = None
+        self.cache_preparation_started = False
         if success and self.storage is not None:
-            try:
-                self.storage.obsolete_compiled_cache_path().unlink(missing_ok=True)
-            except OSError as error:
-                self.events.put(FrontendEvent("log", f"删除旧编译缓存失败：{error}"))
+            for obsolete in self.storage.obsolete_compiled_cache_paths():
+                try:
+                    obsolete.unlink(missing_ok=True)
+                except OSError as error:
+                    self.events.put(FrontendEvent("log", f"删除旧编译缓存失败：{error}"))
         if after == "start":
             self.events.put(
                 FrontendEvent(
@@ -780,6 +831,12 @@ class RuntimeClient:
             self.send_runtime(20, {0: variant(0, None)})
         elif after == "reload":
             self.events.put(FrontendEvent("status", "脚本热重载完成。"))
+        elif after == "background":
+            self.events.put(
+                FrontendEvent(
+                    "status", "编译缓存已保存。" if success else "编译缓存保存失败。"
+                )
+            )
 
     def _handle_import_accepted(self, accepted: dict[int, Any]) -> None:
         if self.import_bytes is None:
@@ -964,6 +1021,7 @@ class RuntimeWorker(threading.Thread):
             while not self._stop_requested.is_set():
                 self._process_commands()
                 busy = self.client.pump()
+                self.client.maybe_refresh_compiled_cache()
                 if not busy:
                     try:
                         command = self.commands.get(timeout=0.02)
