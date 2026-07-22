@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import tempfile
 from dataclasses import dataclass
@@ -65,10 +66,12 @@ def _frontend_error(error: OSError | UnicodeError, kind: int | None = None) -> d
 class ProjectFile:
     relative_path: str
     category: int
-    payload: list[Any]
+    payload: list[Any] | None
     content_hash: bytes | None
 
     def submitted(self) -> dict[int, Any]:
+        if self.payload is None:
+            raise RuntimeError(f"project file {self.relative_path} has not been materialized")
         result: dict[int, Any] = {
             0: self.relative_path,
             1: self.category,
@@ -103,7 +106,88 @@ class ProjectBundle:
             files[item.relative_path] = item
         return cls(root=root, revision=revision, files=files)
 
+    @classmethod
+    def scan_quick(cls, root: Path, revision: int = 1) -> ProjectBundle:
+        """Build a content identity using a persistent stat index without retaining source text."""
+
+        root = root.expanduser().resolve(strict=True)
+        if not root.is_dir():
+            raise NotADirectoryError(root)
+        index_path = root / ".rustyera" / "cache" / "source-index-v1.json"
+        try:
+            stored = json.loads(index_path.read_text(encoding="utf-8"))
+            previous = stored.get("files", {}) if stored.get("version") == 1 else {}
+        except (OSError, ValueError, TypeError):
+            previous = {}
+        files: dict[str, ProjectFile] = {}
+        next_index: dict[str, Any] = {}
+        paths: list[Path] = []
+        for directory, names, filenames in os.walk(root):
+            names[:] = sorted(name for name in names if name != ".rustyera")
+            paths.extend(Path(directory) / name for name in filenames)
+        paths.sort(key=lambda path: path.relative_to(root).as_posix().casefold())
+        for path in paths:
+            category = classify_path(path)
+            if category is None:
+                continue
+            relative = path.relative_to(root).as_posix()
+            try:
+                stat = path.stat()
+                signature = [
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    stat.st_ctime_ns,
+                    getattr(stat, "st_dev", 0),
+                    getattr(stat, "st_ino", 0),
+                ]
+                prior = previous.get(relative)
+                if prior and prior.get("signature") == signature and prior.get("category") == category:
+                    digest = bytes.fromhex(prior["hash"])
+                else:
+                    raw = path.read_bytes()
+                    text = raw.decode("utf-8-sig")
+                    digest = blake3.blake3(text.encode("utf-8")).digest()
+                files[relative] = ProjectFile(relative, category, None, digest)
+                next_index[relative] = {
+                    "category": category,
+                    "signature": signature,
+                    "hash": digest.hex(),
+                }
+            except (OSError, UnicodeError, ValueError):
+                # Error payloads and malformed index entries need the normal scanner's
+                # precise diagnostic, so do not attempt a cache-only project load.
+                return cls.scan(root, revision)
+        _write_source_index(index_path, {"version": 1, "files": next_index})
+        return cls(root=root, revision=revision, files=files)
+
+    @property
+    def is_materialized(self) -> bool:
+        return all(item.payload is not None for item in self.files.values())
+
+    def materialize(self) -> ProjectBundle:
+        return self if self.is_materialized else ProjectBundle.scan(self.root, self.revision)
+
+    def identity(self) -> dict[int, Any]:
+        hasher = blake3.blake3(derive_key_context="rustyera.project-source-identity.v1")
+        ordered = sorted(
+            self.files.values(), key=lambda item: (item.relative_path.lower(), item.relative_path)
+        )
+        for item in ordered:
+            digest = item.content_hash
+            if digest is None and item.payload is not None and item.payload[0] == 2:
+                digest = blake3.blake3(str(item.payload[1][0][1]).encode("utf-8")).digest()
+            if digest is None:
+                raise RuntimeError(f"project file {item.relative_path} has no content hash")
+            path = item.relative_path.encode("utf-8")
+            hasher.update(len(path).to_bytes(8, "little"))
+            hasher.update(path)
+            hasher.update(bytes([item.category]))
+            hasher.update(digest)
+        return {0: self.revision, 1: hasher.digest()}
+
     def manifest(self) -> dict[int, Any]:
+        if not self.is_materialized:
+            raise RuntimeError("project source payloads have not been materialized")
         ordered = sorted(self.files.values(), key=lambda item: item.relative_path.casefold())
         return {0: self.revision, 1: [item.submitted() for item in ordered]}
 
@@ -115,7 +199,11 @@ class ProjectBundle:
             new = candidate.files.get(relative_path)
             if new is None and old is not None:
                 changes.append(variant(1, old.category, relative_path))
-            elif new is not None and new != old:
+            elif new is not None and (
+                old is None
+                or new.category != old.category
+                or new.content_hash != old.content_hash
+            ):
                 changes.append(variant(0, new.submitted()))
         reload_request = {0: self.revision, 1: candidate.revision, 2: changes}
         return candidate, reload_request
@@ -151,6 +239,19 @@ def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
         return ProjectFile(relative, category, variant(2, _frontend_error(error)), None)
 
 
+def _write_source_index(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 class StorageBackend:
     """Resolve runtime storage requests without exposing paths to the runtime.
 
@@ -175,6 +276,9 @@ class StorageBackend:
     def compiled_cache_path(self) -> Path:
         """Return the frontend-private opaque compiler cache path for this project."""
 
+        return self.data_root / ".rustyera" / "cache" / "compiled-project-v2.bin.zst"
+
+    def obsolete_compiled_cache_path(self) -> Path:
         return self.data_root / ".rustyera" / "cache" / "compiled-project-v1.bin.gz"
 
     def _namespace_root(self, namespace: int) -> Path:
@@ -239,7 +343,7 @@ class StorageBackend:
     ) -> list[Any]:
         path = (
             self._resolve_for_read(namespace, relative)
-            if operation_tag in (0, 4)
+            if operation_tag in (0, 4, 5)
             else self._resolve(namespace, relative)
         )
         if operation_tag == 0:  # Read
@@ -275,9 +379,14 @@ class StorageBackend:
                 candidate_relative = candidate.relative_to(root).as_posix()
                 if pattern and not fnmatch.fnmatch(PurePosixPath(candidate_relative).name, pattern):
                     continue
-                data = candidate.read_bytes()
+                stat = candidate.stat()
                 entries.append(
-                    {0: candidate_relative, 1: len(data), 2: blake3.blake3(data).hexdigest()}
+                    {
+                        0: candidate_relative,
+                        1: stat.st_size,
+                        2: None,
+                        3: self._change_token(stat),
+                    }
                 )
             return variant(2, entries)
         if operation_tag == 3:  # Delete
@@ -289,7 +398,35 @@ class StorageBackend:
         if operation_tag == 4:  # Stat
             data = path.read_bytes()
             return variant(5, {0: len(data), 1: blake3.blake3(data).hexdigest()})
+        if operation_tag == 5:  # ReadRange
+            offset, maximum_bytes, expected_token = fields
+            before = path.stat()
+            token = self._change_token(before)
+            if expected_token is not None and expected_token != token:
+                return variant(4, {0: IO_CONFLICT, 1: "storage file changed during metadata read"})
+            with path.open("rb") as stream:
+                stream.seek(offset)
+                data = stream.read(maximum_bytes)
+            after = path.stat()
+            after_token = self._change_token(after)
+            if token != after_token:
+                return variant(4, {0: IO_CONFLICT, 1: "storage file changed during metadata read"})
+            complete = offset + len(data) >= after.st_size
+            return variant(6, data, offset, complete, token)
         raise ValueError(f"unknown storage operation {operation_tag}")
+
+    @staticmethod
+    def _change_token(stat: os.stat_result) -> str:
+        return ":".join(
+            str(value)
+            for value in (
+                getattr(stat, "st_dev", 0),
+                getattr(stat, "st_ino", 0),
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ctime_ns,
+            )
+        )
 
     def _precondition_conflict(self, path: Path, precondition: list[Any]) -> list[Any] | None:
         tag, fields = precondition

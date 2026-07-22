@@ -3,7 +3,7 @@ from pathlib import Path
 import blake3
 import pytest
 
-from rustyera_tui.project import IO_CONFLICT, ProjectBundle, StorageBackend
+from rustyera_tui.project import IO_CONFLICT, ProjectBundle, ProjectFile, StorageBackend
 from rustyera_tui.wire import unwrap_variant, variant
 
 
@@ -21,6 +21,50 @@ def test_project_scanner_is_utf8_and_deterministic(tmp_path: Path) -> None:
     csv = manifest[1][0]
     assert csv[2] == variant(0, "0,test\n")
     assert csv[3] == blake3.blake3(b"0,test\n").digest()
+
+
+def test_quick_scan_reuses_stat_index_and_materializes_on_demand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "main.erb"
+    source.write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
+
+    quick = ProjectBundle.scan_quick(tmp_path)
+    assert not quick.is_materialized
+    assert len(quick.identity()[1]) == 32
+    assert (tmp_path / ".rustyera" / "cache" / "source-index-v1.json").is_file()
+
+    original_read_bytes = Path.read_bytes
+
+    def reject_source_read(path: Path) -> bytes:
+        if path == source:
+            pytest.fail("an unchanged source must not be reopened by the quick scan")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_source_read)
+    repeated = ProjectBundle.scan_quick(tmp_path)
+    assert repeated.identity() == quick.identity()
+    monkeypatch.undo()
+
+    materialized = quick.materialize()
+    assert materialized.is_materialized
+    assert materialized.identity() == quick.identity()
+
+
+def test_project_identity_includes_io_error_message(tmp_path: Path) -> None:
+    denied = ProjectBundle(
+        tmp_path,
+        1,
+        {"main.erb": ProjectFile("main.erb", 2, variant(2, {0: 1, 1: "denied"}), None)},
+    )
+    missing = ProjectBundle(
+        tmp_path,
+        1,
+        {"main.erb": ProjectFile("main.erb", 2, variant(2, {0: 0, 1: "missing"}), None)},
+    )
+
+    assert len(denied.identity()[1]) == 32
+    assert denied.identity() != missing.identity()
 
 
 def test_rescan_produces_upsert_and_remove_changes(tmp_path: Path) -> None:
@@ -79,6 +123,14 @@ def test_storage_enforces_revision_preconditions_and_lists_root(tmp_path: Path) 
     listed = backend.handle({0: 4, 1: 1, 2: "", 3: variant(2, "save*.sav", False), 4: ""})
     entries = unwrap_variant(listed[1])[1][0]
     assert [entry[0] for entry in entries] == ["save01.sav"]
+    assert entries[0][2] is None
+    change_token = entries[0][3]
+    chunk = backend.handle(
+        {0: 5, 1: 1, 2: "save01.sav", 3: variant(5, 0, 1, change_token), 4: ""}
+    )
+    chunk_tag, chunk_fields = unwrap_variant(chunk[1])
+    assert chunk_tag == 6
+    assert chunk_fields[:3] == [b"t", 0, False]
 
 
 def test_storage_defaults_to_the_project_directory(
@@ -91,5 +143,5 @@ def test_storage_defaults_to_the_project_directory(
     assert backend.data_root == tmp_path.resolve()
     assert backend._namespace_root(1) == tmp_path.resolve() / "save"
     assert backend.compiled_cache_path() == (
-        tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v1.bin.gz"
+        tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v2.bin.zst"
     )

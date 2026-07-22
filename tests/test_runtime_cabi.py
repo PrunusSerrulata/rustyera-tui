@@ -21,6 +21,12 @@ def test_default_drive_budget_keeps_the_caller_pump_cooperative() -> None:
     assert DEFAULT_MAXIMUM_VM_INSTRUCTIONS == 100_000
 
 
+def test_worker_applies_backpressure_to_presentation_events() -> None:
+    worker = RuntimeWorker(None, None)
+
+    assert worker.events.maxsize == 4_096
+
+
 def wait_for(
     worker: RuntimeWorker,
     predicate: Callable[[FrontendEvent], bool],
@@ -69,6 +75,38 @@ def test_title_and_snapshot_restore_do_not_scan_project(
 
     assert client.commands == [(23, {})]
     assert client.restored == snapshot.resolve()
+
+
+@pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
+def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
+    project = Path(__file__).parent / "fixtures" / "minimal"
+    cache_path = StorageBackend(project).compiled_cache_path()
+
+    first = RuntimeWorker(RUNTIME_LIBRARY, project)
+    first.start()
+    try:
+        wait_for(first, lambda event: event.kind == "project_loaded")
+        wait_for(first, lambda event: event.kind == "wait" and event.value is not None)
+        assert cache_path.is_file()
+    finally:
+        first.stop()
+        first.join(timeout=5)
+
+    second = RuntimeWorker(RUNTIME_LIBRARY, project)
+    second.start()
+    try:
+        cache_hit = wait_for(
+            second,
+            lambda event: event.kind == "log"
+            and "runtime.compiled_cache_hit" in str(event.value),
+        )
+        assert "compiled_cache_hit" in cache_hit.value
+    finally:
+        second.stop()
+        second.join(timeout=5)
 
 
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")

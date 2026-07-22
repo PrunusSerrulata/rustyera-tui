@@ -269,15 +269,33 @@ class GameViewport(ScrollableContainer):
             if isinstance(child, GameLine):
                 child.styles.background = color
 
-    async def set_lines(self, lines: list[DisplayLineModel]) -> None:
+    async def set_lines(
+        self,
+        lines: list[DisplayLineModel],
+        changed_from: int | None = None,
+        trimmed_prefix: int = 0,
+    ) -> None:
         lines = _merge_save_delete_lines(lines)
         old = self.models
         children = list(self.children)
-        common = 0
-        for left, right in zip(old, lines, strict=False):
-            if left != right:
-                break
-            common += 1
+        if trimmed_prefix and not any(
+            segment.right_edge for line in lines for segment in line.segments
+        ):
+            count = min(trimmed_prefix, len(old), len(children))
+            if count:
+                await self.remove_children(children[:count])
+                old = old[count:]
+                children = children[count:]
+        if changed_from is None or any(
+            segment.right_edge for line in lines for segment in line.segments
+        ):
+            common = 0
+            for left, right in zip(old, lines, strict=False):
+                if left != right:
+                    break
+                common += 1
+        else:
+            common = min(changed_from, len(old), len(lines))
         if common == min(len(old), len(lines)):
             if len(lines) < len(old):
                 await self.remove_children(children[len(lines) :])

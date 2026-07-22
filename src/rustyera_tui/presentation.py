@@ -55,6 +55,9 @@ class PresentationModel:
     input_wait: dict[int, Any] | None = None
     background: str = "#000000"
     button_focus: str = "#000000"
+    maximum_physical_lines: int = 5_000
+    changed_from: int | None = 0
+    trimmed_prefix: int = 0
     _line_indices: dict[int, int] = field(default_factory=dict, init=False, repr=False)
 
     def apply_snapshot(self, snapshot: dict[int, Any]) -> None:
@@ -63,6 +66,8 @@ class PresentationModel:
         history = snapshot[2]
         self.lines = [parse_line(line) for line in history.get(0, [])]
         self._rebuild_line_indices()
+        self.changed_from = 0
+        self.trimmed_prefix = 0
         self.input_wait = snapshot.get(5)
         self._apply_settings(snapshot.get(6))
 
@@ -74,6 +79,7 @@ class PresentationModel:
         for operation in delta[2]:
             tag, fields = unwrap_variant(operation)
             if tag == 0:
+                self._mark_changed(len(self.lines))
                 line = parse_line(fields[0])
                 self._line_indices[line.line_id] = len(self.lines)
                 self.lines.append(line)
@@ -83,9 +89,11 @@ class PresentationModel:
                     for line in self.lines[-count:]:
                         self._line_indices.pop(line.line_id, None)
                     del self.lines[-count:]
+                    self._mark_changed(len(self.lines))
             elif tag == 2:
                 self.lines.clear()
                 self._line_indices.clear()
+                self._mark_changed(0)
             elif tag == 3:
                 self.title = fields[0]
             elif tag == 6:
@@ -97,6 +105,7 @@ class PresentationModel:
                 parsed = parse_line(replacement)
                 index = self._line_indices.get(line_id)
                 if index is not None:
+                    self._mark_changed(index)
                     self.lines[index] = parsed
                     if parsed.line_id != line_id:
                         self._line_indices.pop(line_id, None)
@@ -105,9 +114,29 @@ class PresentationModel:
                 self._apply_settings(fields[0])
             elif tag == 13:
                 self._disable_old_buttons(fields[0])
+            elif tag == 14:
+                count = min(fields[0], len(self.lines))
+                if count:
+                    del self.lines[:count]
+                    self._rebuild_line_indices()
+                    self.trimmed_prefix += count
+                    if self.changed_from is None:
+                        self.changed_from = len(self.lines)
+                    else:
+                        self.changed_from = max(0, self.changed_from - count)
             # Background images, audio, resource replay, HTML islands, redraw state, and
             # tooltip settings have no standalone terminal rendering operation.
         self.revision = delta[1]
+
+    def take_render_change(self) -> tuple[int | None, int]:
+        changed_from = self.changed_from
+        trimmed_prefix = self.trimmed_prefix
+        self.changed_from = None
+        self.trimmed_prefix = 0
+        return changed_from, trimmed_prefix
+
+    def _mark_changed(self, index: int) -> None:
+        self.changed_from = index if self.changed_from is None else min(self.changed_from, index)
 
     def _rebuild_line_indices(self) -> None:
         # Line IDs are runtime-issued stable identities. Indexing them avoids an O(history)
@@ -119,6 +148,7 @@ class PresentationModel:
             return
         self.background = color_hex(settings[2])
         self.button_focus = color_hex(settings[3])
+        self.maximum_physical_lines = settings.get(4, 5_000)
 
     def _disable_old_buttons(self, generation: int) -> None:
         for index, line in enumerate(self.lines):
@@ -129,6 +159,7 @@ class PresentationModel:
                 for segment in line.segments
             )
             if segments != line.segments:
+                self._mark_changed(index)
                 self.lines[index] = replace(line, segments=segments)
 
     def has_enabled_button(self, token: dict[int, int]) -> bool:
@@ -195,6 +226,13 @@ class ServicePresentationModel:
                     if raw_line[0] != line_id:
                         self._line_indices.pop(line_id, None)
                         self._line_indices[raw_line[0]] = index
+            elif tag == 14:
+                count = min(fields[0], len(self.lines))
+                if count:
+                    del self.lines[:count]
+                    self._line_indices = {
+                        line[0]: index for index, line in enumerate(self.lines)
+                    }
         self.revision = delta[1]
 
 

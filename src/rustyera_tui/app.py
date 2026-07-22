@@ -126,7 +126,12 @@ class RustyEraTui(App[None]):
             presentation_dirty = presentation_dirty or dirty
         if presentation_dirty:
             viewport = self.query_one(GameViewport)
-            await viewport.set_lines(self.presentation.lines)
+            changed_from, trimmed_prefix = self.presentation.take_render_change()
+            await viewport.set_lines(
+                self.presentation.lines,
+                changed_from=changed_from,
+                trimmed_prefix=trimmed_prefix,
+            )
             self.title = self.presentation.title or self.TITLE
             viewport.set_presentation_background(self.presentation.background)
             self._send_projection(viewport.size.width, viewport.size.height)

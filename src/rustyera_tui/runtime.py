@@ -332,6 +332,7 @@ class RuntimeClient:
                     self.events.put(FrontendEvent("status", "正在载入编译缓存…"))
                     self._begin_import(cache, 2, "project_cache")
                 else:
+                    self.pending_bundle = self.pending_bundle.materialize()
                     self._submit_project(None)
             return
         if tag == 2:
@@ -454,6 +455,14 @@ class RuntimeClient:
                 )
             )
             cache_hit = cache_hit or diagnostic.get(0) == "runtime.compiled_cache_hit"
+        if report.get(3, False):
+            if self.pending_bundle is None:
+                self.events.put(FrontendEvent("error", "Runtime 请求源码，但没有待载入项目。"))
+                return
+            self.events.put(FrontendEvent("status", "编译缓存未命中，正在读取项目源码…"))
+            self.pending_bundle = self.pending_bundle.materialize()
+            self._submit_project(None)
+            return
         if not report[1]:
             self.reload_candidate = None
             self.events.put(FrontendEvent("error", "项目加载或热重载失败，请查看日志。"))
@@ -479,9 +488,11 @@ class RuntimeClient:
         if self.pending_bundle is None:
             return
         self.events.put(FrontendEvent("status", "正在提交项目并编译脚本…"))
-        request: dict[int, Any] = {0: self.pending_bundle.manifest()}
+        request: dict[int, Any] = {0: self.pending_bundle.identity()}
+        if self.pending_bundle.is_materialized:
+            request[1] = self.pending_bundle.manifest()
         if cache_transfer_id is not None:
-            request[1] = cache_transfer_id
+            request[2] = cache_transfer_id
         self.send_runtime(19, request)
 
     def _begin_import(self, payload: bytes, kind: int, purpose: str) -> None:
@@ -738,7 +749,7 @@ class RuntimeClient:
             return
         if len(data) != descriptor[2] or blake3.blake3(data).digest() != descriptor[3]:
             raise RuntimeError("snapshot export digest verification failed")
-        _atomic_write(path, bytes(data))
+        _atomic_write(path, data)
         self.pending_export = None
         if getattr(self, "pending_export_kind", 1) == 2:
             self._finish_cache_export(True)
@@ -752,6 +763,11 @@ class RuntimeClient:
         self.pending_cache_after = None
         self.pending_export_kind = None
         self.pending_cache_export_message = None
+        if success and self.storage is not None:
+            try:
+                self.storage.obsolete_compiled_cache_path().unlink(missing_ok=True)
+            except OSError as error:
+                self.events.put(FrontendEvent("log", f"删除旧编译缓存失败：{error}"))
         if after == "start":
             self.events.put(
                 FrontendEvent(
@@ -905,7 +921,7 @@ class RuntimeClient:
             self.send_runtime(90, {0: True})
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
+def _atomic_write(path: Path, data: bytes | bytearray) -> None:
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -927,7 +943,9 @@ class RuntimeWorker(threading.Thread):
         self.runtime_library = runtime_library
         self.initial_project = initial_project
         self.commands: queue.Queue[FrontendCommand] = queue.Queue()
-        self.events: queue.Queue[FrontendEvent] = queue.Queue()
+        # Backpressure is preferable to retaining an unbounded number of presentation
+        # revisions when Runtime can produce output faster than Textual lays it out.
+        self.events: queue.Queue[FrontendEvent] = queue.Queue(maxsize=4_096)
         self._stop_requested = threading.Event()
         self.client: RuntimeClient | None = None
 
@@ -981,7 +999,7 @@ class RuntimeWorker(threading.Thread):
                 case "restart":
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
-                    client.recreate(ProjectBundle.scan(client.bundle.root, 1))
+                    client.recreate(ProjectBundle.scan_quick(client.bundle.root, 1))
                 case "return_title":
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
@@ -1032,7 +1050,7 @@ class RuntimeWorker(threading.Thread):
         if self.client is None:
             return
         self.events.put(FrontendEvent("status", f"正在扫描 {root}…"))
-        bundle = ProjectBundle.scan(root, 1)
+        bundle = ProjectBundle.scan_quick(root, 1)
         self.client.recreate(bundle)
 
     def stop(self) -> None:

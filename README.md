@@ -28,9 +28,11 @@ directory. The frontend renders normalized HTML text, styles, spacing, line brea
 buttons; HTML image tags are ignored. Video and audio remain intentionally unadvertised.
 
 Successful builds are cached as an opaque runtime artifact at
-`.rustyera/cache/compiled-project-v1.bin.gz` below that same storage root. Cold starts and
-**重启** hash the current sources and reuse or incrementally refresh this cache. **返回标题画面**
-and VM snapshot restore reuse the active loaded project without scanning source files.
+`.rustyera/cache/compiled-project-v2.bin.zst` below that same storage root. Cold starts and
+**重启** use a persistent stat/hash source index, so unchanged files are not reopened; an exact
+cache hit also avoids transferring source payloads into the runtime. **重新载入文件夹** performs a
+full content scan. **返回标题画面** and VM snapshot restore reuse the active loaded project without
+scanning source files.
 
 ## Controls
 

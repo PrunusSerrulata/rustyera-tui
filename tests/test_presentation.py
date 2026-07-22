@@ -274,6 +274,28 @@ def test_line_index_stays_valid_across_replace_delete_and_append() -> None:
     assert model._line_indices == {1: 0, 4: 1}
 
 
+def test_trim_lines_removes_the_oldest_history_and_reports_incremental_hints() -> None:
+    rich = PresentationModel()
+    service = ServicePresentationModel()
+    initial = snapshot()
+    initial[2][0] = [line(1, "one"), line(2, "two"), line(3, "three")]
+    rich.apply_snapshot(initial)
+    service.apply_snapshot(initial)
+    rich.take_render_change()
+    delta = {
+        0: 1,
+        1: 2,
+        2: [variant(14, 1), variant(0, line(4, "four"))],
+    }
+
+    rich.apply_delta(delta)
+    service.apply_delta(delta)
+
+    assert [item.line_id for item in rich.lines] == [2, 3, 4]
+    assert [item[0] for item in service.lines] == [2, 3, 4]
+    assert rich.take_render_change() == (2, 1)
+
+
 def test_raw_worker_projection_tracks_rich_text_and_wait_state() -> None:
     rich = PresentationModel()
     service = ServicePresentationModel()
