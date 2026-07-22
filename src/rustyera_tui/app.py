@@ -66,6 +66,7 @@ class RustyEraTui(App[None]):
         self.worker = RuntimeWorker(runtime_library, self.project)
         self.presentation = PresentationModel()
         self.active_wait: dict[int, Any] | None = None
+        self._activated_wait: tuple[int, Any] | None = None
         self.blocking_error: str | None = None
         self.input_undo_token: dict[int, Any] | None = None
         self.logs: list[str] = []
@@ -138,6 +139,9 @@ class RustyEraTui(App[None]):
                 self._log(str(error))
             return True
         if kind == "wait":
+            wait_identity = self._wait_identity(value)
+            if wait_identity != self._wait_identity(self.active_wait):
+                self._activated_wait = None
             self.active_wait = value
             self._update_prompt()
         elif kind == "input_undo":
@@ -164,6 +168,7 @@ class RustyEraTui(App[None]):
             self.notify(str(value), title="RustyEra", severity="error", timeout=8)
         elif kind == "runtime_fault":
             self.active_wait = None
+            self._activated_wait = None
             self.blocking_error = value.display()
             self._log(f"ERROR: {self.blocking_error}")
             self._update_prompt()
@@ -383,7 +388,22 @@ class RustyEraTui(App[None]):
         event.input.value = ""
 
     def on_game_line_activated(self, event: GameLine.Activated) -> None:
+        wait_identity = self._wait_identity(self.active_wait)
+        if (
+            wait_identity is None
+            or wait_identity == self._activated_wait
+            or not self.presentation.has_enabled_button(event.token)
+        ):
+            return
+        self._activated_wait = wait_identity
+        self.query_one(GameViewport).disable_interactions()
         self.worker.send("activate", event.token)
+
+    @staticmethod
+    def _wait_identity(wait: dict[int, Any] | None) -> tuple[int, Any] | None:
+        if wait is None:
+            return None
+        return wait[0], wait.get(11)
 
     def on_game_viewport_continue_requested(self, _event: GameViewport.ContinueRequested) -> None:
         if self.active_wait is not None and self.active_wait.get(1) == 0:

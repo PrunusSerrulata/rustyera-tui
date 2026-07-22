@@ -254,9 +254,11 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         5: True,
         6: False,
     }
-    snapshot = {0: 1, 1: "Game", 2: {0: [line], 1: []}, 6: settings}
+    wait = {0: 1, 1: 6, 11: {0: 1, 1: 2}}
+    snapshot = {0: 1, 1: "Game", 2: {0: [line], 1: []}, 5: wait, 6: settings}
     async with app.run_test(size=(100, 30)) as pilot:
         worker.events.put(FrontendEvent("presentation_snapshot", snapshot))
+        worker.events.put(FrontendEvent("wait", wait))
         await pilot.pause(0.1)
         game_line = app.query_one(GameLine)
         assert game_line.regions[0].start == 0
@@ -272,6 +274,11 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         )
 
         worker.commands.clear()
+        assert await pilot.hover(".game-line", offset=(1, 0))
+        assert game_line.hovered_region is None
+        assert await pilot.click(".game-line", offset=(1, 0))
+        assert not any(kind == "activate" for kind, _value in worker.commands)
+
         app.active_wait = {0: 7, 1: 0}
         assert await pilot.click(".game-line", offset=(1, 0), button=3)
         assert ("skip_enter_waits", None) in worker.commands

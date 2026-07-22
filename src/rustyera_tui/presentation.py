@@ -123,6 +123,15 @@ class PresentationModel:
             if segments != line.segments:
                 self.lines[index] = replace(line, segments=segments)
 
+    def has_enabled_button(self, token: dict[int, int]) -> bool:
+        """Return whether the current projection still exposes an activatable token."""
+
+        return any(
+            segment.enabled and segment.token == token
+            for line in self.lines
+            for segment in line.segments
+        )
+
 
 @dataclass(slots=True)
 class ServicePresentationModel:

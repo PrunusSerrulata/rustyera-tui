@@ -52,14 +52,25 @@ class GameLine(Static):
         self.line = line
         self.regions: list[ClickRegion] = []
         self.hovered_region: int | None = None
+        self.interactions_enabled = True
 
     def on_mount(self) -> None:
         self._render_line()
 
     def set_line(self, line: DisplayLineModel) -> None:
         self.line = line
+        self.interactions_enabled = True
         self.hovered_region = None
         self._render_line()
+
+    def disable_interactions(self) -> None:
+        """Immediately retire hit regions while an activation is in flight."""
+
+        if self.interactions_enabled:
+            self.interactions_enabled = False
+            self.hovered_region = None
+            self.tooltip = None
+            self._render_line()
 
     def _render_line(self) -> None:
         output = Text(no_wrap=True, overflow="ignore")
@@ -83,7 +94,8 @@ class GameLine(Static):
                 segment.text,
                 _rich_style(
                     selected_style,
-                    disabled=segment.token is not None and not segment.enabled,
+                    disabled=segment.token is not None
+                    and (not segment.enabled or not self.interactions_enabled),
                     hovered=hovered,
                 ),
             )
@@ -108,7 +120,9 @@ class GameLine(Static):
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
         index = self._region_at(event.offset.x)
-        if index is not None and not self.regions[index].enabled:
+        if index is not None and (
+            not self.interactions_enabled or not self.regions[index].enabled
+        ):
             index = None
         if index != self.hovered_region:
             self.hovered_region = index
@@ -132,7 +146,7 @@ class GameLine(Static):
             return
         region = self.regions[index]
         event.stop()
-        if region.enabled:
+        if self.interactions_enabled and region.enabled:
             self.post_message(self.Activated(region.token))
 
 
@@ -163,6 +177,11 @@ class GameViewport(ScrollableContainer):
 
     def watch_show_horizontal_scrollbar(self, visible: bool) -> None:
         self.post_message(self.HorizontalScrollbarChanged(visible))
+
+    def disable_interactions(self) -> None:
+        for child in self.children:
+            if isinstance(child, GameLine):
+                child.disable_interactions()
 
     async def set_lines(self, lines: list[DisplayLineModel]) -> None:
         old = self.models
