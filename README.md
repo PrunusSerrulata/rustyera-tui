@@ -27,6 +27,11 @@ per-project directory below that base. Resource reads continue to use the select
 directory. The frontend renders normalized HTML text, styles, spacing, line breaks, and
 buttons; HTML image tags are ignored. Video and audio remain intentionally unadvertised.
 
+Successful builds are cached as an opaque runtime artifact at
+`.rustyera/cache/compiled-project-v1.bin.gz` below that same storage root. Cold starts and
+**重启** hash the current sources and reuse or incrementally refresh this cache. **返回标题画面**
+and VM snapshot restore reuse the active loaded project without scanning source files.
+
 ## Controls
 
 - Enter submits the prompt according to the active runtime wait.

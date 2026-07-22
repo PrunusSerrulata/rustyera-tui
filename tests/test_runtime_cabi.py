@@ -8,7 +8,8 @@ from typing import Callable
 import pytest
 
 from rustyera_tui.abi import DEFAULT_MAXIMUM_VM_INSTRUCTIONS, AbiError, discover_library
-from rustyera_tui.runtime import FrontendEvent, RuntimeWorker
+from rustyera_tui.project import StorageBackend
+from rustyera_tui.runtime import FrontendCommand, FrontendEvent, RuntimeWorker
 
 try:
     RUNTIME_LIBRARY = discover_library()
@@ -38,6 +39,38 @@ def wait_for(
     raise AssertionError("timed out waiting for runtime event")
 
 
+def test_title_and_snapshot_restore_do_not_scan_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.bundle = type("Bundle", (), {"root": tmp_path})()
+            self.commands: list[tuple[int, object]] = []
+            self.restored: Path | None = None
+
+        def send_runtime(self, tag: int, value: object) -> None:
+            self.commands.append((tag, value))
+
+        def restore_snapshot(self, path: Path) -> None:
+            self.restored = path
+
+    snapshot = tmp_path / "state.snapshot"
+    snapshot.write_bytes(b"snapshot")
+    worker = RuntimeWorker(None, None)
+    client = Client()
+    worker.client = client  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "rustyera_tui.runtime.ProjectBundle.scan",
+        lambda *_args, **_kwargs: pytest.fail("project scan must not run"),
+    )
+
+    worker._process_command(FrontendCommand("return_title"))
+    worker._process_command(FrontendCommand("restore_snapshot", snapshot))
+
+    assert client.commands == [(23, {})]
+    assert client.restored == snapshot.resolve()
+
+
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
 def test_real_c_abi_loads_starts_and_serves_debug_protocol(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -50,6 +83,15 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
         wait_for(worker, lambda event: event.kind == "project_loaded")
         wait = wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
         assert wait.value[1] == 0
+        assert StorageBackend(project).compiled_cache_path().is_file()
+
+        worker.send("restart")
+        cache_hit = wait_for(
+            worker,
+            lambda event: event.kind == "log" and "runtime.compiled_cache_hit" in str(event.value),
+        )
+        assert "compiled_cache_hit" in cache_hit.value
+        wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
 
         snapshot_path = tmp_path / "runtime.snapshot"
         worker.send("export_snapshot", snapshot_path)
@@ -59,6 +101,20 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
         )
         assert exported.value is True
         assert snapshot_path.stat().st_size > 0
+
+        with monkeypatch.context() as context:
+            context.setattr(
+                "rustyera_tui.runtime.ProjectBundle.scan",
+                lambda *_args, **_kwargs: pytest.fail(
+                    "snapshot restore must not scan the project"
+                ),
+            )
+            worker.send("restore_snapshot", snapshot_path)
+            wait_for(
+                worker,
+                lambda event: event.kind == "status" and "正在恢复 VM" in str(event.value),
+            )
+            wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
 
         worker.send("reload_all")
         reloaded = wait_for(
@@ -113,6 +169,42 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
             lambda event: event.kind == "debug_response" and event.value[0] == "console",
         )
         assert console.value[1] == 8
+    finally:
+        worker.stop()
+        worker.join(timeout=3)
+
+
+@pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
+def test_real_c_abi_projects_three_channel_background_and_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "background-project"
+    project.mkdir()
+    (project / "main.erb").write_text(
+        "@SYSTEM_TITLE\nSETBGCOLOR 1, 24, 60\nWAIT\nRESETBGCOLOR\nWAIT\nRETURN\n",
+        encoding="utf-8",
+    )
+    worker = RuntimeWorker(RUNTIME_LIBRARY, project)
+    worker.start()
+    try:
+        blue = {0: 1, 1: 24, 2: 60, 3: 255}
+        black = {0: 0, 1: 0, 2: 0, 3: 255}
+        wait_for(
+            worker,
+            lambda event: event.kind == "presentation_snapshot"
+            and event.value.get(6, {}).get(2) == blue,
+        )
+        wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
+        worker.send("submit_text", "")
+        wait_for(
+            worker,
+            lambda event: event.kind == "presentation_delta"
+            and any(
+                operation[0] == 8 and operation[1][0].get(2) == black
+                for operation in event.value[2]
+            ),
+        )
     finally:
         worker.stop()
         worker.join(timeout=3)

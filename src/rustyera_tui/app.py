@@ -128,7 +128,7 @@ class RustyEraTui(App[None]):
             viewport = self.query_one(GameViewport)
             await viewport.set_lines(self.presentation.lines)
             self.title = self.presentation.title or self.TITLE
-            viewport.styles.background = self.presentation.background
+            viewport.set_presentation_background(self.presentation.background)
             self._send_projection(viewport.size.width, viewport.size.height)
             self.call_after_refresh(
                 self._finish_presentation_render,

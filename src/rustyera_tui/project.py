@@ -172,6 +172,11 @@ class StorageBackend:
             self.data_root = self.project_root
         self.idempotent_results: dict[str, list[Any]] = {}
 
+    def compiled_cache_path(self) -> Path:
+        """Return the frontend-private opaque compiler cache path for this project."""
+
+        return self.data_root / ".rustyera" / "cache" / "compiled-project-v1.bin.gz"
+
     def _namespace_root(self, namespace: int) -> Path:
         roots = {
             0: self.data_root / "project",

@@ -102,12 +102,11 @@ Screen {
     min-height: 1;
     padding: 0;
     margin: 0;
-    background: #000000;
     text-wrap: nowrap;
 }
 
 .game-line:focus {
-    background: #07111f;
+    text-style: bold;
 }
 
 #separator-line {

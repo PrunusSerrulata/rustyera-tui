@@ -232,6 +232,7 @@ class GameViewport(ScrollableContainer):
         super().__init__(id="game-viewport")
         self.models: list[DisplayLineModel] = []
         self.interactions_enabled = True
+        self.presentation_background = "#000000"
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -258,7 +259,15 @@ class GameViewport(ScrollableContainer):
     def _line_widget(self, line: DisplayLineModel) -> GameLine:
         widget = GameLine(line)
         widget.interactions_enabled = self.interactions_enabled
+        widget.styles.background = self.presentation_background
         return widget
+
+    def set_presentation_background(self, color: str) -> None:
+        self.presentation_background = color
+        self.styles.background = color
+        for child in self.children:
+            if isinstance(child, GameLine):
+                child.styles.background = color
 
     async def set_lines(self, lines: list[DisplayLineModel]) -> None:
         lines = _merge_save_delete_lines(lines)

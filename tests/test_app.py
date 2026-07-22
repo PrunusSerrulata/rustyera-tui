@@ -405,6 +405,40 @@ async def test_gameplay_stays_locked_until_presentation_refresh_finishes(
         assert viewport.interactions_enabled
 
 
+async def test_presentation_background_reaches_existing_and_new_game_lines(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    line = DisplayLineModel(1, False, True, True, 0, (DisplaySegment("time stopped"),))
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.presentation.lines = [line]
+        app.presentation.background = "#01183c"
+        worker.events.put(
+            FrontendEvent(
+                "presentation_snapshot",
+                {
+                    0: 1,
+                    1: "Game",
+                    2: {0: [], 1: []},
+                    6: {2: {0: 1, 1: 24, 2: 60, 3: 255}, 3: {0: 0, 1: 0, 2: 0, 3: 255}},
+                },
+            )
+        )
+        await pilot.pause(0.1)
+        viewport = app.query_one(GameViewport)
+        assert str(viewport.styles.background) == "Color(1, 24, 60)"
+
+        app.presentation.lines = [line]
+        await viewport.set_lines([line])
+        child = app.query_one(GameLine)
+        viewport.set_presentation_background("#01183c")
+        assert str(child.styles.background) == "Color(1, 24, 60)"
+        viewport.set_presentation_background("#000000")
+        assert str(child.styles.background) == "Color(0, 0, 0)"
+
+
 async def test_save_delete_action_is_merged_at_the_slot_row_right_edge(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()

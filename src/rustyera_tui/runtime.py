@@ -110,6 +110,10 @@ class RuntimeClient:
         self.pending_export: tuple[Path, bytearray, dict[int, Any] | None] | None = None
         self.import_bytes: bytes | None = None
         self.import_transfer_id: int | None = None
+        self.import_purpose: str | None = None
+        self.pending_export_kind: int | None = None
+        self.pending_cache_after: str | None = None
+        self.pending_cache_export_message: int | None = None
         self.debug_requested = False
         self.debug_grant: dict[int, Any] | None = None
         self.stop_token: dict[int, Any] | None = None
@@ -155,6 +159,7 @@ class RuntimeClient:
         self._reset_wire_state()
         self.pending_bundle = bundle
         self.pending_restore = restore
+        self.storage = StorageBackend(bundle.root)
         self._send_hello()
 
     def _send_hello(self) -> None:
@@ -317,8 +322,17 @@ class RuntimeClient:
                 FrontendEvent("log", f"runtime handshake complete (epoch {self.epoch})")
             )
             if self.pending_bundle is not None:
-                self.events.put(FrontendEvent("status", "正在提交项目并编译脚本…"))
-                self.send_runtime(10, self.pending_bundle.manifest())
+                cache_path = self.storage.compiled_cache_path() if self.storage else None
+                try:
+                    cache = cache_path.read_bytes() if cache_path is not None else None
+                except OSError as error:
+                    self.events.put(FrontendEvent("log", f"读取编译缓存失败：{error}"))
+                    cache = None
+                if cache:
+                    self.events.put(FrontendEvent("status", "正在载入编译缓存…"))
+                    self._begin_import(cache, 2, "project_cache")
+                else:
+                    self._submit_project(None)
             return
         if tag == 2:
             self.events.put(FrontendEvent("error", f"协议版本被拒绝：{value.get(1, '')}"))
@@ -394,10 +408,19 @@ class RuntimeClient:
             projection_request = correlation_id in self._projection_messages
             if projection_request:
                 self._projection_messages.discard(correlation_id)
+            cache_export_rejection = correlation_id == getattr(
+                self, "pending_cache_export_message", None
+            )
+            if cache_export_rejection:
+                self.pending_export = None
+                self.pending_cache_export_message = None
+                self._finish_cache_export(False)
             # A presentation may advance after the frontend rendered an observation but
             # before the caller-pumped runtime handles it. This is a benign stale sample;
             # a later rendered revision will submit a replacement observation.
-            if not (projection_request and value.get(0) == 2 and stale_projection):
+            if not cache_export_rejection and not (
+                projection_request and value.get(0) == 2 and stale_projection
+            ):
                 code = enum_text(value.get(0), COMMAND_ERROR_CODES, "CommandErrorCode")
                 self.events.put(FrontendEvent("error", f"命令被拒绝 [{code}]：{rejection}"))
         elif tag == 96:
@@ -418,6 +441,7 @@ class RuntimeClient:
             )
 
     def _handle_project_report(self, report: dict[int, Any]) -> None:
+        cache_hit = False
         for diagnostic in report.get(2, []):
             source = diagnostic.get(3)
             location = f" {source.get(0)}" if source else ""
@@ -429,6 +453,7 @@ class RuntimeClient:
                     "log", f"{severity} {diagnostic.get(0)}:{location} {diagnostic.get(2)}"
                 )
             )
+            cache_hit = cache_hit or diagnostic.get(0) == "runtime.compiled_cache_hit"
         if not report[1]:
             self.reload_candidate = None
             self.events.put(FrontendEvent("error", "项目加载或热重载失败，请查看日志。"))
@@ -437,27 +462,45 @@ class RuntimeClient:
             self.bundle = self.reload_candidate
             self.reload_candidate = None
             self.storage = StorageBackend(self.bundle.root)
-            self.events.put(FrontendEvent("status", "脚本热重载完成。"))
+            self._refresh_compiled_cache("reload")
             return
         if self.pending_bundle is not None:
             self.bundle = self.pending_bundle
             self.pending_bundle = None
             self.storage = StorageBackend(self.bundle.root)
         self.events.put(FrontendEvent("project_loaded", self.bundle.root if self.bundle else None))
-        if self.pending_restore is not None:
-            _, payload = self.pending_restore
-            self.import_bytes = payload
-            self.send_runtime(
-                62,
-                {
-                    0: 1,
-                    1: len(payload),
-                    2: blake3.blake3(payload).digest(),
-                },
-            )
-        else:
-            self.events.put(FrontendEvent("status", "项目已加载，正在进入标题画面…"))
+        if cache_hit:
+            self.events.put(FrontendEvent("status", "编译缓存命中，正在进入标题画面…"))
             self.send_runtime(20, {0: variant(0, None)})
+        else:
+            self._refresh_compiled_cache("start")
+
+    def _submit_project(self, cache_transfer_id: int | None) -> None:
+        if self.pending_bundle is None:
+            return
+        self.events.put(FrontendEvent("status", "正在提交项目并编译脚本…"))
+        request: dict[int, Any] = {0: self.pending_bundle.manifest()}
+        if cache_transfer_id is not None:
+            request[1] = cache_transfer_id
+        self.send_runtime(19, request)
+
+    def _begin_import(self, payload: bytes, kind: int, purpose: str) -> None:
+        self.import_bytes = payload
+        self.import_purpose = purpose
+        self.send_runtime(
+            62,
+            {0: kind, 1: len(payload), 2: blake3.blake3(payload).digest()},
+        )
+
+    def _refresh_compiled_cache(self, after: str) -> None:
+        self.pending_cache_after = after
+        self.pending_export_kind = 2
+        if self.storage is None:
+            self._finish_cache_export(False)
+            return
+        self.pending_export = (self.storage.compiled_cache_path(), bytearray(), None)
+        self.events.put(FrontendEvent("status", "正在保存编译缓存…"))
+        self.pending_cache_export_message = self.send_runtime(60, {0: 2})
 
     def _handle_wait_change(self, change: list[Any]) -> None:
         tag, fields = unwrap_variant(change)
@@ -660,6 +703,7 @@ class RuntimeClient:
 
     def export_snapshot(self, path: Path) -> None:
         self.pending_export = (path, bytearray(), None)
+        self.pending_export_kind = 1
         self.send_runtime(60, {0: 1})
 
     def _handle_export_ready(self, ready: dict[int, Any]) -> None:
@@ -672,7 +716,10 @@ class RuntimeClient:
             )
             self.events.put(FrontendEvent("error", f"当前状态不能生成快照：{reasons}"))
             self.pending_export = None
-            self.events.put(FrontendEvent("snapshot_export_finished", False))
+            if getattr(self, "pending_export_kind", 1) == 2:
+                self._finish_cache_export(False)
+            else:
+                self.events.put(FrontendEvent("snapshot_export_finished", False))
             return
         descriptor = fields[0]
         path, data, _ = self.pending_export
@@ -693,8 +740,30 @@ class RuntimeClient:
             raise RuntimeError("snapshot export digest verification failed")
         _atomic_write(path, bytes(data))
         self.pending_export = None
-        self.events.put(FrontendEvent("snapshot_export_finished", True))
-        self.events.put(FrontendEvent("status", f"VM 快照已导出到 {path}"))
+        if getattr(self, "pending_export_kind", 1) == 2:
+            self._finish_cache_export(True)
+        else:
+            self.pending_export_kind = None
+            self.events.put(FrontendEvent("snapshot_export_finished", True))
+            self.events.put(FrontendEvent("status", f"VM 快照已导出到 {path}"))
+
+    def _finish_cache_export(self, success: bool) -> None:
+        after = self.pending_cache_after
+        self.pending_cache_after = None
+        self.pending_export_kind = None
+        self.pending_cache_export_message = None
+        if after == "start":
+            self.events.put(
+                FrontendEvent(
+                    "status",
+                    "编译缓存已保存，正在进入标题画面…"
+                    if success
+                    else "编译缓存保存失败，正在进入标题画面…",
+                )
+            )
+            self.send_runtime(20, {0: variant(0, None)})
+        elif after == "reload":
+            self.events.put(FrontendEvent("status", "脚本热重载完成。"))
 
     def _handle_import_accepted(self, accepted: dict[int, Any]) -> None:
         if self.import_bytes is None:
@@ -711,11 +780,21 @@ class RuntimeClient:
     def _handle_import_ready(self, ready: dict[int, Any]) -> None:
         if self.import_transfer_id != ready[0]:
             return
-        self.events.put(FrontendEvent("status", "快照传输完成，正在恢复 VM…"))
-        self.send_runtime(20, {0: variant(2, ready[0])})
+        purpose = self.import_purpose
+        if purpose == "project_cache":
+            self._submit_project(ready[0])
+        else:
+            self.events.put(FrontendEvent("status", "快照传输完成，正在恢复 VM…"))
+            self.send_runtime(20, {0: variant(2, ready[0])})
         self.import_bytes = None
         self.import_transfer_id = None
+        self.import_purpose = None
         self.pending_restore = None
+
+    def restore_snapshot(self, path: Path) -> None:
+        payload = path.expanduser().resolve(strict=True).read_bytes()
+        self.pending_restore = (path, payload)
+        self._begin_import(payload, 1, "snapshot")
 
     def enable_debug(self) -> None:
         if self.debug_grant is not None:
@@ -899,10 +978,14 @@ class RuntimeWorker(threading.Thread):
             match command.kind:
                 case "load_project":
                     self._load_project(Path(command.value))
-                case "restart" | "return_title":
+                case "restart":
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
                     client.recreate(ProjectBundle.scan(client.bundle.root, 1))
+                case "return_title":
+                    if client.bundle is None:
+                        raise RuntimeError("no project is active")
+                    client.send_runtime(23, {})
                 case "reload_all":
                     client.reload_all()
                 case "reload_file":
@@ -923,9 +1006,7 @@ class RuntimeWorker(threading.Thread):
                     if client.bundle is None:
                         raise RuntimeError("load the matching project before restoring a snapshot")
                     path = Path(command.value).expanduser().resolve(strict=True)
-                    client.recreate(
-                        ProjectBundle.scan(client.bundle.root, 1), (path, path.read_bytes())
-                    )
+                    client.restore_snapshot(path)
                 case "debug_enable":
                     client.enable_debug()
                 case "debug_disable":
