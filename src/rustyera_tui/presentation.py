@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .wire import unwrap_variant, variant
@@ -26,6 +26,7 @@ class DisplaySegment:
     enabled: bool = True
     title: str | None = None
     hover_style: SegmentStyle | None = None
+    generation: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,8 +95,10 @@ class PresentationModel:
                         self._line_indices[parsed.line_id] = index
             elif tag == 8:
                 self._apply_settings(fields[0])
+            elif tag == 13:
+                self._disable_old_buttons(fields[0])
             # Background images, audio, resource replay, HTML islands, redraw state, and
-            # button generations have no standalone terminal rendering operation.
+            # tooltip settings have no standalone terminal rendering operation.
         self.revision = delta[1]
 
     def _rebuild_line_indices(self) -> None:
@@ -108,6 +111,17 @@ class PresentationModel:
             return
         self.background = color_hex(settings[2])
         self.button_focus = color_hex(settings[3])
+
+    def _disable_old_buttons(self, generation: int) -> None:
+        for index, line in enumerate(self.lines):
+            segments = tuple(
+                replace(segment, enabled=False)
+                if segment.generation is not None and segment.generation != generation
+                else segment
+                for segment in line.segments
+            )
+            if segments != line.segments:
+                self.lines[index] = replace(line, segments=segments)
 
 
 @dataclass(slots=True)
@@ -233,7 +247,7 @@ def coalesce_presentation_deltas(deltas: list[dict[int, Any]]) -> dict[int, Any]
                 else:
                     replaced_lines[line_id] = len(operations)
                     operations.append(operation)
-            elif tag in (3, 4, 5, 6, 8, 9, 10, 11, 12, 13):
+            elif tag in (3, 4, 5, 6, 8, 9, 10, 11, 12):
                 previous = state_operations.get(tag)
                 if previous is None:
                     state_operations[tag] = len(operations)
@@ -294,6 +308,7 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
                 enabled=inherited.enabled if inherited else True,
                 title=inherited.title if inherited else None,
                 hover_style=inherited.hover_style if inherited else None,
+                generation=inherited.generation if inherited else None,
             )
         ]
     if tag == 1:  # Button
@@ -304,6 +319,7 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
             enabled=bool(fields[6]),
             title=title,
             hover_style=parse_style(hover_style) if hover_style else None,
+            generation=int(fields[5]),
         )
         result: list[DisplaySegment] = []
         for child in runs:

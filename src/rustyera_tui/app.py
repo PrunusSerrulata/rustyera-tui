@@ -33,6 +33,13 @@ class RustyEraTui(App[None]):
     CSS_PATH = "app.tcss"
     TITLE = "RustyEra TUI"
     ENABLE_COMMAND_PALETTE = False
+    PROMPT_STATE_CLASSES = (
+        "prompt-running",
+        "prompt-running-bright",
+        "prompt-number",
+        "prompt-other",
+        "prompt-error",
+    )
     BINDINGS = [
         Binding("ctrl+q", "request_quit", "退出", priority=True),
         Binding("ctrl+z", "input_undo", "撤销输入"),
@@ -77,7 +84,7 @@ class RustyEraTui(App[None]):
             yield GameViewport()
             yield Rule(id="separator-line")
             with Horizontal(id="prompt-row"):
-                yield Static("> ", id="prompt-label")
+                yield Static("> ", id="prompt-label", classes="prompt-running")
                 yield Input(placeholder="等待 Runtime…", id="prompt", disabled=True)
         with Vertical(id="file-menu", classes="dropdown"):
             for item_id, label in self.FILE_ITEMS:
@@ -93,6 +100,8 @@ class RustyEraTui(App[None]):
     def on_mount(self) -> None:
         self.worker.start()
         self.set_interval(0.03, self._drain_worker_events)
+        self.set_interval(0.5, self._toggle_prompt_blink)
+        self._update_prompt()
         self.query_one("#prompt", Input).focus()
 
     def on_unmount(self) -> None:
@@ -195,11 +204,13 @@ class RustyEraTui(App[None]):
     def _update_prompt(self) -> None:
         prompt = self.query_one("#prompt", Input)
         if self.blocking_error is not None:
+            self._set_prompt_state("prompt-error")
             prompt.disabled = True
             prompt.placeholder = self.blocking_error
             return
         prompt.disabled = self.active_wait is None
         if self.active_wait is None:
+            self._set_prompt_state("prompt-running")
             prompt.placeholder = "Runtime 正在运行…"
             return
         kind_names = [
@@ -214,8 +225,21 @@ class RustyEraTui(App[None]):
             "输入 type,result1,result2,result3,result4",
         ]
         kind = self.active_wait.get(1, 0)
+        self._set_prompt_state("prompt-number" if kind in (2, 6) else "prompt-other")
         prompt.placeholder = kind_names[kind] if kind < len(kind_names) else "输入"
         prompt.focus()
+
+    def _set_prompt_state(self, state_class: str) -> None:
+        label = self.query_one("#prompt-label", Static)
+        label.remove_class(*self.PROMPT_STATE_CLASSES)
+        label.add_class(state_class)
+
+    def _toggle_prompt_blink(self) -> None:
+        label = self.query_one("#prompt-label", Static)
+        if label.has_class("prompt-running"):
+            label.toggle_class("prompt-running-bright")
+        else:
+            label.remove_class("prompt-running-bright")
 
     def _set_debug_enabled(self, enabled: bool) -> None:
         self.debug_enabled = enabled
@@ -357,6 +381,17 @@ class RustyEraTui(App[None]):
     def on_game_viewport_continue_requested(self, _event: GameViewport.ContinueRequested) -> None:
         if self.active_wait is not None and self.active_wait.get(1) == 0:
             self.worker.send("submit_text", "")
+
+    def on_game_viewport_skip_enter_requested(
+        self, _event: GameViewport.SkipEnterRequested
+    ) -> None:
+        if self.active_wait is not None and self.active_wait.get(1) == 0:
+            self.worker.send("skip_enter_waits")
+
+    def on_game_viewport_horizontal_scrollbar_changed(
+        self, event: GameViewport.HorizontalScrollbarChanged
+    ) -> None:
+        self.query_one("#separator-line").display = not event.visible
 
     def on_debug_console_dialog_submitted(self, event: DebugConsoleDialog.Submitted) -> None:
         action = "console_execute" if event.execute else "console_evaluate"

@@ -31,6 +31,7 @@ and are represented by alt text when they occur in a portable presentation proje
 
 - Enter submits the prompt according to the active runtime wait.
 - Click an inline Era button to submit its opaque interaction token.
+- Right-click the main viewport to skip consecutive skippable Enter waits.
 - Ctrl+Z requests runtime-owned input undo when available.
 - F10 performs one source-line step while single-step mode is enabled.
 - Ctrl+Q exits cleanly.

@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Any
 
 from rustyera_tui.app import RustyEraTui
+from rustyera_tui.presentation import DisplayLineModel, DisplaySegment
 from rustyera_tui.runtime import FrontendEvent, RuntimeFailure
-from rustyera_tui.widgets import GameLine
+from rustyera_tui.widgets import GameLine, GameViewport
 from rustyera_tui.wire import variant
 from textual.widgets import Input, TextArea
 
@@ -79,10 +80,41 @@ async def test_viewport_click_submits_only_a_plain_enter_wait(tmp_path: Path) ->
         await pilot.click("#game-viewport", offset=(10, 5))
         assert ("submit_text", "") in worker.commands
 
+        await pilot.click("#game-viewport", offset=(10, 5), button=3)
+        assert ("skip_enter_waits", None) in worker.commands
+
         worker.commands.clear()
         app.active_wait = {0: 8, 1: 2}
         await pilot.click("#game-viewport", offset=(10, 5))
+        await pilot.click("#game-viewport", offset=(10, 5), button=3)
         assert ("submit_text", "") not in worker.commands
+        assert ("skip_enter_waits", None) not in worker.commands
+
+
+async def test_horizontal_scrollbar_replaces_the_prompt_separator(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    short = DisplayLineModel(1, False, True, True, 0, (DisplaySegment("short"),))
+    long = DisplayLineModel(1, False, True, True, 0, (DisplaySegment("x" * 240),))
+    async with app.run_test(size=(160, 30)) as pilot:
+        viewport = app.query_one(GameViewport)
+        separator = app.query_one("#separator-line")
+
+        await viewport.set_lines([short])
+        await pilot.pause()
+        assert not viewport.show_horizontal_scrollbar
+        assert separator.display
+
+        await viewport.set_lines([long])
+        await pilot.pause()
+        assert viewport.show_horizontal_scrollbar
+        assert not separator.display
+
+        await viewport.set_lines([short])
+        await pilot.pause()
+        assert not viewport.show_horizontal_scrollbar
+        assert separator.display
 
 
 async def test_log_dialog_uses_selectable_read_only_text(tmp_path: Path) -> None:
@@ -117,6 +149,33 @@ async def test_runtime_fault_remains_visible_in_the_prompt(tmp_path: Path) -> No
         assert prompt.disabled
         assert app.blocking_error == failure.display()
         assert prompt.placeholder == failure.display()
+        assert app.query_one("#prompt-label").styles.color.hex6 == "#EF4444"
+
+
+async def test_prompt_color_tracks_runtime_and_input_state(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)):
+        label = app.query_one("#prompt-label")
+        assert label.has_class("prompt-running")
+        assert label.styles.color.hex6 == "#94A3B8"
+
+        app._toggle_prompt_blink()
+        assert label.has_class("prompt-running-bright")
+        assert label.styles.color.hex6 == "#F8FAFC"
+        app._toggle_prompt_blink()
+        assert label.styles.color.hex6 == "#94A3B8"
+
+        app.active_wait = {0: 1, 1: 2}
+        app._update_prompt()
+        assert label.has_class("prompt-number")
+        assert label.styles.color.hex6 == "#F8FAFC"
+
+        app.active_wait = {0: 2, 1: 3}
+        app._update_prompt()
+        assert label.has_class("prompt-other")
+        assert label.styles.color.hex6 == "#00FFFF"
 
 
 async def test_log_uses_text_for_runtime_and_debug_enums(tmp_path: Path) -> None:
@@ -180,3 +239,23 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
             current > previous
             for previous, current in zip(projection_revisions, projection_revisions[1:])
         )
+
+        worker.commands.clear()
+        app.active_wait = {0: 7, 1: 0}
+        assert await pilot.click(".game-line", offset=(1, 0), button=3)
+        assert ("skip_enter_waits", None) in worker.commands
+        assert not any(kind == "activate" for kind, _value in worker.commands)
+
+        worker.commands.clear()
+        worker.events.put(
+            FrontendEvent(
+                "presentation_delta",
+                {0: 1, 1: 2, 2: [variant(13, 1)]},
+            )
+        )
+        await pilot.pause(0.1)
+        assert not game_line.regions[0].enabled
+        assert await pilot.hover(".game-line", offset=(1, 0))
+        assert game_line.hovered_region is None
+        assert await pilot.click(".game-line", offset=(1, 0))
+        assert not any(kind == "activate" for kind, _value in worker.commands)

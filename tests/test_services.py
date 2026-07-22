@@ -17,6 +17,8 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client.events = queue.Queue()
     client.session = {0: 1, 1: 2}
     client._projection_messages = set()
+    client._message_skip_active = False
+    client._message_skip_wait_id = None
     captured: list[tuple[int, Any]] = []
     client.send_runtime = (  # type: ignore[method-assign]
         lambda tag, value, **_kwargs: captured.append((tag, value)) or 1
@@ -111,3 +113,23 @@ def test_stale_projection_rejection_is_recoverable_but_runtime_fault_is_structur
     assert isinstance(fault.value, RuntimeFailure)
     assert fault.value.function == "EVENTTRAIN"
     assert fault.value.source_line == 28
+
+
+def test_message_skip_submits_each_enter_wait_once_and_stops_at_forcewait() -> None:
+    client, captured = client_with_capture()
+    first = {0: 10, 1: 0, 4: False, 11: {0: 1, 1: 10}}
+    second = {0: 11, 1: 0, 4: False, 11: {0: 1, 1: 11}}
+    force = {0: 12, 1: 0, 4: True, 11: {0: 1, 1: 12}}
+    client._set_active_wait(first)
+
+    client.skip_enter_waits()
+    client._set_active_wait(first)
+    client._set_active_wait(None)
+    client._set_active_wait(second)
+    client._set_active_wait(force)
+
+    submissions = [value for tag, value in captured if tag == 30]
+    assert [submission[0] for submission in submissions] == [10, 11]
+    assert all(submission[3] == [0, []] for submission in submissions)
+    assert all(submission[4] for submission in submissions)
+    assert not client._message_skip_active

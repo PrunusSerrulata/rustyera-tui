@@ -121,6 +121,8 @@ class RuntimeClient:
         self._pending_presentation_events: list[tuple[str, dict[int, Any]]] = []
         self._wait_event_dirty = False
         self._projection_messages: set[int] = set()
+        self._message_skip_active = False
+        self._message_skip_wait_id: int | None = None
         self._send_hello()
 
     def _reset_wire_state(self) -> None:
@@ -144,6 +146,8 @@ class RuntimeClient:
         self._pending_presentation_events.clear()
         self._wait_event_dirty = False
         self._projection_messages.clear()
+        self._message_skip_active = False
+        self._message_skip_wait_id = None
 
     def recreate(self, bundle: ProjectBundle, restore: tuple[Path, bytes] | None = None) -> None:
         self.events.put(FrontendEvent("status", "正在创建新的 Runtime session…"))
@@ -335,7 +339,7 @@ class RuntimeClient:
             self.events.put(FrontendEvent("input_undo", value))
         elif tag == 40:
             self.presentation.apply_snapshot(value)
-            self.active_wait = self.presentation.input_wait
+            self._set_active_wait(self.presentation.input_wait)
             # Decoded envelopes are immutable after dispatch. Presentation events are batched
             # until the poll queue is empty so superseded pending-line updates cross threads
             # only once.
@@ -348,7 +352,7 @@ class RuntimeClient:
                 self.events.put(FrontendEvent("log", str(error)))
                 self.send_runtime(94, {0: self.expected_runtime_output - 1})
             else:
-                self.active_wait = self.presentation.input_wait
+                self._set_active_wait(self.presentation.input_wait)
                 self._pending_presentation_events.append(("delta", value))
                 self._wait_event_dirty = True
         elif tag == 42:  # Effects are intentionally unsupported but must be acknowledged.
@@ -368,6 +372,8 @@ class RuntimeClient:
         elif tag == 91:
             self.events.put(FrontendEvent("shutdown_ready", value))
         elif tag == 92:
+            self._message_skip_active = False
+            self._message_skip_wait_id = None
             origin = value.get(2) or {}
             source = origin.get(4) or {}
             failure = RuntimeFailure(
@@ -398,7 +404,7 @@ class RuntimeClient:
             self.epoch = value[0]
             self.phase = value[1]
             self.presentation.apply_snapshot(value[3])
-            self.active_wait = self.presentation.input_wait
+            self._set_active_wait(self.presentation.input_wait)
             self._pending_presentation_events = [("snapshot", value[3])]
             self._wait_event_dirty = True
         elif tag == 97:
@@ -456,10 +462,20 @@ class RuntimeClient:
     def _handle_wait_change(self, change: list[Any]) -> None:
         tag, fields = unwrap_variant(change)
         if tag in (0, 1):
-            self.active_wait = fields[0]
+            self._set_active_wait(fields[0])
         elif tag == 2 and self.active_wait and self.active_wait.get(0) == fields[0]:
-            self.active_wait = None
+            self._set_active_wait(None)
         self._wait_event_dirty = True
+
+    def _set_active_wait(self, wait: dict[int, Any] | None) -> None:
+        self.active_wait = wait
+        if not self._message_skip_active or wait is None:
+            return
+        if wait.get(1) != 0 or wait.get(4, False):
+            self._message_skip_active = False
+            self._message_skip_wait_id = None
+            return
+        self._submit_message_skip(wait)
 
     def _acknowledge_effects(self, batch: dict[int, Any]) -> None:
         # The TUI cannot play device effects. Reporting Unsupported is semantically different
@@ -558,14 +574,34 @@ class RuntimeClient:
                 return
         else:
             intent = variant(2, text)
+        self._message_skip_active = False
+        self._message_skip_wait_id = None
         self._submit_input(wait, intent)
 
     def activate(self, button_token: dict[int, int]) -> None:
         if self.active_wait is None:
             return
+        self._message_skip_active = False
+        self._message_skip_wait_id = None
         self._submit_input(self.active_wait, variant(3, button_token))
 
-    def _submit_input(self, wait: dict[int, Any], intent: list[Any]) -> None:
+    def skip_enter_waits(self) -> None:
+        wait = self.active_wait
+        if wait is None or wait.get(1) != 0 or wait.get(4, False):
+            return
+        self._message_skip_active = True
+        self._submit_message_skip(wait)
+
+    def _submit_message_skip(self, wait: dict[int, Any]) -> None:
+        wait_id = wait[0]
+        if wait_id == self._message_skip_wait_id:
+            return
+        self._message_skip_wait_id = wait_id
+        self._submit_input(wait, variant(0), message_skip=True)
+
+    def _submit_input(
+        self, wait: dict[int, Any], intent: list[Any], *, message_skip: bool = False
+    ) -> None:
         self.send_runtime(
             30,
             {
@@ -573,7 +609,7 @@ class RuntimeClient:
                 1: wait[11],
                 2: time.monotonic_ns(),
                 3: intent,
-                4: False,
+                4: message_skip,
             },
         )
 
@@ -871,6 +907,8 @@ class RuntimeWorker(threading.Thread):
                     client.reload_file(Path(command.value))
                 case "submit_text":
                     client.submit_text(str(command.value))
+                case "skip_enter_waits":
+                    client.skip_enter_waits()
                 case "activate":
                     client.activate(command.value)
                 case "input_undo":

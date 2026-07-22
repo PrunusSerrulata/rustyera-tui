@@ -108,6 +108,8 @@ class GameLine(Static):
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
         index = self._region_at(event.offset.x)
+        if index is not None and not self.regions[index].enabled:
+            index = None
         if index != self.hovered_region:
             self.hovered_region = index
             self._render_line()
@@ -123,12 +125,14 @@ class GameLine(Static):
         self.tooltip = None
 
     def on_click(self, event: events.Click) -> None:
+        if event.button != 1:
+            return
         index = self._region_at(event.offset.x)
         if index is None:
             return
         region = self.regions[index]
+        event.stop()
         if region.enabled:
-            event.stop()
             self.post_message(self.Activated(region.token))
 
 
@@ -138,13 +142,27 @@ class GameViewport(ScrollableContainer):
     class ContinueRequested(Message):
         """A non-button viewport click may satisfy a pure Enter wait."""
 
+    class SkipEnterRequested(Message):
+        """A secondary click requests continuous message-skip for Enter waits."""
+
+    class HorizontalScrollbarChanged(Message):
+        def __init__(self, visible: bool) -> None:
+            super().__init__()
+            self.visible = visible
+
     def __init__(self) -> None:
         super().__init__(id="game-viewport")
         self.models: list[DisplayLineModel] = []
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
-        self.post_message(self.ContinueRequested())
+        if event.button == 1:
+            self.post_message(self.ContinueRequested())
+        elif event.button == 3:
+            self.post_message(self.SkipEnterRequested())
+
+    def watch_show_horizontal_scrollbar(self, visible: bool) -> None:
+        self.post_message(self.HorizontalScrollbarChanged(visible))
 
     async def set_lines(self, lines: list[DisplayLineModel]) -> None:
         was_at_end = self.is_vertical_scroll_end

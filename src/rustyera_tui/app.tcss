@@ -129,9 +129,25 @@ Screen {
 #prompt-label {
     width: 2;
     height: 1;
-    color: #38bdf8;
     background: #111827;
     text-style: bold;
+}
+
+#prompt-label.prompt-running {
+    color: #94a3b8;
+}
+
+#prompt-label.prompt-running.prompt-running-bright,
+#prompt-label.prompt-number {
+    color: #f8fafc;
+}
+
+#prompt-label.prompt-other {
+    color: aqua;
+}
+
+#prompt-label.prompt-error {
+    color: #ef4444;
 }
 
 #prompt {

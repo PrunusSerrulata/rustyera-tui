@@ -15,7 +15,7 @@ def style(foreground: dict[int, int]) -> dict[int, object]:
     return {0: foreground, 2: False, 3: False, 4: False, 5: False, 7: 12_000}
 
 
-def line(line_id: int, text: str) -> dict[int, object]:
+def line(line_id: int, text: str, generation: int = 0) -> dict[int, object]:
     button = variant(
         1,
         [variant(0, text, style(color(0, 255, 128)), None)],
@@ -23,7 +23,7 @@ def line(line_id: int, text: str) -> dict[int, object]:
         "选择",
         None,
         variant(0, line_id),
-        0,
+        generation,
         True,
     )
     return {0: line_id, 1: False, 2: True, 3: True, 4: 0, 5: [button]}
@@ -79,6 +79,17 @@ def test_delta_can_clear_an_optional_input_wait() -> None:
     model.apply_delta({0: 1, 1: 2, 2: [variant(6)]})
 
     assert model.input_wait is None
+
+
+def test_button_generation_delta_disables_every_old_button_segment() -> None:
+    model = PresentationModel()
+    model.apply_snapshot(snapshot())
+
+    model.apply_delta({0: 1, 1: 2, 2: [variant(13, 1)]})
+
+    segment = model.lines[0].segments[0]
+    assert segment.generation == 0
+    assert not segment.enabled
 
 
 def test_line_index_stays_valid_across_replace_delete_and_append() -> None:
@@ -153,3 +164,32 @@ def test_delta_coalescing_preserves_state_and_discards_superseded_lines() -> Non
 
     assert combined == sequential
     assert len(coalesced[2]) < sum(len(delta[2]) for delta in original)
+
+
+def test_delta_coalescing_preserves_button_generation_order() -> None:
+    original = [
+        {
+            0: 1,
+            1: 2,
+            2: [variant(13, 1), variant(0, line(2, "one", generation=1))],
+        },
+        {
+            0: 2,
+            1: 3,
+            2: [variant(13, 2), variant(0, line(3, "two", generation=2))],
+        },
+    ]
+    sequential = PresentationModel()
+    sequential.apply_snapshot(snapshot())
+    for delta in original:
+        sequential.apply_delta(delta)
+    combined = PresentationModel()
+    combined.apply_snapshot(snapshot())
+    combined.apply_delta(coalesce_presentation_deltas(original))
+
+    assert combined == sequential
+    assert [segment.enabled for item in combined.lines for segment in item.segments] == [
+        False,
+        False,
+        True,
+    ]
