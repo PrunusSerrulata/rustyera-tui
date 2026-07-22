@@ -79,3 +79,14 @@ def test_storage_enforces_revision_preconditions_and_lists_root(tmp_path: Path) 
     listed = backend.handle({0: 4, 1: 1, 2: "", 3: variant(2, "save*.sav", False), 4: ""})
     entries = unwrap_variant(listed[1])[1][0]
     assert [entry[0] for entry in entries] == ["save01.sav"]
+
+
+def test_storage_defaults_to_the_project_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ERA_TUI_DATA_DIR", raising=False)
+
+    backend = StorageBackend(tmp_path)
+
+    assert backend.data_root == tmp_path.resolve()
+    assert backend._namespace_root(1) == tmp_path.resolve() / "save"

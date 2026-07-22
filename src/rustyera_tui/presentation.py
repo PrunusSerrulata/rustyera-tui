@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 from rich.cells import cell_len
 
 from .wire import unwrap_variant, variant
+
+DEFAULT_VIEWPORT_COLUMNS = 100
+SAVE_DELETE_PATTERN = re.compile(r"Delete save\d+\.sav")
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +34,7 @@ class DisplaySegment:
     hover_style: SegmentStyle | None = None
     generation: int | None = None
     alignment: int | None = None
+    right_edge: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +221,7 @@ def plain_run(run: list[Any]) -> str:
         return f"{padding}{text}" if alignment == 1 else f"{text}{padding}"
     if tag == 6:
         pattern = fields[0] or "-"
-        return pattern * max(1, 120 // len(pattern))
+        return pattern * max(1, DEFAULT_VIEWPORT_COLUMNS // len(pattern))
     if tag == 7:
         width_tag, width_fields = unwrap_variant(fields[0])
         raw = width_fields[0]
@@ -336,6 +341,20 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
         result: list[DisplaySegment] = []
         for child in runs:
             result.extend(parse_run(child, button))
+        button_text = "".join(segment.text for segment in result)
+        if SAVE_DELETE_PATTERN.fullmatch(button_text) and any(
+            _run_has_system_text_key(child, 9) for child in runs
+        ):
+            source_style = result[0].style if result else SegmentStyle()
+            return [
+                replace(
+                    button,
+                    text="[X]",
+                    style=replace(source_style, foreground="#ef4444", bold=True),
+                    title=title or button_text,
+                    right_edge=True,
+                )
+            ]
         return result
     if tag == 2:  # HTML document fallback for non-HTML clients
         return parse_html_document(fields[0], inherited)
@@ -364,7 +383,9 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
         return nested
     if tag == 6:  # Width-independent separator
         pattern = fields[0] or "-"
-        return [DisplaySegment(pattern * max(1, 120 // len(pattern)))]
+        return [
+            DisplaySegment(pattern * max(1, DEFAULT_VIEWPORT_COLUMNS // len(pattern)))
+        ]
     if tag == 7:  # Semantic space
         width_tag, width_fields = unwrap_variant(fields[0])
         raw = width_fields[0]
@@ -373,6 +394,16 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
         columns = max(1, round(raw / (1000 if width_tag == 0 else 100)))
         return [DisplaySegment(" " * columns)]
     return [DisplaySegment(f"[未支持的显示片段 {tag}]")]
+
+
+def _run_has_system_text_key(run: list[Any], key: int) -> bool:
+    tag, fields = unwrap_variant(run)
+    if tag == 0:
+        reference = fields[2] if len(fields) > 2 else None
+        return isinstance(reference, dict) and reference.get(0) == key
+    if tag in (1, 5):
+        return any(_run_has_system_text_key(child, key) for child in fields[0])
+    return False
 
 
 def parse_html_document(
@@ -402,7 +433,7 @@ def _parse_html_node(node: list[Any], context: DisplaySegment) -> list[DisplaySe
     if kind == 13:  # br
         return [replace(context, text="\n", token=None, alignment=context.alignment)]
     if kind == 10:  # img
-        return [replace(context, text="[图片]")]
+        return []
     if kind == 11:  # shape
         return [_html_shape_segment(semantic, context)]
 

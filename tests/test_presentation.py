@@ -1,4 +1,5 @@
 from rustyera_tui.presentation import (
+    DEFAULT_VIEWPORT_COLUMNS,
     PresentationModel,
     ServicePresentationModel,
     coalesce_presentation_deltas,
@@ -115,6 +116,16 @@ def test_structured_html_preserves_rows_styles_spaces_and_buttons() -> None:
                     ),
                     variant(
                         1,
+                        10,
+                        [{0: "src", 1: "ignored.png"}],
+                        [],
+                        None,
+                        0,
+                        0,
+                        variant(7, "ignored.png", None, None, None, None, None),
+                    ),
+                    variant(
+                        1,
                         7,
                         [{0: "value", 1: "0"}],
                         [
@@ -161,6 +172,49 @@ def test_structured_html_preserves_rows_styles_spaces_and_buttons() -> None:
     assert all(segment.generation == 2 and segment.title == "选项" for segment in button_segments)
     assert any(segment.style.bold for segment in button_segments)
     assert plain_line(raw) == "\n  [  0] 选择\n"
+
+
+def test_save_delete_button_becomes_a_red_right_edge_action() -> None:
+    token = {0: 5, 1: 8}
+    raw = {
+        0: 11,
+        1: False,
+        2: True,
+        3: True,
+        4: 0,
+        5: [
+            variant(
+                1,
+                [
+                    variant(
+                        0,
+                        "Delete save01.sav",
+                        style(color(255, 255, 255)),
+                        {0: 9, 1: [variant(1, "save01.sav")]},
+                    )
+                ],
+                token,
+                None,
+                None,
+                variant(1, ""),
+                3,
+                True,
+            )
+        ],
+    }
+
+    segment = parse_line(raw).segments[0]
+
+    assert segment.text == "[X]"
+    assert segment.token == token
+    assert segment.title == "Delete save01.sav"
+    assert segment.style.foreground == "#ef4444"
+    assert segment.style.bold
+    assert segment.right_edge
+
+
+def test_width_independent_separator_uses_the_100_column_default() -> None:
+    assert len(plain_line({5: [variant(6, "-")]})) == DEFAULT_VIEWPORT_COLUMNS == 100
 
 
 def test_delta_append_replace_delete_and_revision_check() -> None:

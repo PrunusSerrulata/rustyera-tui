@@ -51,6 +51,15 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
         wait = wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
         assert wait.value[1] == 0
 
+        snapshot_path = tmp_path / "runtime.snapshot"
+        worker.send("export_snapshot", snapshot_path)
+        exported = wait_for(
+            worker,
+            lambda event: event.kind == "snapshot_export_finished",
+        )
+        assert exported.value is True
+        assert snapshot_path.stat().st_size > 0
+
         worker.send("reload_all")
         reloaded = wait_for(
             worker,

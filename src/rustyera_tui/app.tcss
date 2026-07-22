@@ -1,7 +1,7 @@
 Screen {
     background: #05070a;
     color: #d8d8d8;
-    min-width: 80;
+    min-width: 100;
     layers: base menu overlay;
 }
 
@@ -97,7 +97,7 @@ Screen {
 
 .game-line {
     width: auto;
-    min-width: 120;
+    min-width: 100;
     height: auto;
     min-height: 1;
     padding: 0;

@@ -1,5 +1,7 @@
 import queue
+from pathlib import Path
 
+import blake3
 from rustyera_tui.protocol_text import (
     DEBUG_STOP_REASONS,
     ERA_STATUSES,
@@ -41,4 +43,24 @@ def test_snapshot_rejection_event_uses_reason_names() -> None:
     assert event.value == (
         "当前状态不能生成快照：SnapshotStateUnavailable"
     )
+    finished = client.events.get_nowait()
+    assert finished.kind == "snapshot_export_finished"
+    assert finished.value is False
     assert client.pending_export is None
+
+
+def test_snapshot_export_emits_a_dedicated_completion_event(tmp_path: Path) -> None:
+    client = RuntimeClient.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    data = b"snapshot"
+    path = tmp_path / "runtime.snapshot"
+    descriptor = {0: 7, 2: len(data), 3: blake3.blake3(data).digest()}
+    client.pending_export = (path, bytearray(), descriptor)
+
+    client._handle_export_chunk({0: 7, 1: 0, 2: data, 3: True})
+
+    assert path.read_bytes() == data
+    finished = client.events.get_nowait()
+    assert finished.kind == "snapshot_export_finished"
+    assert finished.value is True
+    assert client.events.get_nowait().kind == "status"

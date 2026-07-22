@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from rich.cells import cell_len
 from rich.style import Style
@@ -60,9 +60,13 @@ class GameLine(Static):
 
     def set_line(self, line: DisplayLineModel) -> None:
         self.line = line
-        self.interactions_enabled = True
         self.hovered_region = None
         self._render_line()
+
+    def enable_interactions(self) -> None:
+        if not self.interactions_enabled:
+            self.interactions_enabled = True
+            self._render_line()
 
     def disable_interactions(self) -> None:
         """Immediately retire hit regions while an activation is in flight."""
@@ -102,6 +106,11 @@ class GameLine(Static):
             layout: list[tuple[str, DisplaySegment, int | None]] = []
             for text, segment in row:
                 width = cell_len(text)
+                if segment.right_edge:
+                    gap = max(0, self.size.width - cursor - width)
+                    if gap:
+                        layout.append((" " * gap, DisplaySegment(" " * gap), None))
+                        cursor += gap
                 region_index = None
                 if segment.token is not None:
                     if (
@@ -222,6 +231,7 @@ class GameViewport(ScrollableContainer):
     def __init__(self) -> None:
         super().__init__(id="game-viewport")
         self.models: list[DisplayLineModel] = []
+        self.interactions_enabled = True
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -234,11 +244,24 @@ class GameViewport(ScrollableContainer):
         self.post_message(self.HorizontalScrollbarChanged(visible))
 
     def disable_interactions(self) -> None:
+        self.interactions_enabled = False
         for child in self.children:
             if isinstance(child, GameLine):
                 child.disable_interactions()
 
+    def enable_interactions(self) -> None:
+        self.interactions_enabled = True
+        for child in self.children:
+            if isinstance(child, GameLine):
+                child.enable_interactions()
+
+    def _line_widget(self, line: DisplayLineModel) -> GameLine:
+        widget = GameLine(line)
+        widget.interactions_enabled = self.interactions_enabled
+        return widget
+
     async def set_lines(self, lines: list[DisplayLineModel]) -> None:
+        lines = _merge_save_delete_lines(lines)
         old = self.models
         children = list(self.children)
         common = 0
@@ -250,7 +273,7 @@ class GameViewport(ScrollableContainer):
             if len(lines) < len(old):
                 await self.remove_children(children[len(lines) :])
             elif len(lines) > len(old):
-                await self.mount(*(GameLine(line) for line in lines[len(old) :]))
+                await self.mount(*(self._line_widget(line) for line in lines[len(old) :]))
         elif len(old) == len(lines) and len(children) == len(lines):
             for index in range(common, len(lines)):
                 child = children[index]
@@ -258,8 +281,24 @@ class GameViewport(ScrollableContainer):
                     child.set_line(lines[index])
         else:
             await self.remove_children()
-            await self.mount(*(GameLine(line) for line in lines))
+            await self.mount(*(self._line_widget(line) for line in lines))
         self.models = list(lines)
         # Re-anchor after every presentation change so the next layout pass follows
         # the newly appended content even when the user had scrolled into history.
         self.anchor()
+
+
+def _merge_save_delete_lines(lines: list[DisplayLineModel]) -> list[DisplayLineModel]:
+    """Place a runtime save-slot delete action at the right edge of its slot row."""
+
+    result: list[DisplayLineModel] = []
+    for line in lines:
+        if len(line.segments) == 1 and line.segments[0].right_edge and result:
+            previous = result[-1]
+            result[-1] = replace(
+                previous,
+                segments=(*previous.segments, line.segments[0]),
+            )
+        else:
+            result.append(line)
+    return result

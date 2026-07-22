@@ -21,12 +21,11 @@ with `--runtime-library PATH` or `ERA_RUNTIME_LIBRARY=PATH`.
 
 The optional project argument may be omitted; use **文件 → 重新载入文件夹...** to select a
 project. The frontend scans `.erb`, `.erh`, `.csv`, and `.config` files as UTF-8. Save,
-GlobalSave, Data, Log, and writable Project-overlay storage is kept in an OS-appropriate,
-per-project user data directory, so games installed read-only remain playable. Set
-`ERA_TUI_DATA_DIR` to override its base directory. Resource reads continue to use the selected
-project directory. The frontend renders normalized HTML text, styles, spacing, line breaks,
-and buttons. Images, video, and audio remain intentionally unadvertised and use terminal
-placeholders when they occur inside HTML presentation content.
+GlobalSave, Data, Log, and writable Project-overlay storage defaults to namespaced directories
+inside the selected project. Set `ERA_TUI_DATA_DIR` to move these namespaces to an isolated
+per-project directory below that base. Resource reads continue to use the selected project
+directory. The frontend renders normalized HTML text, styles, spacing, line breaks, and
+buttons; HTML image tags are ignored. Video and audio remain intentionally unadvertised.
 
 ## Controls
 

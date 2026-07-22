@@ -10,7 +10,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 import blake3
-from platformdirs import user_data_path
 
 from .wire import variant
 
@@ -162,13 +161,15 @@ class StorageBackend:
     def __init__(self, project_root: Path, data_root: Path | None = None):
         self.project_root = project_root.resolve()
         configured = os.environ.get("ERA_TUI_DATA_DIR")
-        base = (
-            Path(configured).expanduser()
-            if configured
-            else (data_root or user_data_path("RustyEra", "RustyEra"))
-        )
-        project_key = blake3.blake3(self.project_root.as_posix().encode("utf-8")).hexdigest()[:16]
-        self.data_root = base.resolve() / "games" / project_key
+        if configured or data_root is not None:
+            base = Path(configured).expanduser() if configured else data_root
+            assert base is not None
+            project_key = blake3.blake3(
+                self.project_root.as_posix().encode("utf-8")
+            ).hexdigest()[:16]
+            self.data_root = base.resolve() / "games" / project_key
+        else:
+            self.data_root = self.project_root
         self.idempotent_results: dict[str, list[Any]] = {}
 
     def _namespace_root(self, namespace: int) -> Path:

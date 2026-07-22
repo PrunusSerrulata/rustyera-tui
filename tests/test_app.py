@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -335,3 +336,113 @@ async def test_multiline_button_regions_merge_padding_and_use_row_coordinates(
         assert game_line._region_at(1, 1) == 1
         assert await pilot.click(".game-line", offset=(1, 1))
         assert ("activate", second) in worker.commands
+
+
+async def test_snapshot_export_locks_gameplay_and_uses_a_timestamped_name(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)):
+        app.active_wait = {0: 7, 1: 0, 11: {0: 1, 1: 2}}
+        app.input_undo_token = {0: 1}
+        app._update_prompt()
+        assert app._snapshot_default_path(datetime(2026, 7, 22, 9, 8, 7)).name == (
+            "runtime_20260722-090807.snapshot"
+        )
+
+        target = tmp_path / "runtime.snapshot"
+        app._start_snapshot_export(target)
+
+        prompt = app.query_one("#prompt", Input)
+        viewport = app.query_one(GameViewport)
+        assert app.snapshot_exporting
+        assert prompt.disabled
+        assert prompt.placeholder == "VM 快照导出中……"
+        assert not viewport.interactions_enabled
+        app.on_game_viewport_continue_requested(None)  # type: ignore[arg-type]
+        app.on_game_viewport_skip_enter_requested(None)  # type: ignore[arg-type]
+        app.action_input_undo()
+        assert ("export_snapshot", target) in worker.commands
+        assert not any(
+            kind in ("submit_text", "skip_enter_waits", "input_undo")
+            for kind, _value in worker.commands
+        )
+
+        app._handle_worker_event(FrontendEvent("snapshot_export_finished", True))
+
+        assert not app.snapshot_exporting
+        assert not prompt.disabled
+        assert viewport.interactions_enabled
+
+
+async def test_gameplay_stays_locked_until_presentation_refresh_finishes(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)):
+        app.active_wait = {0: 8, 1: 0, 11: {0: 1, 1: 3}}
+        app.presentation.revision = 4
+
+        app._begin_presentation_render()
+
+        prompt = app.query_one("#prompt", Input)
+        viewport = app.query_one(GameViewport)
+        assert app.presentation_rendering
+        assert prompt.disabled
+        assert prompt.placeholder == "页面渲染中……"
+        assert not viewport.interactions_enabled
+        app.on_game_viewport_continue_requested(None)  # type: ignore[arg-type]
+        assert not any(kind == "submit_text" for kind, _value in worker.commands)
+
+        app._finish_presentation_render(4)
+
+        assert not app.presentation_rendering
+        assert not prompt.disabled
+        assert viewport.interactions_enabled
+
+
+async def test_save_delete_action_is_merged_at_the_slot_row_right_edge(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    slot_token = {0: 4, 1: 1}
+    delete_token = {0: 4, 1: 2}
+    slot = DisplayLineModel(
+        1,
+        False,
+        True,
+        True,
+        0,
+        (DisplaySegment("[ 1] Save", token=slot_token),),
+    )
+    delete = DisplayLineModel(
+        2,
+        False,
+        True,
+        True,
+        0,
+        (
+            DisplaySegment(
+                "[X]",
+                token=delete_token,
+                title="Delete save01.sav",
+                right_edge=True,
+            ),
+        ),
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([slot, delete])
+        await pilot.pause()
+
+        lines = list(app.query(GameLine))
+        assert len(lines) == 1
+        game_line = lines[0]
+        assert len(game_line.regions) == 2
+        assert game_line.regions[1].token == delete_token
+        assert game_line.regions[1].end == game_line.size.width
+        assert str(game_line.render()).endswith("[X]")

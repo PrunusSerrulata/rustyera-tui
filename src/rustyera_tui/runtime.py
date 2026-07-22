@@ -672,6 +672,7 @@ class RuntimeClient:
             )
             self.events.put(FrontendEvent("error", f"当前状态不能生成快照：{reasons}"))
             self.pending_export = None
+            self.events.put(FrontendEvent("snapshot_export_finished", False))
             return
         descriptor = fields[0]
         path, data, _ = self.pending_export
@@ -691,8 +692,9 @@ class RuntimeClient:
         if len(data) != descriptor[2] or blake3.blake3(data).digest() != descriptor[3]:
             raise RuntimeError("snapshot export digest verification failed")
         _atomic_write(path, bytes(data))
-        self.events.put(FrontendEvent("status", f"VM 快照已导出到 {path}"))
         self.pending_export = None
+        self.events.put(FrontendEvent("snapshot_export_finished", True))
+        self.events.put(FrontendEvent("status", f"VM 快照已导出到 {path}"))
 
     def _handle_import_accepted(self, accepted: dict[int, Any]) -> None:
         if self.import_bytes is None:
@@ -940,6 +942,9 @@ class RuntimeWorker(threading.Thread):
                 case _:
                     raise ValueError(f"unknown frontend command {command.kind}")
         except Exception as error:  # noqa: BLE001 - command boundary
+            if command.kind == "export_snapshot":
+                client.pending_export = None
+                self.events.put(FrontendEvent("snapshot_export_finished", False))
             self.events.put(FrontendEvent("error", str(error)))
 
     def _load_project(self, root: Path) -> None:
