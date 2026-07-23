@@ -15,6 +15,7 @@ from textual.widgets import Static
 from .presentation import (
     MAX_TABLE_COLUMN_WIDTH,
     MIN_TABLE_COLUMN_WIDTH,
+    TARGET_TABLE_COLUMNS,
     ColumnCellLayout,
     DisplayLineModel,
     DisplaySegment,
@@ -295,11 +296,6 @@ def _project_column_group(
     width: int,
     preceding: list[DisplaySegment],
 ) -> list[DisplaySegment]:
-    # Keep every source cell on one physical row until its slot would fall below
-    # the readable minimum. Spare width then grows all slots evenly up to the
-    # script preference and the TUI cap, so resizing does not require reparsing.
-    capacity = max(1, width // MIN_TABLE_COLUMN_WIDTH)
-    row_columns = min(len(cells), capacity)
     preferred = max(
         MIN_TABLE_COLUMN_WIDTH,
         min(
@@ -307,21 +303,33 @@ def _project_column_group(
             max(cell.preferred_columns for cell in cells),
         ),
     )
-    available_per_column = (
-        width // row_columns if width >= MIN_TABLE_COLUMN_WIDTH else MIN_TABLE_COLUMN_WIDTH
-    )
-    column_width = max(
-        MIN_TABLE_COLUMN_WIDTH,
-        min(MAX_TABLE_COLUMN_WIDTH, preferred, available_per_column),
-    )
+    target_width = MAX_TABLE_COLUMN_WIDTH * TARGET_TABLE_COLUMNS
+    if width <= target_width:
+        # Compact up to five cells before reducing the row count. This keeps common
+        # PRINTC menus dense on narrow terminals without violating the readable minimum.
+        capacity = min(
+            TARGET_TABLE_COLUMNS,
+            max(1, width // MIN_TABLE_COLUMN_WIDTH),
+        )
+        row_columns = min(len(cells), capacity)
+        available_per_column = (
+            width // row_columns if width >= MIN_TABLE_COLUMN_WIDTH else MIN_TABLE_COLUMN_WIDTH
+        )
+        column_width = max(
+            MIN_TABLE_COLUMN_WIDTH,
+            min(MAX_TABLE_COLUMN_WIDTH, preferred, available_per_column),
+        )
+    else:
+        # Wide viewports add columns only at the maximum width; they never stretch
+        # or compact cells merely to consume the trailing remainder.
+        column_width = MAX_TABLE_COLUMN_WIDTH
+        capacity = max(1, width // column_width)
 
     result: list[DisplaySegment] = []
     cursor = _last_row_width(preceding)
     cells_on_row = 0
     for cell in cells:
-        if cells_on_row >= capacity or (
-            cursor > 0 and cursor + MIN_TABLE_COLUMN_WIDTH > width
-        ):
+        if cells_on_row >= capacity or (cursor > 0 and cursor + column_width > width):
             result.append(DisplaySegment("\n"))
             cursor = 0
             cells_on_row = 0

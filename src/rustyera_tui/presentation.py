@@ -11,8 +11,9 @@ from rich.cells import cell_len
 from .wire import unwrap_variant, variant
 
 DEFAULT_VIEWPORT_COLUMNS = 100
-MIN_TABLE_COLUMN_WIDTH = 12
-MAX_TABLE_COLUMN_WIDTH = 20
+MIN_TABLE_COLUMN_WIDTH = 16
+MAX_TABLE_COLUMN_WIDTH = 24
+TARGET_TABLE_COLUMNS = 5
 SAVE_DELETE_PATTERN = re.compile(r"Delete save\d+\.sav")
 
 

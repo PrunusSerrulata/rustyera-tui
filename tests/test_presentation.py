@@ -1,5 +1,8 @@
 from rustyera_tui.presentation import (
     DEFAULT_VIEWPORT_COLUMNS,
+    MAX_TABLE_COLUMN_WIDTH,
+    MIN_TABLE_COLUMN_WIDTH,
+    TARGET_TABLE_COLUMNS,
     ColumnCellLayout,
     PresentationModel,
     SeparatorLayout,
@@ -60,6 +63,12 @@ def test_snapshot_preserves_color_and_button_token() -> None:
     assert model.lines[0].segments[0].text == "开始"
     assert model.lines[0].segments[0].style.foreground == "#00ff80"
     assert model.lines[0].segments[0].token == {0: 1, 1: 1}
+
+
+def test_tui_table_width_policy_uses_the_game_menu_bounds() -> None:
+    assert MIN_TABLE_COLUMN_WIDTH == 16
+    assert MAX_TABLE_COLUMN_WIDTH == 24
+    assert TARGET_TABLE_COLUMNS == 5
 
 
 def test_column_cells_preserve_semantic_layout_until_rendering() -> None:

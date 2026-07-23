@@ -125,13 +125,13 @@ async def test_horizontal_scrollbar_replaces_the_prompt_separator(tmp_path: Path
         assert separator.display
 
 
-async def test_column_cells_reflow_live_between_twelve_and_twenty_cells(
+async def test_column_cells_reflow_around_the_five_column_target(
     tmp_path: Path,
 ) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
-    segments = tuple(DisplaySegment(f"[{index}]") for index in range(5))
+    segments = tuple(DisplaySegment(f"[{index}]") for index in range(8))
     line = DisplayLineModel(
         1,
         False,
@@ -139,7 +139,7 @@ async def test_column_cells_reflow_live_between_twelve_and_twenty_cells(
         True,
         0,
         segments,
-        tuple(ColumnCellLayout(index, index + 1, 0, 25) for index in range(5)),
+        tuple(ColumnCellLayout(index, index + 1, 0, 25) for index in range(8)),
     )
     async with app.run_test(size=(100, 30)) as pilot:
         viewport = app.query_one(GameViewport)
@@ -149,25 +149,41 @@ async def test_column_cells_reflow_live_between_twelve_and_twenty_cells(
         identity = id(game_line)
 
         rows = game_line.render().plain.splitlines()
-        assert [cell_len(row) for row in rows] == [100]
+        assert [cell_len(row) for row in rows] == [100, 60]
 
         await pilot.resize_terminal(80, 30)
         rows = game_line.render().plain.splitlines()
-        assert [cell_len(row) for row in rows] == [80]
+        assert [cell_len(row) for row in rows] == [80, 48]
+
+        await pilot.resize_terminal(79, 30)
+        rows = game_line.render().plain.splitlines()
+        assert [cell_len(row) for row in rows] == [76, 76]
 
         await pilot.resize_terminal(59, 30)
         rows = game_line.render().plain.splitlines()
-        assert [cell_len(row) for row in rows] == [56, 14]
+        assert [cell_len(row) for row in rows] == [57, 57, 38]
         assert id(app.query_one(GameLine)) == identity
 
         await pilot.resize_terminal(24, 30)
         rows = game_line.render().plain.splitlines()
-        assert [cell_len(row) for row in rows] == [24, 24, 12]
+        assert [cell_len(row) for row in rows] == [24] * 8
 
-        await pilot.resize_terminal(11, 30)
+        await pilot.resize_terminal(15, 30)
         rows = game_line.render().plain.splitlines()
-        assert [cell_len(row) for row in rows] == [12, 12, 12, 12, 12]
+        assert [cell_len(row) for row in rows] == [16] * 8
         assert viewport.show_horizontal_scrollbar
+
+        await pilot.resize_terminal(120, 30)
+        assert [cell_len(row) for row in game_line.render().plain.splitlines()] == [120, 72]
+
+        await pilot.resize_terminal(121, 30)
+        assert [cell_len(row) for row in game_line.render().plain.splitlines()] == [120, 72]
+
+        await pilot.resize_terminal(143, 30)
+        assert [cell_len(row) for row in game_line.render().plain.splitlines()] == [120, 72]
+
+        await pilot.resize_terminal(144, 30)
+        assert [cell_len(row) for row in game_line.render().plain.splitlines()] == [144, 48]
 
 
 async def test_responsive_layout_preserves_long_text_maps_and_button_coordinates(
@@ -214,11 +230,11 @@ async def test_responsive_layout_preserves_long_text_maps_and_button_coordinates
         await pilot.pause()
         game_lines = list(app.query(GameLine))
 
-        assert [region.row for region in game_lines[0].regions] == [0, 0, 0, 0, 1]
+        assert [region.row for region in game_lines[0].regions] == [0, 0, 0, 1, 1]
         assert game_lines[1].render().plain == "x" * 24
         assert "\n" not in game_lines[2].render().plain
         assert game_lines[2].render().plain == "┌" + "─" * 39 + "┐"
-        assert await pilot.click(game_lines[0], offset=(1, 1))
+        assert await pilot.click(game_lines[0], offset=(20, 1))
         assert ("activate", tokens[4]) in worker.commands
         map_content = game_lines[2].content
 
