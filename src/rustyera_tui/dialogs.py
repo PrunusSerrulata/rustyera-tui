@@ -7,6 +7,7 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.coordinate import Coordinate
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -152,23 +153,25 @@ class VariableDialog(ModalScreen[None]):
     def __init__(self) -> None:
         super().__init__()
         self.descriptors: list[dict[int, Any]] = []
+        self.pending_value_row: int | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide-dialog"):
             yield Label("变量查看（调试暂停点）", classes="dialog-title")
             yield Static("正在请求一致的变量列表…", id="variable-status")
-            yield DataTable(id="variable-table", zebra_stripes=True)
+            yield DataTable(id="variable-table", zebra_stripes=True, cursor_type="row")
             with Horizontal(classes="dialog-buttons"):
                 yield Button("刷新", id="variables-refresh", variant="primary")
                 yield Button("关闭", id="dialog-close")
 
     def on_mount(self) -> None:
         table = self.query_one("#variable-table", DataTable)
-        table.add_columns("名称", "存储", "类型", "维度", "可写")
+        table.add_columns("名称", "存储", "类型", "维度", "可写", "值")
 
     def set_variables(self, page: dict[int, Any]) -> None:
         table = self.query_one("#variable-table", DataTable)
         table.clear()
+        self.pending_value_row = None
         storage_names = ["全局", "函数静态", "角色", "局部"]
         type_names = ["整数", "字符串", "布尔", "字节"]
         self.descriptors = list(page.get(1, []))
@@ -179,13 +182,23 @@ class VariableDialog(ModalScreen[None]):
                 type_names[descriptor.get(3, 0)],
                 "×".join(str(value) for value in descriptor.get(4, [])) or "标量",
                 "是" if descriptor.get(5) else "否",
+                "选择查看",
                 key=str(index),
             )
         self.query_one("#variable-status", Static).update(f"共 {len(page.get(1, []))} 个变量")
 
     def set_value(self, value: dict[int, Any]) -> None:
+        rendered = _debug_value_text(value.get(1))
+        if self.pending_value_row is not None:
+            self.query_one("#variable-table", DataTable).update_cell_at(
+                Coordinate(self.pending_value_row, 5),
+                rendered,
+            )
+        reference = value.get(0, {})
+        indices = reference.get(6, [])
+        suffix = f"[{', '.join(str(index) for index in indices)}]" if indices else ""
         self.query_one("#variable-status", Static).update(
-            f"当前值：{value.get(1)!r}（revision {value.get(2, 0)}）"
+            f"当前值{suffix}：{rendered}（revision {value.get(2, 0)}）"
         )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -193,6 +206,10 @@ class VariableDialog(ModalScreen[None]):
             descriptor = self.descriptors[int(event.row_key.value)]
         except (TypeError, ValueError, IndexError):
             return
+        self.pending_value_row = int(event.row_key.value)
+        self.query_one("#variable-status", Static).update(
+            f"正在读取 {descriptor.get(1, '')} 的当前值…"
+        )
         self.post_message(self.ReadRequested(descriptor))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -204,6 +221,25 @@ class VariableDialog(ModalScreen[None]):
 
 class VariableRefresh(Message):
     pass
+
+
+def _debug_value_text(value: Any) -> str:
+    try:
+        tag, fields = value
+        field = fields[0]
+    except (TypeError, ValueError, IndexError):
+        return repr(value)
+    if tag == 0:
+        return str(field)
+    if tag == 1:
+        return repr(field)
+    if tag == 2:
+        return "true" if field else "false"
+    if tag == 3:
+        return field.hex() if isinstance(field, bytes) else repr(field)
+    if tag == 4:
+        return "<place>"
+    return repr(value)
 
 
 class StackDialog(ModalScreen[None]):

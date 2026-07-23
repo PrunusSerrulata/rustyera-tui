@@ -10,7 +10,7 @@ from rustyera_tui.presentation import DisplayLineModel, DisplaySegment
 from rustyera_tui.runtime import FrontendEvent, RuntimeFailure
 from rustyera_tui.widgets import GameLine, GameViewport
 from rustyera_tui.wire import variant
-from textual.widgets import Input, Static, TextArea
+from textual.widgets import DataTable, Input, Static, TextArea
 
 
 class FakeWorker:
@@ -130,13 +130,16 @@ async def test_viewport_update_always_scrolls_to_the_bottom(tmp_path: Path) -> N
         viewport = app.query_one(GameViewport)
         await viewport.set_lines(lines)
         await pilot.pause()
+        await pilot.pause()
         assert viewport.is_vertical_scroll_end
 
         viewport.scroll_home(animate=False, x_axis=False)
         await pilot.pause()
+        await pilot.pause()
         assert not viewport.is_vertical_scroll_end
 
         await viewport.set_lines([*lines, DisplayLineModel(40, False, True, True, 0, ())])
+        await pilot.pause()
         await pilot.pause()
         assert viewport.is_vertical_scroll_end
 
@@ -220,6 +223,108 @@ async def test_log_uses_text_for_runtime_and_debug_enums(tmp_path: Path) -> None
         await pilot.pause(0.1)
         assert any("Runtime phase -> WaitingInput" in log for log in app.logs)
         assert any("调试暂停：StepCompleted" in log for log in app.logs)
+
+
+async def test_single_step_prompt_shows_source_and_f10_advances(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._set_debug_enabled(True)
+        app._debug_action("debug-step-toggle")
+        worker.commands.clear()
+
+        worker.events.put(
+            FrontendEvent(
+                "debug_stopped",
+                {
+                    0: {0: 1, 1: 2, 2: 3, 3: 4},
+                    1: variant(2),
+                    2: 7,
+                    3: {0: "ERB/main.erb", 4: 12},
+                },
+            )
+        )
+        await pilot.pause(0.1)
+
+        prompt = app.query_one("#prompt", Input)
+        assert prompt.disabled
+        assert prompt.placeholder == "单步暂停：ERB/main.erb:12（F10 继续）"
+
+        await pilot.press("f10")
+        assert ("debug_step", None) in worker.commands
+        assert not app.debug_paused
+
+
+async def test_debug_host_wait_blocks_input_only_until_runtime_resumes(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    wait = {0: 7, 1: 0, 11: {0: 1, 1: 2}}
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._set_debug_enabled(True)
+        app.single_step = True
+        worker.events.put(FrontendEvent("wait", wait))
+        worker.events.put(
+            FrontendEvent(
+                "debug_stopped",
+                {0: {0: 1}, 1: variant(3), 2: 7, 3: {0: "ERB/main.erb", 4: 20}},
+            )
+        )
+        await pilot.pause(0.1)
+
+        await pilot.click("#game-viewport", offset=(10, 5))
+        assert not any(kind == "submit_text" for kind, _value in worker.commands)
+
+        worker.events.put(FrontendEvent("phase", 5))
+        await pilot.pause(0.1)
+        await pilot.click("#game-viewport", offset=(10, 5))
+        assert ("submit_text", "") in worker.commands
+        assert not any("命令被拒绝" in log for log in app.logs)
+
+
+async def test_debug_console_commands_remain_available_while_paused(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)):
+        app._set_debug_enabled(True)
+        app._debug_action("debug-console")
+        assert app.console_dialog is not None
+        app.debug_paused = True
+
+        app.on_debug_console_dialog_submitted(
+            app.console_dialog.Submitted("RESULT = 7", execute=True)
+        )
+
+        assert ("debug_action", ("console_execute", "RESULT = 7")) in worker.commands
+
+
+async def test_variable_viewer_renders_selected_variable_value(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    descriptor = {0: b"key", 1: "RESULT", 2: 0, 3: 0, 4: [10], 5: True}
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._set_debug_enabled(True)
+        app._debug_action("debug-variables")
+        await pilot.pause()
+        assert app.variable_dialog is not None
+        app.variable_dialog.set_variables({1: [descriptor]})
+        app.debug_paused = True
+
+        table = app.screen.query_one("#variable-table", DataTable)
+        table.move_cursor(row=0)
+        await pilot.press("enter")
+        assert ("debug_action", ("read_variable", descriptor)) in worker.commands
+
+        app._handle_debug_response(
+            ("variable_value", 2, [{0: {6: [0]}, 1: variant(0, 42), 2: 9}])
+        )
+        assert table.get_row_at(0)[5] == "42"
+        assert "当前值[0]：42" in str(
+            app.screen.query_one("#variable-status", Static).render()
+        )
 
 
 async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path) -> None:

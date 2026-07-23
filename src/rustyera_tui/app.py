@@ -73,6 +73,9 @@ class RustyEraTui(App[None]):
         self.logs: list[str] = []
         self.debug_enabled = False
         self.single_step = False
+        self.debug_paused = False
+        self.debug_location: str | None = None
+        self.runtime_phase = 0
         self.environment_revision = 0
         self.exit_pending = False
         self.snapshot_exporting = False
@@ -166,10 +169,14 @@ class RustyEraTui(App[None]):
             if not prompt.value:
                 prompt.value = value
         elif kind == "phase":
+            self.runtime_phase = int(value)
+            if self.runtime_phase != 7:
+                self.debug_paused = False
+                self.debug_location = None
             if value != 11 and self.blocking_error is not None:
                 self.blocking_error = None
-                self._update_prompt()
-                self._refresh_interaction_lock()
+            self._update_prompt()
+            self._refresh_interaction_lock()
             phase = enum_text(value, RUNTIME_PHASES, "RuntimePhase")
             self._log(f"Runtime phase -> {phase}")
         elif kind == "status":
@@ -199,7 +206,16 @@ class RustyEraTui(App[None]):
             self._set_debug_enabled(bool(value))
         elif kind == "debug_stopped":
             reason = variant_enum_text(value.get(1), DEBUG_STOP_REASONS, "StopReason")
-            self._set_status(f"调试暂停：{reason}")
+            source = value.get(3)
+            self.debug_location = (
+                f"{source.get(0)}:{source.get(4)}"
+                if source and source.get(0) is not None
+                else None
+            )
+            self.debug_paused = True
+            self._log(f"调试暂停：{reason}")
+            self._update_prompt()
+            self._refresh_interaction_lock()
         elif kind == "debug_response":
             self._handle_debug_response(value)
         elif kind == "exit_requested":
@@ -253,6 +269,16 @@ class RustyEraTui(App[None]):
             prompt.disabled = True
             prompt.placeholder = "页面渲染中……"
             return
+        if self.debug_paused:
+            self._set_prompt_state("prompt-running")
+            prompt.disabled = True
+            location = self.debug_location or "当前位置不可用"
+            prompt.placeholder = (
+                f"单步暂停：{location}（F10 继续）"
+                if self.single_step
+                else f"调试暂停：{location}"
+            )
+            return
         prompt.disabled = self.active_wait is None
         if self.active_wait is None:
             self._set_prompt_state("prompt-running")
@@ -297,10 +323,18 @@ class RustyEraTui(App[None]):
             self.snapshot_exporting
             or self.presentation_rendering
             or self.blocking_error is not None
+            or self.debug_paused
             or (
                 self._activated_wait is not None
                 and self._wait_identity(self.active_wait) == self._activated_wait
             )
+        )
+
+    def _debug_interactions_blocked(self) -> bool:
+        return (
+            not self.debug_enabled
+            or self.snapshot_exporting
+            or self.blocking_error is not None
         )
 
     def _refresh_interaction_lock(self) -> None:
@@ -333,7 +367,11 @@ class RustyEraTui(App[None]):
             self.query_one(f"#{item_id}", Button).disabled = not enabled
         if not enabled:
             self.single_step = False
+            self.debug_paused = False
+            self.debug_location = None
             self.query_one("#debug-step-toggle", Button).label = "开启单步运行"
+            self._update_prompt()
+            self._refresh_interaction_lock()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         item_id = event.button.id or ""
@@ -412,22 +450,30 @@ class RustyEraTui(App[None]):
             self.worker.send("debug_disable" if self.debug_enabled else "debug_enable")
         elif item_id == "debug-console" and self.debug_enabled:
             self.console_dialog = DebugConsoleDialog()
-            self.push_screen(self.console_dialog)
+            self.push_screen(
+                self.console_dialog,
+                lambda _result: self.worker.send("debug_surface_closed", "console"),
+            )
         elif item_id == "debug-variables" and self.debug_enabled:
             self.variable_dialog = VariableDialog()
-            self.push_screen(self.variable_dialog)
+            self.push_screen(
+                self.variable_dialog,
+                lambda _result: self.worker.send("debug_surface_closed", "variables"),
+            )
             self.worker.send("debug_action", ("variables", None))
         elif item_id == "debug-stack" and self.debug_enabled:
             self.stack_dialog = StackDialog()
-            self.push_screen(self.stack_dialog)
+            self.push_screen(
+                self.stack_dialog,
+                lambda _result: self.worker.send("debug_surface_closed", "stack"),
+            )
             self.worker.send("debug_action", ("fibers", None))
         elif item_id == "debug-step-toggle" and self.debug_enabled:
             self.single_step = not self.single_step
             self.query_one("#debug-step-toggle", Button).label = (
                 "关闭单步运行" if self.single_step else "开启单步运行"
             )
-            if self.single_step:
-                self.worker.send("debug_action", ("pause_only", None))
+            self.worker.send("debug_single_step", self.single_step)
         elif item_id == "debug-logs":
             self.push_screen(LogDialog(list(self.logs)))
 
@@ -541,17 +587,17 @@ class RustyEraTui(App[None]):
         self.query_one("#separator-line").display = not event.visible
 
     def on_debug_console_dialog_submitted(self, event: DebugConsoleDialog.Submitted) -> None:
-        if self._game_interactions_blocked():
+        if self._debug_interactions_blocked():
             return
         action = "console_execute" if event.execute else "console_evaluate"
         self.worker.send("debug_action", (action, event.source))
 
     def on_variable_refresh(self, _event: VariableRefresh) -> None:
-        if not self._game_interactions_blocked():
+        if not self._debug_interactions_blocked():
             self.worker.send("debug_action", ("variables", None))
 
     def on_variable_dialog_read_requested(self, event: VariableDialog.ReadRequested) -> None:
-        if not self._game_interactions_blocked():
+        if not self._debug_interactions_blocked():
             self.worker.send("debug_action", ("read_variable", event.descriptor))
 
     def on_resize(self, event: events.Resize) -> None:
@@ -577,7 +623,11 @@ class RustyEraTui(App[None]):
             self.worker.send("input_undo", self.input_undo_token)
 
     def action_debug_step(self) -> None:
-        if not self._game_interactions_blocked() and self.debug_enabled and self.single_step:
+        if self.debug_enabled and self.single_step and self.debug_paused:
+            self.debug_paused = False
+            self.debug_location = None
+            self._update_prompt()
+            self._refresh_interaction_lock()
             self.worker.send("debug_step")
 
     def action_request_quit(self) -> None:

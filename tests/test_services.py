@@ -5,7 +5,7 @@ from typing import Any
 
 from rustyera_tui.presentation import ServicePresentationModel
 from rustyera_tui.runtime import RuntimeClient, RuntimeFailure
-from rustyera_tui.wire import decode, encode, unwrap_variant
+from rustyera_tui.wire import decode, encode, unwrap_variant, variant
 
 
 def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
@@ -19,6 +19,7 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client._projection_messages = set()
     client._message_skip_active = False
     client._message_skip_wait_id = None
+    client.single_step_enabled = False
     captured: list[tuple[int, Any]] = []
     client.send_runtime = (  # type: ignore[method-assign]
         lambda tag, value, **_kwargs: captured.append((tag, value)) or 1
@@ -31,6 +32,29 @@ def ready_payload(captured: list[tuple[int, Any]]) -> dict[int, Any]:
     result_tag, result_fields = unwrap_variant(captured[0][1][1])
     assert result_tag == 0
     return decode(result_fields[0])
+
+
+def debug_client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any, str]]]:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client.phase = 4
+    client.active_wait = None
+    client.debug_requested = True
+    client.debug_grant = {1: {0: {0: 7, 1: 9}}}
+    client.stop_token = None
+    client.selected_fiber = None
+    client.pending_debug_actions = []
+    client.debug_pending_by_message = {}
+    client.single_step_enabled = False
+    client.debug_step_in_flight = False
+    client.debug_disable_pending = False
+    client.transient_pause_owner = None
+    client.transient_close_pending = None
+    captured: list[tuple[int, Any, str]] = []
+    client.send_debug = (  # type: ignore[method-assign]
+        lambda tag, value, pending="": captured.append((tag, value, pending)) or 1
+    )
+    return client, captured
 
 
 def test_display_line_service_returns_the_tui_projection() -> None:
@@ -113,6 +137,96 @@ def test_stale_projection_rejection_is_recoverable_but_runtime_fault_is_structur
     assert isinstance(fault.value, RuntimeFailure)
     assert fault.value.function == "EVENTTRAIN"
     assert fault.value.source_line == 28
+
+
+def test_single_step_host_wait_auto_continues_before_gameplay_input() -> None:
+    client, captured = debug_client_with_capture()
+    client.single_step_enabled = True
+    stop = {0: 1, 1: 2, 2: 3, 3: 4}
+
+    client._handle_debug(
+        12,
+        {0: stop, 1: variant(3), 2: 6, 3: {0: "ERB/main.erb", 4: 12}},
+        None,
+    )
+
+    event = client.events.get_nowait()
+    assert event.kind == "debug_stopped"
+    assert captured == [(10, {0: client.debug_grant[1], 1: variant(1, stop)}, "auto_continue")]
+
+
+def test_console_owned_pause_resumes_with_the_refreshed_stop_after_close() -> None:
+    client, captured = debug_client_with_capture()
+    old_stop = {0: 1, 1: 2, 2: 3, 3: 4}
+    new_stop = {0: 1, 1: 2, 2: 3, 3: 5}
+    client.stop_token = old_stop
+    client.transient_pause_owner = "console"
+    client.debug_pending_by_message = {42: "console"}
+
+    client.close_debug_surface("console")
+    assert captured == []
+
+    client._handle_debug(
+        11,
+        variant(8, {0: new_stop, 1: variant(0, 3), 2: [], 3: [], 4: [], 5: []}),
+        42,
+    )
+
+    assert captured == [
+        (10, {0: client.debug_grant[1], 1: variant(1, new_stop)}, "transient_continue")
+    ]
+
+
+def test_disabling_debug_revokes_the_grant_instead_of_leaving_a_paused_vm() -> None:
+    client, captured = debug_client_with_capture()
+    stop = {0: 1, 1: 2, 2: 3, 3: 4}
+    client.stop_token = stop
+
+    client.disable_debug()
+
+    assert captured == [
+        (10, {0: client.debug_grant[1], 1: variant(1, stop)}, "disable_continue"),
+    ]
+    assert client.debug_disable_pending
+    assert client.events.empty()
+
+    client.debug_pending_by_message = {41: "disable_continue"}
+    client._handle_debug(11, variant(0), 41)
+
+    assert captured == [
+        (10, {0: {0: {0: 7, 1: 9}}, 1: variant(1, stop)}, "disable_continue"),
+        (
+            2,
+            {0: {0: 7, 1: 9}, 1: "frontend disabled debugging"},
+            "",
+        )
+    ]
+    assert client.debug_grant is None
+    assert client.stop_token is None
+    response = client.events.get_nowait()
+    assert response.kind == "debug_response"
+    event = client.events.get_nowait()
+    assert event.kind == "debug_enabled"
+    assert event.value is False
+
+
+def test_debug_paused_client_does_not_submit_state_changing_gameplay_input() -> None:
+    client, captured_debug = debug_client_with_capture()
+    captured_runtime: list[tuple[int, Any]] = []
+    client.phase = 7
+    client.active_wait = {0: 4, 1: 0, 11: {0: 1, 1: 2}}
+    client.send_runtime = (  # type: ignore[method-assign]
+        lambda tag, value, **_kwargs: captured_runtime.append((tag, value)) or 1
+    )
+
+    client.submit_text("")
+    client.activate({0: 1})
+
+    assert captured_runtime == []
+    assert captured_debug == []
+    event = client.events.get_nowait()
+    assert event.kind == "log"
+    assert "暂不提交游戏输入" in event.value
 
 
 def test_message_skip_submits_each_enter_wait_once_and_stops_at_forcewait() -> None:

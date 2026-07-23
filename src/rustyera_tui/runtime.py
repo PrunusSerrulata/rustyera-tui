@@ -51,6 +51,16 @@ COMPILED_CACHE_RETRY_NS = 250_000_000
 STATE_IMPORT_CHUNK_BYTES = 16 * 1024 * 1024
 
 
+def _debug_action_owner(action: str) -> str | None:
+    if action.startswith("console_"):
+        return "console"
+    if action in {"variables", "read_variable"}:
+        return "variables"
+    if action in {"fibers", "call_stack", "operand_stack"}:
+        return "stack"
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class FrontendEvent:
     kind: str
@@ -128,6 +138,11 @@ class RuntimeClient:
         self.selected_fiber: int | None = None
         self.pending_debug_actions: list[tuple[str, Any]] = []
         self.debug_pending_by_message: dict[int, str] = {}
+        self.single_step_enabled = False
+        self.debug_step_in_flight = False
+        self.debug_disable_pending = False
+        self.transient_pause_owner: str | None = None
+        self.transient_close_pending: str | None = None
         self.last_time_advance_ns = 0
         self.shutting_down = False
         self._pending_presentation_events: list[tuple[str, dict[int, Any]]] = []
@@ -154,6 +169,11 @@ class RuntimeClient:
         self.selected_fiber = None
         self.pending_debug_actions.clear()
         self.debug_pending_by_message.clear()
+        self.single_step_enabled = False
+        self.debug_step_in_flight = False
+        self.debug_disable_pending = False
+        self.transient_pause_owner = None
+        self.transient_close_pending = None
         self.shutting_down = False
         self._pending_presentation_events.clear()
         self._wait_event_dirty = False
@@ -656,8 +676,8 @@ class RuntimeClient:
             self.send_runtime(31, {0: now})
 
     def submit_text(self, text: str) -> None:
-        if self.phase == 7 and self.stop_token is not None:
-            self.debug_step()
+        if self.phase == 7:
+            self.events.put(FrontendEvent("log", "调试暂停解除前暂不提交游戏输入。"))
             return
         wait = self.active_wait
         if wait is None:
@@ -692,7 +712,7 @@ class RuntimeClient:
         self._submit_input(wait, intent)
 
     def activate(self, button_token: dict[int, int]) -> None:
-        if self.active_wait is None:
+        if self.phase == 7 or self.active_wait is None:
             return
         self._message_skip_active = False
         self._message_skip_wait_id = None
@@ -725,6 +745,8 @@ class RuntimeClient:
                 4: message_skip,
             },
         )
+        if self.single_step_enabled and self.stop_token is None:
+            self.request_debug_action("pause_only")
 
     def input_undo(self, token: dict[int, Any] | None) -> None:
         if token is not None:
@@ -888,10 +910,43 @@ class RuntimeClient:
             self.send_debug(0, {0: version_range(*DEBUG_VERSION), 1: list(range(10))})
 
     def disable_debug(self) -> None:
-        if self.stop_token is not None:
-            self._debug_request(variant(1, self.stop_token), "continue")
         self.pending_debug_actions.clear()
+        self.single_step_enabled = False
+        self.transient_pause_owner = None
+        self.transient_close_pending = None
+        self.debug_disable_pending = True
+        if self.debug_step_in_flight:
+            return
+        if self.stop_token is not None:
+            self._debug_request(variant(1, self.stop_token), "disable_continue")
+        else:
+            self._revoke_debug()
+
+    def _revoke_debug(self) -> None:
+        if self.debug_grant is not None:
+            self.send_debug(
+                2,
+                {
+                    0: self.debug_grant[1][0],
+                    1: "frontend disabled debugging",
+                },
+            )
+        self.debug_requested = False
+        self.debug_grant = None
+        self.stop_token = None
+        self.selected_fiber = None
+        self.debug_pending_by_message.clear()
+        self.debug_step_in_flight = False
+        self.debug_disable_pending = False
         self.events.put(FrontendEvent("debug_enabled", False))
+
+    def set_single_step(self, enabled: bool) -> None:
+        self.single_step_enabled = enabled
+        if enabled:
+            if self.phase == 4 and self.stop_token is None:
+                self.request_debug_action("pause_only")
+        elif self.stop_token is not None:
+            self._debug_request(variant(1, self.stop_token), "continue")
 
     def request_debug_action(self, action: str, value: Any = None) -> None:
         if self.debug_grant is None:
@@ -900,9 +955,31 @@ class RuntimeClient:
             return
         if self.stop_token is None:
             self.pending_debug_actions.append((action, value))
+            owner = _debug_action_owner(action)
+            if owner is not None and self.transient_pause_owner is None:
+                self.transient_pause_owner = owner
             self._debug_request(variant(0), "pause")
             return
         self._run_debug_action(action, value)
+
+    def close_debug_surface(self, owner: str) -> None:
+        if self.transient_pause_owner != owner:
+            return
+        self.transient_close_pending = owner
+        self._resume_transient_pause_if_ready()
+
+    def _resume_transient_pause_if_ready(self) -> None:
+        if (
+            self.stop_token is None
+            or self.transient_pause_owner is None
+            or self.transient_close_pending != self.transient_pause_owner
+            or any(
+                pending not in {"continue", "transient_continue"}
+                for pending in self.debug_pending_by_message.values()
+            )
+        ):
+            return
+        self._debug_request(variant(1, self.stop_token), "transient_continue")
 
     def _run_debug_action(self, action: str, value: Any) -> None:
         if self.stop_token is None:
@@ -948,7 +1025,8 @@ class RuntimeClient:
         self.send_debug(10, {0: self.debug_grant[1], 1: command}, pending=pending)
 
     def debug_step(self) -> None:
-        if self.stop_token is not None:
+        if self.stop_token is not None and self.selected_fiber is not None:
+            self.debug_step_in_flight = True
             self._debug_request(variant(2, self.stop_token, self.selected_fiber or 0, 1), "step")
 
     def _handle_debug(self, tag: int, value: Any, correlation_id: int | None) -> None:
@@ -963,23 +1041,54 @@ class RuntimeClient:
             self.debug_grant = None
             self.stop_token = None
             self.selected_fiber = None
+            self.debug_step_in_flight = False
+            self.debug_disable_pending = False
+            self.transient_pause_owner = None
+            self.transient_close_pending = None
             self.events.put(FrontendEvent("debug_enabled", False))
             self.events.put(FrontendEvent("log", f"调试权限已撤销：{value.get(1, '')}"))
         elif tag == 11:
             response_tag, fields = unwrap_variant(value)
             pending = self.debug_pending_by_message.pop(correlation_id or 0, "")
+            if response_tag == 8 and fields:
+                self.stop_token = fields[0].get(0, self.stop_token)
             self.events.put(FrontendEvent("debug_response", (pending, response_tag, fields)))
-            if pending == "continue":
+            if pending in {
+                "continue",
+                "disable_continue",
+                "transient_continue",
+                "auto_continue",
+                "step",
+            }:
                 self.stop_token = None
+            if pending == "disable_continue":
+                self._revoke_debug()
+                return
+            if pending == "transient_continue":
+                self.transient_pause_owner = None
+                self.transient_close_pending = None
+            self._resume_transient_pause_if_ready()
         elif tag == 12:
             self.stop_token = value[0]
             self.selected_fiber = value.get(2)
+            self.debug_step_in_flight = False
+            if self.debug_disable_pending:
+                self._debug_request(variant(1, self.stop_token), "disable_continue")
+                return
             self.events.put(FrontendEvent("debug_stopped", value))
             pending = list(self.pending_debug_actions)
             self.pending_debug_actions.clear()
             for action, argument in pending:
                 self._run_debug_action(action, argument)
+            if self.single_step_enabled and unwrap_variant(value[1])[0] == 3:
+                self._debug_request(variant(1, self.stop_token), "auto_continue")
+            self._resume_transient_pause_if_ready()
         elif tag == 13:
+            pending = self.debug_pending_by_message.pop(correlation_id or 0, "")
+            if pending == "step":
+                self.debug_step_in_flight = False
+            if self.debug_disable_pending:
+                self._revoke_debug()
             self.events.put(FrontendEvent("error", f"调试请求失败：{value.get(1, '')}"))
 
     def shutdown(self) -> None:
@@ -1099,9 +1208,13 @@ class RuntimeWorker(threading.Thread):
                     client.enable_debug()
                 case "debug_disable":
                     client.disable_debug()
+                case "debug_single_step":
+                    client.set_single_step(bool(command.value))
                 case "debug_action":
                     action, value = command.value
                     client.request_debug_action(action, value)
+                case "debug_surface_closed":
+                    client.close_debug_surface(str(command.value))
                 case "debug_step":
                     client.debug_step()
                 case "shutdown":

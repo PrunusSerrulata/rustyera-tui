@@ -300,6 +300,66 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
 
 
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
+def test_real_c_abi_single_step_crosses_input_wait_without_rejected_commands(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "single-step-project"
+    project.mkdir()
+    (project / "main.erb").write_text(
+        "@SYSTEM_TITLE\nPRINTL before\nWAIT\nPRINTL after\nWAIT\nRETURN\n",
+        encoding="utf-8",
+    )
+    worker = RuntimeWorker(RUNTIME_LIBRARY, project)
+    worker.start()
+    try:
+        wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
+        worker.send("debug_enable")
+        wait_for(worker, lambda event: event.kind == "debug_enabled" and event.value)
+        worker.send("debug_single_step", True)
+        worker.send("submit_text", "")
+
+        stops: list[FrontendEvent] = []
+        for _ in range(8):
+            stopped = wait_for(worker, lambda event: event.kind == "debug_stopped")
+            stops.append(stopped)
+            source = stopped.value.get(3)
+            assert source is not None
+            assert source.get(0) == "main.erb"
+            if stopped.value[1][0] == 3:
+                break
+            worker.send("debug_step")
+        else:
+            pytest.fail("single stepping did not reach the next input host wait")
+
+        wait_for(worker, lambda event: event.kind == "phase" and event.value == 5)
+
+        worker.send("debug_single_step", False)
+        worker.send("debug_action", ("console_execute", "RESULT = 7"))
+        wait_for(worker, lambda event: event.kind == "debug_stopped")
+        console = wait_for(
+            worker,
+            lambda event: event.kind == "debug_response" and event.value[0] == "console",
+        )
+        assert console.value[1] == 8
+        worker.send("debug_surface_closed", "console")
+        wait_for(worker, lambda event: event.kind == "phase" and event.value == 5)
+
+        worker.send("debug_action", ("pause_only", None))
+        wait_for(worker, lambda event: event.kind == "debug_stopped")
+        worker.send("debug_disable")
+        resumed = wait_for(worker, lambda event: event.kind == "phase")
+        assert resumed.value == 5
+        disabled = wait_for(
+            worker,
+            lambda event: event.kind == "debug_enabled" and not event.value,
+        )
+        assert disabled.value is False
+    finally:
+        worker.stop()
+        worker.join(timeout=3)
+
+
+@pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
 def test_real_c_abi_projects_three_channel_background_and_reset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
