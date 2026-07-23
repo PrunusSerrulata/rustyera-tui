@@ -66,6 +66,24 @@ def test_gameplay_input_defers_pending_cache_compression(
     assert client.cache_refresh_after_ns == 550
 
 
+def test_state_import_uses_large_contiguous_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = object.__new__(RuntimeClient)
+    client.import_bytes = b"123456789"
+    client.import_transfer_id = None
+    commands: list[tuple[int, dict[int, object]]] = []
+    client.send_runtime = lambda tag, value: commands.append((tag, value))  # type: ignore[method-assign]
+    monkeypatch.setattr("rustyera_tui.runtime.STATE_IMPORT_CHUNK_BYTES", 4)
+
+    client._handle_import_accepted({0: 7})
+
+    assert [(tag, value.get(1), len(value.get(2, b""))) for tag, value in commands] == [
+        (64, 0, 4),
+        (64, 4, 4),
+        (64, 8, 1),
+        (65, None, 0),
+    ]
+
+
 def wait_for(
     worker: RuntimeWorker,
     predicate: Callable[[FrontendEvent], bool],

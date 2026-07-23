@@ -48,6 +48,7 @@ from .wire import (
 
 COMPILED_CACHE_PERSIST_DELAY_NS = 10_000_000_000
 COMPILED_CACHE_RETRY_NS = 250_000_000
+STATE_IMPORT_CHUNK_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -854,7 +855,7 @@ class RuntimeClient:
         self.import_transfer_id = transfer_id
         offset = 0
         while offset < len(self.import_bytes):
-            part = self.import_bytes[offset : offset + 1024 * 1024]
+            part = self.import_bytes[offset : offset + STATE_IMPORT_CHUNK_BYTES]
             self.send_runtime(64, {0: transfer_id, 1: offset, 2: part})
             offset += len(part)
         self.send_runtime(65, {0: transfer_id})
