@@ -128,4 +128,23 @@ jobs:
           target_commitish: ${{ github.sha }}
           prerelease: true
           generate_release_notes: true
+          body: |
+            ## 使用方法
+
+            1. 下载与操作系统和 CPU 架构相符的 ZIP：`windows-x86_64`、`linux-x86_64`、`linux-aarch64`、`macos-x86_64` 或 `macos-arm64`。
+            2. 解压 ZIP。压缩包包含 Textual TUI 源码、`pyproject.toml`/`uv.lock` 和对应平台的 `era-runtime-capi` 动态库；不包含游戏资源。
+            3. 安装 Python 3.12 或更高版本及 [uv](https://docs.astral.sh/uv/)，然后在解压目录运行 `uv sync` 安装依赖。
+            4. 将游戏的 `CSV/` 和 `ERB/` 等资源目录放入解压目录后，可在该目录运行 `uv run rustyera-tui`。
+
+            如游戏资源和/或runtime动态库位于其他目录，请在解压目录运行以下命令，并作如下替换：
+            * `GAME_DIRECTORY` 替换为包含 `CSV/` 和 `ERB/` 的路径
+            * `LIBRARY_FILE` 替换为当前压缩包内的动态库文件名：
+              * Windows 为 `era_runtime_capi.dll`
+              * Linux 为 `libera_runtime_capi.so`
+              * macOS 为 `libera_runtime_capi.dylib`
+
+            ```sh
+            uv run rustyera-tui GAME_DIRECTORY --runtime-library ./LIBRARY_FILE
+            ```
+
           files: packages/*.zip
