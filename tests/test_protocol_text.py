@@ -11,7 +11,7 @@ from rustyera_tui.protocol_text import (
     enum_text,
     variant_enum_text,
 )
-from rustyera_tui.runtime import RuntimeClient
+from rustyera_tui.runtime import RuntimeClient, format_project_diagnostic
 
 
 def test_known_wire_enums_use_textual_protocol_names() -> None:
@@ -29,6 +29,45 @@ def test_known_wire_enums_use_textual_protocol_names() -> None:
 
 def test_unknown_wire_enums_remain_readable_without_numeric_only_output() -> None:
     assert enum_text(99, RUNTIME_PHASES, "RuntimePhase") == "UnknownRuntimePhase[99]"
+
+
+def test_project_diagnostic_renders_path_category_and_utf8_source_span() -> None:
+    source = '@MAIN\nRESULT = "你好"\n'
+    byte_start = source.encode("utf-8").index('"你好"'.encode())
+    diagnostic = {
+        0: "analyzer.type_mismatch",
+        1: 2,
+        2: "cannot assign a string to an integer",
+        3: {
+            0: "ERB/main.erb",
+            1: byte_start,
+            2: byte_start + len('"你好"'.encode()),
+            3: 1,
+            4: 9,
+        },
+    }
+
+    assert format_project_diagnostic(diagnostic, source) == (
+        "ERB/main.erb:2:10: error[analyzer.type_mismatch]: "
+        "cannot assign a string to an integer\n"
+        '    RESULT = "你好"\n'
+        "             ^~~~~~"
+    )
+
+    tabbed_source = "\tUNKNOWN\n"
+    diagnostic[3] = {
+        0: "ERB/tabbed.erb",
+        1: 1,
+        2: 8,
+        3: 0,
+        4: 1,
+    }
+    assert format_project_diagnostic(diagnostic, tabbed_source) == (
+        "ERB/tabbed.erb:1:2: error[analyzer.type_mismatch]: "
+        "cannot assign a string to an integer\n"
+        "        UNKNOWN\n"
+        "        ^~~~~~~"
+    )
 
 
 def test_snapshot_rejection_event_uses_reason_names() -> None:
