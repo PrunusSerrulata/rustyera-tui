@@ -22,20 +22,37 @@ jobs:
           - name: windows-x86_64
             runner: windows-latest
             library: era_runtime_capi.dll
-          - name: macos-x86_64
-            runner: macos-13
-            library: libera_runtime_capi.dylib
+            cargo_target: ""
+            library_path: target/release/era_runtime_capi.dll
           - name: linux-x86_64
             runner: ubuntu-latest
             library: libera_runtime_capi.so
+            cargo_target: ""
+            library_path: target/release/libera_runtime_capi.so
+          - name: linux-aarch64
+            runner: ubuntu-latest
+            library: libera_runtime_capi.so
+            cargo_target: --target aarch64-unknown-linux-gnu
+            library_path: target/aarch64-unknown-linux-gnu/release/libera_runtime_capi.so
+            install_aarch64_gcc: true
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Linux aarch64 linker
+        if: matrix.install_aarch64_gcc
+        run: sudo apt-get update && sudo apt-get install --yes gcc-aarch64-linux-gnu
+
+      - name: Install Linux aarch64 Rust target
+        if: matrix.install_aarch64_gcc
+        run: rustup target add aarch64-unknown-linux-gnu
+
       - name: Build the release C API library
-        run: cargo build --locked --package era-runtime-capi --release
+        run: cargo build --package era-runtime-capi --release ${{ matrix.cargo_target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
       - name: Assemble distribution directory
         shell: pwsh
@@ -43,7 +60,7 @@ jobs:
           $package = "rustyera-tui-${{ matrix.name }}"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
           Copy-Item -Recurse -Force frontends/era-tui/* $package
-          Copy-Item -Force "target/release/${{ matrix.library }}" $package
+          Copy-Item -Force "${{ matrix.library_path }}" $package
           Compress-Archive -Path $package -DestinationPath "$package.zip"
 
       - name: Upload package
@@ -53,9 +70,48 @@ jobs:
           path: rustyera-tui-${{ matrix.name }}.zip
           if-no-files-found: error
 
+  package_macos:
+    name: Package (macOS x86_64 and arm64)
+    runs-on: macos-13
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build the release C API libraries
+        run: |
+          cargo build --package era-runtime-capi --release
+          cargo build --package era-runtime-capi --release --target aarch64-apple-darwin
+
+      - name: Assemble distribution directories
+        shell: pwsh
+        run: |
+          $packages = @(
+            @{ Name = "rustyera-tui-macos-x86_64"; Library = "target/release/libera_runtime_capi.dylib" },
+            @{ Name = "rustyera-tui-macos-arm64"; Library = "target/aarch64-apple-darwin/release/libera_runtime_capi.dylib" }
+          )
+          foreach ($item in $packages) {
+            New-Item -ItemType Directory -Force -Path $item.Name | Out-Null
+            Copy-Item -Recurse -Force frontends/era-tui/* $item.Name
+            Copy-Item -Force $item.Library $item.Name
+            Compress-Archive -Path $item.Name -DestinationPath "$($item.Name).zip"
+          }
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustyera-tui-macos
+          path: |
+            rustyera-tui-macos-x86_64.zip
+            rustyera-tui-macos-arm64.zip
+          if-no-files-found: error
+
   publish:
     name: Publish prerelease
-    needs: package
+    needs: [package, package_macos]
     runs-on: ubuntu-latest
 
     steps:
