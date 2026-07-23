@@ -72,26 +72,26 @@ jobs:
 
   package_macos:
     name: Package (macOS x86_64 and arm64)
-    runs-on: macos-26
+    runs-on: macos-26-arm64
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: x86_64-apple-darwin
 
       - name: Build the release C API libraries
         run: |
           cargo build --package era-runtime-capi --release
-          cargo build --package era-runtime-capi --release --target aarch64-apple-darwin
+          cargo build --package era-runtime-capi --release --target x86_64-apple-darwin
 
       - name: Assemble distribution directories
         shell: pwsh
         run: |
           $packages = @(
-            @{ Name = "rustyera-tui-macos-x86_64"; Library = "target/release/libera_runtime_capi.dylib" },
-            @{ Name = "rustyera-tui-macos-arm64"; Library = "target/aarch64-apple-darwin/release/libera_runtime_capi.dylib" }
+            @{ Name = "rustyera-tui-macos-x86_64"; Library = "target/x86_64-apple-darwin/release/libera_runtime_capi.dylib" },
+            @{ Name = "rustyera-tui-macos-arm64"; Library = "target/release/libera_runtime_capi.dylib" }
           )
           foreach ($item in $packages) {
             New-Item -ItemType Directory -Force -Path $item.Name | Out-Null
