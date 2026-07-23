@@ -21,6 +21,27 @@ from textual.widgets import (
 )
 
 
+class ConfirmDialog(ModalScreen[bool]):
+    """Ask the user to confirm a destructive frontend action."""
+
+    def __init__(self, title: str, message: str, confirm_label: str = "确定") -> None:
+        super().__init__()
+        self.dialog_title = title
+        self.message = message
+        self.confirm_label = confirm_label
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog confirm-dialog"):
+            yield Label(self.dialog_title, classes="dialog-title")
+            yield Static(self.message, id="confirm-message")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button(self.confirm_label, id="confirm-accept", variant="error")
+                yield Button("取消", id="confirm-cancel", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm-accept")
+
+
 class PathDialog(ModalScreen[Path | None]):
     def __init__(self, title: str, mode: str, initial: Path) -> None:
         super().__init__()

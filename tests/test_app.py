@@ -10,7 +10,7 @@ from rustyera_tui.presentation import DisplayLineModel, DisplaySegment
 from rustyera_tui.runtime import FrontendEvent, RuntimeFailure
 from rustyera_tui.widgets import GameLine, GameViewport
 from rustyera_tui.wire import variant
-from textual.widgets import Input, TextArea
+from textual.widgets import Input, Static, TextArea
 
 
 class FakeWorker:
@@ -298,6 +298,56 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         assert game_line.hovered_region is None
         assert await pilot.click(".game-line", offset=(1, 0))
         assert not any(kind == "activate" for kind, _value in worker.commands)
+
+
+async def test_save_delete_button_requires_confirmation(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    token = {0: 4, 1: 2}
+    style = {
+        0: {0: 255, 1: 255, 2: 255, 3: 255},
+        2: False,
+        3: False,
+        4: False,
+        5: False,
+        7: 12_000,
+    }
+    button = variant(
+        1,
+        [variant(0, "删除", style, None)],
+        token,
+        "Delete save01.sav",
+        None,
+        variant(0, 0),
+        0,
+        True,
+    )
+    line = {0: 1, 1: False, 2: True, 3: True, 4: 0, 5: [button]}
+    wait = {0: 1, 1: 6, 11: {0: 1, 1: 2}}
+    snapshot = {0: 1, 1: "Game", 2: {0: [line], 1: []}, 5: wait}
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        worker.events.put(FrontendEvent("presentation_snapshot", snapshot))
+        worker.events.put(FrontendEvent("wait", wait))
+        await pilot.pause(0.1)
+
+        assert await pilot.click(".game-line", offset=(1, 0))
+        await pilot.pause()
+        assert app.screen.query_one("#confirm-message", Static).render().plain.endswith(
+            "save01.sav 吗？"
+        )
+        assert not any(kind == "activate" for kind, _value in worker.commands)
+
+        await pilot.click("#confirm-cancel")
+        await pilot.pause()
+        assert not any(kind == "activate" for kind, _value in worker.commands)
+
+        assert await pilot.click(".game-line", offset=(1, 0))
+        await pilot.pause()
+        await pilot.click("#confirm-accept")
+        await pilot.pause()
+        assert ("activate", token) in worker.commands
 
 
 async def test_multiline_button_regions_merge_padding_and_use_row_coordinates(

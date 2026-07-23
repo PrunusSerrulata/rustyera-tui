@@ -186,6 +186,16 @@ ModalScreen {
     height: 88%;
 }
 
+.confirm-dialog {
+    width: 60;
+    height: 10;
+}
+
+#confirm-message {
+    height: 1fr;
+    padding: 1 0;
+}
+
 .dialog-title {
     height: 1;
     color: #7dd3fc;

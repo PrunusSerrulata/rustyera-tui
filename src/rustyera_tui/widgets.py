@@ -44,9 +44,10 @@ class GameLine(Static):
     can_focus = True
 
     class Activated(Message):
-        def __init__(self, token: dict[int, int]) -> None:
+        def __init__(self, token: dict[int, int], title: str | None) -> None:
             super().__init__()
             self.token = token
+            self.title = title
 
     def __init__(self, line: DisplayLineModel) -> None:
         super().__init__("", markup=False, classes="game-line")
@@ -211,7 +212,7 @@ class GameLine(Static):
         region = self.regions[index]
         event.stop()
         if self.interactions_enabled and region.enabled:
-            self.post_message(self.Activated(region.token))
+            self.post_message(self.Activated(region.token, region.title))
 
 
 class GameViewport(ScrollableContainer):

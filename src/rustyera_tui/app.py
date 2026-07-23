@@ -14,6 +14,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Input, Rule, Static
 
 from .dialogs import (
+    ConfirmDialog,
     DebugConsoleDialog,
     LogDialog,
     PathDialog,
@@ -484,9 +485,31 @@ class RustyEraTui(App[None]):
             or not self.presentation.has_enabled_button(event.token)
         ):
             return
+        if event.title and event.title.startswith("Delete "):
+            save_name = event.title.removeprefix("Delete ")
+            self.push_screen(
+                ConfirmDialog(
+                    "删除存档",
+                    f"确定要永久删除存档 {save_name} 吗？",
+                    "删除",
+                ),
+                lambda confirmed: self._activate_button(event.token) if confirmed else None,
+            )
+            return
+        self._activate_button(event.token)
+
+    def _activate_button(self, token: dict[int, Any]) -> None:
+        wait_identity = self._wait_identity(self.active_wait)
+        if (
+            self._game_interactions_blocked()
+            or wait_identity is None
+            or wait_identity == self._activated_wait
+            or not self.presentation.has_enabled_button(token)
+        ):
+            return
         self._activated_wait = wait_identity
         self.query_one(GameViewport).disable_interactions()
-        self.worker.send("activate", event.token)
+        self.worker.send("activate", token)
 
     @staticmethod
     def _wait_identity(wait: dict[int, Any] | None) -> tuple[int, Any] | None:
