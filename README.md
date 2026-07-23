@@ -7,24 +7,27 @@ versioned CBOR envelopes.
 
 ## Run
 
-Build the dynamic library once, create the Python environment with `uv`, then start the TUI:
+Build the release dynamic library once, create the Python environment with `uv`, then start
+the TUI from its prepared resource directory:
 
 ```sh
 cargo build -p era-runtime-capi --release
 cd frontends/era-tui
 uv sync
-uv run rustyera-tui ../../reference/eraTW
+uv run rustyera-tui
 ```
 
-The dynamic library is discovered in the workspace `target/release` directory. Override it
-with `--runtime-library PATH` or `ERA_RUNTIME_LIBRARY=PATH`.
+The optional positional argument is a resource directory and defaults to the current working
+directory. The frontend finds the platform `era-runtime-capi` dynamic library and the `CSV/`
+and `ERB/` source trees below that directory. This checkout prepares relative links in
+`frontends/era-tui` for both source trees and every supported platform library name. Override
+the library with `--runtime-library PATH` or `ERA_RUNTIME_LIBRARY=PATH`.
 
-The optional project argument may be omitted; use **文件 → 重新载入文件夹...** to select a
-project. The frontend scans `.erb`, `.erh`, `.csv`, and `.config` files as UTF-8. Save,
-GlobalSave, Data, Log, and writable Project-overlay storage defaults to namespaced directories
-inside the selected project. Set `ERA_TUI_DATA_DIR` to move these namespaces to an isolated
-per-project directory below that base. Resource reads continue to use the selected project
-directory. The frontend renders normalized HTML text, styles, spacing, line breaks, and
+The frontend follows the resource directory's source-tree links and scans `.erb`, `.erh`,
+`.csv`, and `.config` files as UTF-8. Save, GlobalSave, Data, Log, snapshots, compiler caches,
+and writable Project-overlay storage default to the resource directory. Set
+`ERA_TUI_DATA_DIR` to move runtime storage namespaces to an isolated per-project directory
+below that base. The frontend renders normalized HTML text, styles, spacing, line breaks, and
 buttons; HTML image tags are ignored. Video and audio remain intentionally unadvertised.
 
 Successful builds are cached as an opaque runtime artifact at

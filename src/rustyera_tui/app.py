@@ -60,9 +60,13 @@ class RustyEraTui(App[None]):
         ("file-exit", "退出"),
     )
 
-    def __init__(self, project: Path | None, runtime_library: Path | None) -> None:
+    def __init__(
+        self,
+        resource_directory: Path | None,
+        runtime_library: Path | None,
+    ) -> None:
         super().__init__()
-        self.project = project.expanduser() if project else None
+        self.project = resource_directory.expanduser() if resource_directory else Path.cwd()
         self.runtime_library = runtime_library
         self.worker = RuntimeWorker(runtime_library, self.project)
         self.presentation = PresentationModel()

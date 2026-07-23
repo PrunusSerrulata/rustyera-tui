@@ -23,6 +23,48 @@ def test_project_scanner_is_utf8_and_deterministic(tmp_path: Path) -> None:
     assert csv[3] == blake3.blake3(b"0,test\n").digest()
 
 
+def test_project_scanners_follow_resource_directory_links(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    resources = tmp_path / "resources"
+    (sources / "CSV").mkdir(parents=True)
+    (sources / "ERB").mkdir()
+    resources.mkdir()
+    (sources / "CSV" / "GAMEBASE.CSV").write_text("コード,1\n", encoding="utf-8")
+    (sources / "ERB" / "main.erb").write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
+    try:
+        (resources / "CSV").symlink_to(sources / "CSV", target_is_directory=True)
+        (resources / "ERB").symlink_to(sources / "ERB", target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlinks are unavailable: {error}")
+
+    scanned = ProjectBundle.scan(resources)
+    quick = ProjectBundle.scan_quick(resources)
+
+    assert list(scanned.files) == ["CSV/GAMEBASE.CSV", "ERB/main.erb"]
+    assert list(quick.files) == ["CSV/GAMEBASE.CSV", "ERB/main.erb"]
+    assert quick.materialize().identity() == scanned.identity()
+
+
+def test_reload_accepts_a_file_below_a_resource_directory_link(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    resources = tmp_path / "resources"
+    sources.mkdir()
+    resources.mkdir()
+    source = sources / "main.erb"
+    source.write_text("@A", encoding="utf-8")
+    try:
+        (resources / "ERB").symlink_to(sources, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlinks are unavailable: {error}")
+    bundle = ProjectBundle.scan(resources)
+    source.write_text("@B", encoding="utf-8")
+
+    candidate, request = bundle.reload_file(resources / "ERB" / "main.erb")
+
+    assert candidate.files["ERB/main.erb"].payload == variant(0, "@B")
+    assert unwrap_variant(request[2][0])[1][0][0] == "ERB/main.erb"
+
+
 def test_quick_scan_reuses_stat_index_and_materializes_on_demand(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

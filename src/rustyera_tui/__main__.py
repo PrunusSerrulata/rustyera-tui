@@ -8,7 +8,13 @@ from .app import RustyEraTui
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a RustyEra game in a Textual TUI")
-    parser.add_argument("project", nargs="?", type=Path, help="Era project directory")
+    parser.add_argument(
+        "resource_directory",
+        nargs="?",
+        type=Path,
+        default=Path.cwd(),
+        help="resource directory containing CSV, ERB, and the runtime library (default: cwd)",
+    )
     parser.add_argument(
         "--runtime-library",
         type=Path,
@@ -19,7 +25,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    RustyEraTui(project=args.project, runtime_library=args.runtime_library).run()
+    RustyEraTui(
+        resource_directory=args.resource_directory,
+        runtime_library=args.runtime_library,
+    ).run()
 
 
 if __name__ == "__main__":

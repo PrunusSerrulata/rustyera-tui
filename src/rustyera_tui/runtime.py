@@ -1131,7 +1131,7 @@ class RuntimeWorker(threading.Thread):
     def run(self) -> None:
         abi: RuntimeAbi | None = None
         try:
-            abi = RuntimeAbi(self.runtime_library)
+            abi = RuntimeAbi(self.runtime_library, resource_directory=self.initial_project)
             self.client = RuntimeClient(abi, self.events)
             if self.initial_project is not None:
                 self._load_project(self.initial_project)

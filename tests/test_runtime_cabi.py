@@ -12,13 +12,24 @@ from rustyera_tui.project import StorageBackend
 from rustyera_tui.runtime import FrontendCommand, FrontendEvent, RuntimeClient, RuntimeWorker
 
 try:
-    RUNTIME_LIBRARY = discover_library()
+    RUNTIME_LIBRARY = discover_library(resource_directory=Path(__file__).parents[1])
 except AbiError:
     RUNTIME_LIBRARY = None
 
 
 def test_default_drive_budget_keeps_the_caller_pump_cooperative() -> None:
     assert DEFAULT_MAXIMUM_VM_INSTRUCTIONS == 100_000
+
+
+def test_runtime_library_is_discovered_in_the_resource_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ERA_RUNTIME_LIBRARY", raising=False)
+    monkeypatch.setattr("rustyera_tui.abi.sys.platform", "darwin")
+    library = tmp_path / "libera_runtime_capi.dylib"
+    library.write_bytes(b"library")
+
+    assert discover_library(resource_directory=tmp_path) == library
 
 
 def test_worker_applies_backpressure_to_presentation_events() -> None:

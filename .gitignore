@@ -3,3 +3,14 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.pyc
+/CSV
+/ERB
+/era_runtime_capi.dll
+/libera_runtime_capi.dylib
+/libera_runtime_capi.so
+/project/
+/save/
+/global/
+/data/
+/logs/
+/*.snapshot

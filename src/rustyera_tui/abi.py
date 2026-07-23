@@ -121,32 +121,36 @@ def _header(size: int) -> EraCallHeader:
     return EraCallHeader(size, EraAbiVersion(ABI_MAJOR, ABI_MINOR))
 
 
-def discover_library(explicit: Path | None = None) -> Path:
+def discover_library(
+    explicit: Path | None = None,
+    resource_directory: Path | None = None,
+) -> Path:
     if explicit is not None:
         return explicit.expanduser().resolve()
     if configured := os.environ.get("ERA_RUNTIME_LIBRARY"):
         return Path(configured).expanduser().resolve()
     suffix = {"darwin": ".dylib", "win32": ".dll"}.get(sys.platform, ".so")
     prefix = "" if sys.platform == "win32" else "lib"
-    workspace = Path(__file__).resolve().parents[4]
-    candidates = [
-        workspace / "target" / "release" / f"{prefix}era_runtime_capi{suffix}",
-        workspace / "target" / "debug" / f"{prefix}era_runtime_capi{suffix}",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
+    resource_root = (resource_directory or Path.cwd()).expanduser().resolve()
+    candidate = resource_root / f"{prefix}era_runtime_capi{suffix}"
+    if candidate.is_file():
+        return candidate
     raise AbiError(
-        "era-runtime-capi dynamic library was not found; run "
-        "`cargo build -p era-runtime-capi --release` or pass --runtime-library"
+        f"era-runtime-capi dynamic library was not found in {resource_root}; "
+        "build and link the release library there or pass --runtime-library"
     )
 
 
 class RuntimeAbi:
     """Own one dynamically loaded C API table and one optional session."""
 
-    def __init__(self, library_path: Path | None = None, debug_scope_mask: int = (1 << 10) - 1):
-        self.path = discover_library(library_path)
+    def __init__(
+        self,
+        library_path: Path | None = None,
+        debug_scope_mask: int = (1 << 10) - 1,
+        resource_directory: Path | None = None,
+    ):
+        self.path = discover_library(library_path, resource_directory)
         self.library = ctypes.CDLL(str(self.path))
         get_api = self.library.era_runtime_get_api
         get_api.argtypes = [EraAbiVersion, ctypes.POINTER(EraRuntimeApi)]

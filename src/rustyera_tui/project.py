@@ -94,10 +94,7 @@ class ProjectBundle:
         if not root.is_dir():
             raise NotADirectoryError(root)
         files: dict[str, ProjectFile] = {}
-        paths = sorted(
-            (path for path in root.rglob("*") if path.is_file()),
-            key=lambda path: path.relative_to(root).as_posix().casefold(),
-        )
+        paths = _project_paths(root)
         for path in paths:
             category = classify_path(path)
             if category is None:
@@ -121,12 +118,7 @@ class ProjectBundle:
             previous = {}
         files: dict[str, ProjectFile] = {}
         next_index: dict[str, Any] = {}
-        paths: list[Path] = []
-        for directory, names, filenames in os.walk(root):
-            names[:] = sorted(name for name in names if name != ".rustyera")
-            paths.extend(Path(directory) / name for name in filenames)
-        paths.sort(key=lambda path: path.relative_to(root).as_posix().casefold())
-        for path in paths:
+        for path in _project_paths(root):
             category = classify_path(path)
             if category is None:
                 continue
@@ -209,15 +201,19 @@ class ProjectBundle:
         return candidate, reload_request
 
     def reload_file(self, path: Path) -> tuple[ProjectBundle, dict[int, Any]]:
-        resolved = path.expanduser().resolve(strict=True)
+        expanded = path.expanduser()
+        absolute = expanded if expanded.is_absolute() else Path.cwd() / expanded
+        lexical = Path(os.path.abspath(absolute))
+        if not lexical.is_file():
+            raise FileNotFoundError(lexical)
         try:
-            relative = resolved.relative_to(self.root).as_posix()
+            relative = lexical.relative_to(self.root).as_posix()
         except ValueError as error:
             raise ValueError("the script file must be inside the active project") from error
-        category = classify_path(resolved)
+        category = classify_path(lexical)
         if category not in (FILE_CSV, FILE_ERH, FILE_ERB, FILE_CONFIGURATION):
             raise ValueError("only .csv, .erh, .erb, and .config files can be reloaded")
-        item = read_project_file(self.root, resolved, category)
+        item = read_project_file(self.root, lexical, category)
         candidate = ProjectBundle(self.root, self.revision + 1, dict(self.files))
         candidate.files[relative] = item
         return candidate, {
@@ -250,6 +246,38 @@ def _write_source_index(path: Path, value: dict[str, Any]) -> None:
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def _project_paths(root: Path) -> list[Path]:
+    """Enumerate project files while following resource-directory links once."""
+
+    paths: list[Path] = []
+    root_stat = root.stat()
+    visited = {(root_stat.st_dev, root_stat.st_ino)}
+    for directory, names, filenames in os.walk(root, followlinks=True):
+        directory_path = Path(directory)
+        retained: list[str] = []
+        for name in sorted(names, key=str.casefold):
+            if name == ".rustyera":
+                continue
+            try:
+                stat = (directory_path / name).stat()
+            except OSError:
+                continue
+            identity = (stat.st_dev, stat.st_ino)
+            if identity in visited:
+                continue
+            visited.add(identity)
+            retained.append(name)
+        names[:] = retained
+        paths.extend(directory_path / name for name in filenames)
+    return sorted(
+        paths,
+        key=lambda path: (
+            path.relative_to(root).as_posix().casefold(),
+            path.relative_to(root).as_posix(),
+        ),
+    )
 
 
 class StorageBackend:
