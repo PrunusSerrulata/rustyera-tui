@@ -41,10 +41,13 @@ uv --project frontends/era-tui run rustyera-tui [RESOURCE_DIRECTORY]
 `../../target/release` 对应动态库的相对符号链接；这些本地链接已加入 `.gitignore`，
 不会提交。
 
-前端会跟随资源目录中的源码目录链接，并按 UTF-8 扫描 `.erb`、`.erh`、`.csv` 和
-`.config` 文件。Save、GlobalSave、Data、Log、snapshot、编译缓存和可写 Project
-overlay 默认都位于资源目录。设置 `ERA_TUI_DATA_DIR` 可以把 runtime storage namespace
-移动到指定目录下按项目隔离的位置；资源读取仍使用当前资源目录。
+前端会跟随资源目录中的源码目录链接，并扫描规范 `ERB/`、`CSV/` 树及项目配置；当
+项目没有规范源码树时，也接受直接位于所选目录下的最小项目文件。源码首先按严格
+UTF-8（含 BOM）解码；无效时按参考实现的规则回退到 CP932，再统一向 runtime 提交
+UTF-8。规范源码树之外的指南、模板和未安装补丁不会被误作游戏源码。Save、
+GlobalSave、Data、Log、snapshot、编译缓存和可写 Project overlay 默认都位于资源
+目录。设置 `ERA_TUI_DATA_DIR` 可以把 runtime storage namespace 移动到指定目录下按
+项目隔离的位置；资源读取仍使用当前资源目录。
 
 ## 缓存与重新加载
 

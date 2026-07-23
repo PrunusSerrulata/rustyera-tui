@@ -8,6 +8,7 @@ from rustyera_tui.presentation import (
     SeparatorLayout,
     ServicePresentationModel,
     coalesce_presentation_deltas,
+    html_printed_str,
     parse_line,
     plain_line,
 )
@@ -106,6 +107,20 @@ def test_column_cells_preserve_semantic_layout_until_rendering() -> None:
         ColumnCellLayout(1, 2, 0, 6),
     )
     assert plain_line(raw) == "   界[1]中文  "
+
+
+def test_html_printed_str_groups_wrapped_rows_from_the_newest_line() -> None:
+    lines = [
+        {0: 1, 2: True, 4: 0, 5: [variant(0, "old")]},
+        {0: 2, 2: True, 4: 1, 5: [variant(0, "A&B")]},
+        {0: 3, 2: False, 4: 1, 5: [variant(0, "<tail>")]},
+    ]
+
+    assert html_printed_str(lines, 0) == (
+        "<p align='center'><nobr>A&amp;B<br>&lt;tail&gt;</nobr></p>"
+    )
+    assert html_printed_str(lines, 1) == "<p align='left'><nobr>old</nobr></p>"
+    assert html_printed_str(lines, 2) == ""
 
 
 def test_structured_html_preserves_rows_styles_spaces_and_buttons() -> None:

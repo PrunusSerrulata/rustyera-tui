@@ -18,7 +18,12 @@ import blake3
 from rich.cells import cell_len
 
 from .abi import RuntimeAbi
-from .presentation import ServicePresentationModel, coalesce_presentation_deltas, plain_line
+from .presentation import (
+    ServicePresentationModel,
+    coalesce_presentation_deltas,
+    html_printed_str,
+    plain_line,
+)
 from .project import ProjectBundle, StorageBackend
 from .protocol_text import (
     COMMAND_ERROR_CODES,
@@ -81,9 +86,9 @@ def format_project_diagnostic(diagnostic: dict[int, Any], source_text: str | Non
         raw_highlight = encoded[start : min(end, line_end)]
         excerpt = raw_line.decode("utf-8", errors="replace").expandtabs(4)
         prefix = raw_prefix.decode("utf-8", errors="ignore").expandtabs(4)
-        through_highlight = (raw_prefix + raw_highlight).decode(
-            "utf-8", errors="ignore"
-        ).expandtabs(4)
+        through_highlight = (
+            (raw_prefix + raw_highlight).decode("utf-8", errors="ignore").expandtabs(4)
+        )
         marker_start = cell_len(prefix)
         width = max(1, cell_len(through_highlight) - marker_start)
         marker = f"{' ' * marker_start}^{'~' * (width - 1)}"
@@ -245,6 +250,7 @@ class RuntimeClient:
             {0: 8, 1: "local_date_time", 2: version_range(1, 0)},
             {0: 7, 1: "get_key_state", 2: version_range(1, 0)},
             {0: 10, 1: "get_display_line", 2: version_range(1, 0)},
+            {0: 10, 1: "html_get_printed_str", 2: version_range(1, 0)},
             {0: 10, 1: "serialize_physical_history", 2: version_range(1, 0)},
             {0: 0, 1: "gget_text_size", 2: version_range(1, 0)},
         ]
@@ -497,9 +503,7 @@ class RuntimeClient:
                     self.pending_export_kind = None
                     self.cache_refresh_pending = True
                     self.cache_ready = False
-                    self.cache_refresh_after_ns = (
-                        time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
-                    )
+                    self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
                 else:
                     self._finish_cache_export(False)
             # A presentation may advance after the frontend rendered an observation but
@@ -520,9 +524,7 @@ class RuntimeClient:
         elif tag == 97:
             source = value.get(3)
             location = f" ({source.get(0)}:{source.get(3, '?')})" if source else ""
-            severity = enum_text(
-                value.get(1), DIAGNOSTIC_SEVERITIES, "DiagnosticSeverity"
-            )
+            severity = enum_text(value.get(1), DIAGNOSTIC_SEVERITIES, "DiagnosticSeverity")
             self.events.put(
                 FrontendEvent("log", f"{severity} {value.get(0)}: {value.get(2)}{location}")
             )
@@ -585,9 +587,7 @@ class RuntimeClient:
             self.storage = StorageBackend(self.bundle.root)
             self.cache_refresh_pending = True
             self.cache_preparation_started = False
-            self.cache_refresh_after_ns = (
-                time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
-            )
+            self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
             self.events.put(FrontendEvent("status", "脚本热重载完成。"))
             return
         if self.pending_bundle is not None:
@@ -604,9 +604,7 @@ class RuntimeClient:
         else:
             self.cache_refresh_pending = True
             self.cache_preparation_started = False
-            self.cache_refresh_after_ns = (
-                time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
-            )
+            self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
             self.events.put(FrontendEvent("status", "项目编译完成，正在进入标题画面…"))
             self.send_runtime(20, {0: variant(0, None)})
 
@@ -720,6 +718,12 @@ class RuntimeClient:
                 if 0 <= index < len(self.presentation.lines):
                     text = plain_line(self.presentation.lines[index])
                 response = {0: query[0], 1: text}
+            elif kind == 10 and operation == "html_get_printed_str":
+                query = decode(request[4])
+                response = {
+                    0: query[0],
+                    1: html_printed_str(self.presentation.lines, query[1]),
+                }
             elif kind == 10 and operation == "serialize_physical_history":
                 query = decode(request[4])
                 body = "\n".join(plain_line(line) for line in self.presentation.lines)
@@ -933,9 +937,7 @@ class RuntimeClient:
             self.events.put(FrontendEvent("status", "脚本热重载完成。"))
         elif after == "background":
             self.events.put(
-                FrontendEvent(
-                    "status", "编译缓存已保存。" if success else "编译缓存保存失败。"
-                )
+                FrontendEvent("status", "编译缓存已保存。" if success else "编译缓存保存失败。")
             )
 
     def _handle_import_accepted(self, accepted: dict[int, Any]) -> None:

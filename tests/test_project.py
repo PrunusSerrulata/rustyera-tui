@@ -23,6 +23,33 @@ def test_project_scanner_is_utf8_and_deterministic(tmp_path: Path) -> None:
     assert csv[3] == blake3.blake3(b"0,test\n").digest()
 
 
+def test_project_scanners_normalize_cp932_sources_to_utf8(tmp_path: Path) -> None:
+    source = "サブディレクトリを検索する:YES\r\n"
+    path = tmp_path / "_fixed.config"
+    path.write_bytes(source.encode("cp932"))
+
+    scanned = ProjectBundle.scan(tmp_path)
+    quick = ProjectBundle.scan_quick(tmp_path)
+
+    expected_hash = blake3.blake3(source.encode("utf-8")).digest()
+    assert scanned.files["_fixed.config"].payload == variant(0, source)
+    assert scanned.files["_fixed.config"].content_hash == expected_hash
+    assert quick.files["_fixed.config"].content_hash == expected_hash
+    assert quick.materialize().identity() == scanned.identity()
+
+
+def test_project_scanner_reports_text_invalid_in_utf8_and_cp932(tmp_path: Path) -> None:
+    path = tmp_path / "main.erb"
+    path.write_bytes(b"\x81")
+
+    bundle = ProjectBundle.scan_quick(tmp_path)
+
+    assert bundle.is_materialized
+    payload = bundle.files["main.erb"].payload
+    assert payload is not None
+    assert unwrap_variant(payload)[0] == 2
+
+
 def test_project_scanners_follow_resource_directory_links(tmp_path: Path) -> None:
     sources = tmp_path / "sources"
     resources = tmp_path / "resources"
@@ -42,6 +69,30 @@ def test_project_scanners_follow_resource_directory_links(tmp_path: Path) -> Non
 
     assert list(scanned.files) == ["CSV/GAMEBASE.CSV", "ERB/main.erb"]
     assert list(quick.files) == ["CSV/GAMEBASE.CSV", "ERB/main.erb"]
+    assert quick.materialize().identity() == scanned.identity()
+
+
+def test_project_scanners_ignore_uninstalled_sources_outside_canonical_roots(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "CSV").mkdir()
+    (tmp_path / "ERB" / "GUIDE").mkdir(parents=True)
+    (tmp_path / "GUIDE").mkdir()
+    (tmp_path / "resources").mkdir()
+    (tmp_path / "patch" / "ERB").mkdir(parents=True)
+    (tmp_path / "CSV" / "GAMEBASE.CSV").write_text("コード,1\n", encoding="utf-8")
+    (tmp_path / "ERB" / "GUIDE" / "main.erb").write_text("@SYSTEM_TITLE", encoding="utf-8")
+    (tmp_path / "GUIDE" / "main.erb").write_text("@UNINSTALLED_GUIDE", encoding="utf-8")
+    (tmp_path / "resources" / "manifest.csv").write_text("image.png\n", encoding="utf-8")
+    (tmp_path / "patch" / "ERB" / "optional.erb").write_text("@UNINSTALLED_PATCH", encoding="utf-8")
+    (tmp_path / "emuera.config").write_text("描画インターフェース:TEXTRENDERER", encoding="utf-8")
+
+    scanned = ProjectBundle.scan(tmp_path)
+    quick = ProjectBundle.scan_quick(tmp_path)
+
+    expected = ["CSV/GAMEBASE.CSV", "emuera.config", "ERB/GUIDE/main.erb"]
+    assert list(scanned.files) == expected
+    assert list(quick.files) == expected
     assert quick.materialize().identity() == scanned.identity()
 
 
@@ -167,9 +218,7 @@ def test_storage_enforces_revision_preconditions_and_lists_root(tmp_path: Path) 
     assert [entry[0] for entry in entries] == ["save01.sav"]
     assert entries[0][2] is None
     change_token = entries[0][3]
-    chunk = backend.handle(
-        {0: 5, 1: 1, 2: "save01.sav", 3: variant(5, 0, 1, change_token), 4: ""}
-    )
+    chunk = backend.handle({0: 5, 1: 1, 2: "save01.sav", 3: variant(5, 0, 1, change_token), 4: ""})
     chunk_tag, chunk_fields = unwrap_variant(chunk[1])
     assert chunk_tag == 6
     assert chunk_fields[:3] == [b"t", 0, False]

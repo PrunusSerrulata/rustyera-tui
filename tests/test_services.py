@@ -66,6 +66,27 @@ def test_display_line_service_returns_the_tui_projection() -> None:
     assert ready_payload(captured) == {0: context, 1: "你好 RustyEra"}
 
 
+def test_html_printed_str_service_uses_newest_first_logical_lines() -> None:
+    client, captured = client_with_capture()
+    client.presentation.lines.append({0: 2, 2: True, 4: 0, 5: [[0, ["A&B", None, None]]]})
+    context = {0: 7, 1: 2, 2: 3}
+
+    client._handle_service(
+        {
+            0: 10,
+            1: 10,
+            2: "html_get_printed_str",
+            4: encode({0: context, 1: 0}),
+        },
+        None,
+    )
+
+    assert ready_payload(captured) == {
+        0: context,
+        1: "<p align='left'><nobr>A&amp;B</nobr></p>",
+    }
+
+
 def test_font_metrics_service_uses_terminal_cell_width() -> None:
     client, captured = client_with_capture()
     context = {0: 7, 1: 2, 2: 3}
@@ -199,7 +220,7 @@ def test_disabling_debug_revokes_the_grant_instead_of_leaving_a_paused_vm() -> N
             2,
             {0: {0: 7, 1: 9}, 1: "frontend disabled debugging"},
             "",
-        )
+        ),
     ]
     assert client.debug_grant is None
     assert client.stop_token is None

@@ -252,14 +252,43 @@ class ServicePresentationModel:
                 count = min(fields[0], len(self.lines))
                 if count:
                     del self.lines[:count]
-                    self._line_indices = {
-                        line[0]: index for index, line in enumerate(self.lines)
-                    }
+                    self._line_indices = {line[0]: index for index, line in enumerate(self.lines)}
         self.revision = delta[1]
 
 
 def plain_line(line: dict[int, Any]) -> str:
     return "".join(plain_run(run) for run in line.get(5, []))
+
+
+def html_printed_str(lines: list[dict[int, Any]], line_number: int) -> str:
+    """Serialize one newest-first logical line using Emuera's HTML wrapper."""
+
+    if line_number < 0:
+        return ""
+    count = 0
+    selected: list[dict[int, Any]] = []
+    for line in reversed(lines):
+        if count == line_number:
+            selected.insert(0, line)
+        if line.get(2, True):
+            count += 1
+        if count > line_number:
+            break
+    if not selected:
+        return ""
+    alignment = {0: "left", 1: "center", 2: "right"}.get(selected[0].get(4, 0), "left")
+    body = "<br>".join(_escape_html(plain_line(line)) for line in selected)
+    return f"<p align='{alignment}'><nobr>{body}</nobr></p>"
+
+
+def _escape_html(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace(">", "&gt;")
+        .replace("<", "&lt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
 
 
 def plain_run(run: list[Any]) -> str:
@@ -462,9 +491,7 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
         return nested
     if tag == 6:  # Width-independent separator
         pattern = fields[0] or "-"
-        return [
-            DisplaySegment(pattern * max(1, DEFAULT_VIEWPORT_COLUMNS // len(pattern)))
-        ]
+        return [DisplaySegment(pattern * max(1, DEFAULT_VIEWPORT_COLUMNS // len(pattern)))]
     if tag == 7:  # Semantic space
         width_tag, width_fields = unwrap_variant(fields[0])
         raw = width_fields[0]
@@ -601,4 +628,4 @@ def _semantic_field(semantic: Any, index: int, default: Any = None) -> Any:
 
 
 def _packed_color_hex(value: int) -> str:
-    return f"#{(value >> 16) & 0xff:02x}{(value >> 8) & 0xff:02x}{value & 0xff:02x}"
+    return f"#{(value >> 16) & 0xFF:02x}{(value >> 8) & 0xFF:02x}{value & 0xFF:02x}"

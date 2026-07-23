@@ -31,6 +31,17 @@ IO_OTHER = 6
 IO_CONFLICT = 7
 
 
+def _decode_project_source(raw: bytes) -> str:
+    """Normalize a project source file to UTF-8 text at the frontend boundary."""
+
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        # The reference loader makes the same strict UTF-8-first choice and treats
+        # an invalid stream as Windows-31J. Runtime-facing text remains UTF-8.
+        return raw.decode("cp932")
+
+
 def classify_path(path: Path | PurePosixPath) -> int | None:
     suffix = path.suffix.casefold()
     return {
@@ -95,8 +106,9 @@ class ProjectBundle:
             raise NotADirectoryError(root)
         files: dict[str, ProjectFile] = {}
         paths = _project_paths(root)
+        canonical_roots = _canonical_source_roots(root)
         for path in paths:
-            category = classify_path(path)
+            category = _classify_project_path(root, path, canonical_roots)
             if category is None:
                 continue
             item = read_project_file(root, path, category)
@@ -118,8 +130,9 @@ class ProjectBundle:
             previous = {}
         files: dict[str, ProjectFile] = {}
         next_index: dict[str, Any] = {}
+        canonical_roots = _canonical_source_roots(root)
         for path in _project_paths(root):
-            category = classify_path(path)
+            category = _classify_project_path(root, path, canonical_roots)
             if category is None:
                 continue
             relative = path.relative_to(root).as_posix()
@@ -133,11 +146,15 @@ class ProjectBundle:
                     getattr(stat, "st_ino", 0),
                 ]
                 prior = previous.get(relative)
-                if prior and prior.get("signature") == signature and prior.get("category") == category:
+                if (
+                    prior
+                    and prior.get("signature") == signature
+                    and prior.get("category") == category
+                ):
                     digest = bytes.fromhex(prior["hash"])
                 else:
                     raw = path.read_bytes()
-                    text = raw.decode("utf-8-sig")
+                    text = _decode_project_source(raw)
                     digest = blake3.blake3(text.encode("utf-8")).digest()
                 files[relative] = ProjectFile(relative, category, None, digest)
                 next_index[relative] = {
@@ -192,9 +209,7 @@ class ProjectBundle:
             if new is None and old is not None:
                 changes.append(variant(1, old.category, relative_path))
             elif new is not None and (
-                old is None
-                or new.category != old.category
-                or new.content_hash != old.content_hash
+                old is None or new.category != old.category or new.content_hash != old.content_hash
             ):
                 changes.append(variant(0, new.submitted()))
         reload_request = {0: self.revision, 1: candidate.revision, 2: changes}
@@ -210,7 +225,7 @@ class ProjectBundle:
             relative = lexical.relative_to(self.root).as_posix()
         except ValueError as error:
             raise ValueError("the script file must be inside the active project") from error
-        category = classify_path(lexical)
+        category = _classify_project_path(self.root, lexical, _canonical_source_roots(self.root))
         if category not in (FILE_CSV, FILE_ERH, FILE_ERB, FILE_CONFIGURATION):
             raise ValueError("only .csv, .erh, .erb, and .config files can be reloaded")
         item = read_project_file(self.root, lexical, category)
@@ -227,7 +242,7 @@ def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
     relative = path.relative_to(root).as_posix()
     try:
         raw = path.read_bytes()
-        text = raw.decode("utf-8-sig")
+        text = _decode_project_source(raw)
         return ProjectFile(
             relative, category, variant(0, text), blake3.blake3(text.encode("utf-8")).digest()
         )
@@ -246,6 +261,37 @@ def _write_source_index(path: Path, value: dict[str, Any]) -> None:
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def _canonical_source_roots(root: Path) -> frozenset[str]:
+    try:
+        return frozenset(
+            entry.name.casefold()
+            for entry in root.iterdir()
+            if entry.is_dir() and entry.name.casefold() in {"csv", "erb"}
+        )
+    except OSError:
+        return frozenset()
+
+
+def _classify_project_path(root: Path, path: Path, canonical_roots: frozenset[str]) -> int | None:
+    category = classify_path(path)
+    if category is None:
+        return None
+    parts = path.relative_to(root).parts
+    first = parts[0].casefold()
+    if category in (FILE_ERH, FILE_ERB) and "erb" in canonical_roots and first != "erb":
+        return None
+    if category == FILE_CSV and "csv" in canonical_roots and first != "csv":
+        return None
+    if (
+        category == FILE_CONFIGURATION
+        and "csv" in canonical_roots
+        and len(parts) > 1
+        and first != "csv"
+    ):
+        return None
+    return category
 
 
 def _project_paths(root: Path) -> list[Path]:
@@ -293,9 +339,9 @@ class StorageBackend:
         if configured or data_root is not None:
             base = Path(configured).expanduser() if configured else data_root
             assert base is not None
-            project_key = blake3.blake3(
-                self.project_root.as_posix().encode("utf-8")
-            ).hexdigest()[:16]
+            project_key = blake3.blake3(self.project_root.as_posix().encode("utf-8")).hexdigest()[
+                :16
+            ]
             self.data_root = base.resolve() / "games" / project_key
         else:
             self.data_root = self.project_root
