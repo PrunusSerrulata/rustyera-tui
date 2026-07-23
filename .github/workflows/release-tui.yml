@@ -1,0 +1,75 @@
+name: Publish TUI prerelease
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Prerelease tag to create or update (for example, v0.1.0-rc.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            runner: windows-latest
+            library: era_runtime_capi.dll
+          - name: macos-x86_64
+            runner: macos-13
+            library: libera_runtime_capi.dylib
+          - name: linux-x86_64
+            runner: ubuntu-latest
+            library: libera_runtime_capi.so
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the release C API library
+        run: cargo build --locked --package era-runtime-capi --release
+
+      - name: Assemble distribution directory
+        shell: pwsh
+        run: |
+          $package = "rustyera-tui-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item -Recurse -Force frontends/era-tui/* $package
+          Copy-Item -Force "target/release/${{ matrix.library }}" $package
+          Compress-Archive -Path $package -DestinationPath "$package.zip"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustyera-tui-${{ matrix.name }}
+          path: rustyera-tui-${{ matrix.name }}.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish prerelease
+    needs: package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Create or update prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          generate_release_notes: true
+          files: packages/*.zip
