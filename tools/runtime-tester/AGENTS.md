@@ -1,4 +1,4 @@
-# Runtime Tester
+# Runtime Tester（运行时测试工具）
 
 本目录是 runtime、C ABI 和 Textual frontend 的人工/长流程测试工具，不属于产品 runtime，
 也不向游戏或前端提供稳定 API。本文件覆盖本目录及其子目录。
@@ -15,7 +15,7 @@
 - 测试不得修改 `reference/emuera.em`。若 oracle 本身失效，按仓库根 `AGENTS.md` 的
   reference CLI 规则处理。
 
-## Rust audit harness
+## Rust 测试工具
 
 从仓库根执行：
 
@@ -46,7 +46,7 @@ cargo run --manifest-path tools/runtime-tester/Cargo.toml -- COMMAND [PROJECT] [
 退出码 0 表示 harness 正常完成；具体 runtime 成败仍应读取结构化 stdout 字段，panic 或
 非零退出表示工具、输入或运行流程失败。
 
-## Textual/C ABI scripts
+## Textual/C ABI 脚本
 
 先构建 release C ABI，并通过 frontend 的 uv 环境运行：
 

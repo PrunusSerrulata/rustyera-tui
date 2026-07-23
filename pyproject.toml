@@ -1,9 +1,10 @@
 [project]
 name = "rustyera-tui"
 version = "0.1.0"
-description = "A portable Textual frontend for the RustyEra runtime C ABI"
+description = "RustyEra runtime C ABI 的可移植 Textual 前端"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "GPL-3.0-only"
 dependencies = [
     "blake3>=1.0.5",
     "cbor2>=5.6.5",
