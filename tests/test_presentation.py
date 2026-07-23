@@ -1,6 +1,8 @@
 from rustyera_tui.presentation import (
     DEFAULT_VIEWPORT_COLUMNS,
+    ColumnCellLayout,
     PresentationModel,
+    SeparatorLayout,
     ServicePresentationModel,
     coalesce_presentation_deltas,
     parse_line,
@@ -60,7 +62,7 @@ def test_snapshot_preserves_color_and_button_token() -> None:
     assert model.lines[0].segments[0].token == {0: 1, 1: 1}
 
 
-def test_column_cells_merge_terminal_padding_into_the_edge_segment() -> None:
+def test_column_cells_preserve_semantic_layout_until_rendering() -> None:
     token = {0: 7, 1: 9}
     button = variant(
         1,
@@ -86,11 +88,14 @@ def test_column_cells_merge_terminal_padding_into_the_edge_segment() -> None:
 
     parsed = parse_line(raw)
 
-    assert "".join(segment.text for segment in parsed.segments) == "   界[1]中文  "
-    assert parsed.segments[0].text == "   界[1]"
+    assert "".join(segment.text for segment in parsed.segments) == "界[1]中文"
+    assert parsed.segments[0].text == "界[1]"
     assert parsed.segments[0].token == token
     assert parsed.segments[0].title == "选择"
-    assert parsed.segments[1].text == "中文  "
+    assert parsed.layout == (
+        ColumnCellLayout(0, 1, 1, 8),
+        ColumnCellLayout(1, 2, 0, 6),
+    )
     assert plain_line(raw) == "   界[1]中文  "
 
 
@@ -215,6 +220,18 @@ def test_save_delete_button_becomes_a_red_right_edge_action() -> None:
 
 def test_width_independent_separator_uses_the_100_column_default() -> None:
     assert len(plain_line({5: [variant(6, "-")]})) == DEFAULT_VIEWPORT_COLUMNS == 100
+    parsed = parse_line(
+        {
+            0: 1,
+            1: False,
+            2: True,
+            3: True,
+            4: 0,
+            5: [variant(6, "～", 0)],
+        }
+    )
+    assert parsed.segments == ()
+    assert parsed.layout == (SeparatorLayout(0, "～"),)
 
 
 def test_delta_append_replace_delete_and_revision_check() -> None:

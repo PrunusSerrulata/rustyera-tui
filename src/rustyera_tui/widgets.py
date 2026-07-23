@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from rich.cells import cell_len
+from rich.cells import cell_len, set_cell_size
 from rich.style import Style
 from rich.text import Text
 from textual import events
@@ -12,7 +12,15 @@ from textual.containers import ScrollableContainer
 from textual.message import Message
 from textual.widgets import Static
 
-from .presentation import DisplayLineModel, DisplaySegment, SegmentStyle
+from .presentation import (
+    MAX_TABLE_COLUMN_WIDTH,
+    MIN_TABLE_COLUMN_WIDTH,
+    ColumnCellLayout,
+    DisplayLineModel,
+    DisplaySegment,
+    SegmentStyle,
+    SeparatorLayout,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +63,9 @@ class GameLine(Static):
         self.regions: list[ClickRegion] = []
         self.hovered_region: int | None = None
         self.interactions_enabled = True
+        self.layout_width: int | None = None
+        self._projected_width: int | None = None
+        self._projected_segments: tuple[DisplaySegment, ...] = ()
 
     def on_mount(self) -> None:
         self._render_line()
@@ -62,6 +73,7 @@ class GameLine(Static):
     def set_line(self, line: DisplayLineModel) -> None:
         self.line = line
         self.hovered_region = None
+        self._projected_width = None
         self._render_line()
 
     def enable_interactions(self) -> None:
@@ -79,11 +91,12 @@ class GameLine(Static):
             self._render_line()
 
     def _render_line(self) -> None:
+        render_width = max(1, self.layout_width or self.size.width)
         output = Text(no_wrap=True, overflow="ignore")
         self.regions = []
         rows: list[list[tuple[str, DisplaySegment]]] = [[]]
         alignments = [self.line.alignment]
-        for segment in self.line.segments:
+        for segment in self._segments_for_width(render_width):
             parts = segment.text.split("\n")
             for index, part in enumerate(parts):
                 if segment.alignment is not None:
@@ -101,14 +114,14 @@ class GameLine(Static):
         layouts: list[list[tuple[str, DisplaySegment, int | None]]] = []
         for row_index, (row, alignment) in enumerate(zip(rows, alignments, strict=True)):
             content_width = sum(cell_len(text) for text, _segment in row)
-            available = max(0, self.size.width - content_width)
+            available = max(0, render_width - content_width)
             alignment_padding = {0: 0, 1: available // 2, 2: available}.get(alignment, 0)
             cursor = alignment_padding
             layout: list[tuple[str, DisplaySegment, int | None]] = []
             for text, segment in row:
                 width = cell_len(text)
                 if segment.right_edge:
-                    gap = max(0, self.size.width - cursor - width)
+                    gap = max(0, render_width - cursor - width)
                     if gap:
                         layout.append((" " * gap, DisplaySegment(" " * gap), None))
                         cursor += gap
@@ -152,7 +165,7 @@ class GameLine(Static):
             zip(layouts, alignments, strict=True)
         ):
             content_width = sum(cell_len(text) for text, _segment, _region in layout)
-            available = max(0, self.size.width - content_width)
+            available = max(0, render_width - content_width)
             alignment_padding = {0: 0, 1: available // 2, 2: available}.get(alignment, 0)
             if alignment_padding:
                 output.append(" " * alignment_padding)
@@ -174,8 +187,34 @@ class GameLine(Static):
                 output.append("\n")
         self.update(output)
 
-    def on_resize(self, _event: events.Resize) -> None:
-        self._render_line()
+    def set_layout_width(self, width: int) -> None:
+        width = max(1, width)
+        if self.layout_width != width:
+            self.layout_width = width
+            if self._is_width_sensitive() and self.is_mounted:
+                self._render_line()
+
+    def on_resize(self, event: events.Resize) -> None:
+        if (
+            self.layout_width is None
+            and self._is_width_sensitive()
+            and event.size.width != self._projected_width
+        ):
+            self._render_line()
+
+    def _is_width_sensitive(self) -> bool:
+        return bool(
+            self.line.layout
+            or self.line.alignment in (1, 2)
+            or any(segment.right_edge for segment in self.line.segments)
+        )
+
+    def _segments_for_width(self, width: int) -> tuple[DisplaySegment, ...]:
+        if self._projected_width == width:
+            return self._projected_segments
+        self._projected_segments = _project_responsive_segments(self.line, max(1, width))
+        self._projected_width = width
+        return self._projected_segments
 
     def _region_at(self, x: int, y: int) -> int | None:
         for index, region in enumerate(self.regions):
@@ -215,6 +254,130 @@ class GameLine(Static):
             self.post_message(self.Activated(region.token, region.title))
 
 
+def _project_responsive_segments(
+    line: DisplayLineModel, width: int
+) -> tuple[DisplaySegment, ...]:
+    if not line.layout:
+        return line.segments
+
+    projected: list[DisplaySegment] = []
+    segment_index = 0
+    layout_index = 0
+    while layout_index < len(line.layout):
+        item = line.layout[layout_index]
+        start = item.start if isinstance(item, ColumnCellLayout) else item.index
+        projected.extend(line.segments[segment_index:start])
+        segment_index = start
+
+        if isinstance(item, SeparatorLayout):
+            projected.append(DisplaySegment(_separator_text(item.pattern, width)))
+            layout_index += 1
+            continue
+
+        cells: list[ColumnCellLayout] = [item]
+        layout_index += 1
+        while layout_index < len(line.layout):
+            following = line.layout[layout_index]
+            if not isinstance(following, ColumnCellLayout) or following.start != cells[-1].end:
+                break
+            cells.append(following)
+            layout_index += 1
+        projected.extend(_project_column_group(line.segments, cells, width, projected))
+        segment_index = cells[-1].end
+
+    projected.extend(line.segments[segment_index:])
+    return tuple(projected)
+
+
+def _project_column_group(
+    segments: tuple[DisplaySegment, ...],
+    cells: list[ColumnCellLayout],
+    width: int,
+    preceding: list[DisplaySegment],
+) -> list[DisplaySegment]:
+    # Keep every source cell on one physical row until its slot would fall below
+    # the readable minimum. Spare width then grows all slots evenly up to the
+    # script preference and the TUI cap, so resizing does not require reparsing.
+    capacity = max(1, width // MIN_TABLE_COLUMN_WIDTH)
+    row_columns = min(len(cells), capacity)
+    preferred = max(
+        MIN_TABLE_COLUMN_WIDTH,
+        min(
+            MAX_TABLE_COLUMN_WIDTH,
+            max(cell.preferred_columns for cell in cells),
+        ),
+    )
+    available_per_column = (
+        width // row_columns if width >= MIN_TABLE_COLUMN_WIDTH else MIN_TABLE_COLUMN_WIDTH
+    )
+    column_width = max(
+        MIN_TABLE_COLUMN_WIDTH,
+        min(MAX_TABLE_COLUMN_WIDTH, preferred, available_per_column),
+    )
+
+    result: list[DisplaySegment] = []
+    cursor = _last_row_width(preceding)
+    cells_on_row = 0
+    for cell in cells:
+        if cells_on_row >= capacity or (
+            cursor > 0 and cursor + MIN_TABLE_COLUMN_WIDTH > width
+        ):
+            result.append(DisplaySegment("\n"))
+            cursor = 0
+            cells_on_row = 0
+        content = _pad_column_cell(
+            segments[cell.start : cell.end],
+            cell.alignment,
+            column_width,
+        )
+        content_width = sum(cell_len(segment.text) for segment in content)
+        result.extend(content)
+        cursor += content_width
+        cells_on_row += 1
+    return result
+
+
+def _pad_column_cell(
+    content: tuple[DisplaySegment, ...],
+    alignment: int,
+    column_width: int,
+) -> list[DisplaySegment]:
+    result = list(content)
+    content_width = sum(cell_len(segment.text) for segment in result)
+    padding = max(0, column_width - content_width)
+    if not padding:
+        return result
+    if not result:
+        return [DisplaySegment(" " * padding)]
+    edge_index = 0 if alignment == 1 else -1
+    edge = result[edge_index]
+    result[edge_index] = replace(
+        edge,
+        text=(" " * padding + edge.text)
+        if alignment == 1
+        else (edge.text + " " * padding),
+    )
+    return result
+
+
+def _separator_text(pattern: str, width: int) -> str:
+    pattern = pattern or "-"
+    pattern_width = max(1, cell_len(pattern))
+    repeated = pattern * (width // pattern_width + 1)
+    return set_cell_size(repeated, width)
+
+
+def _last_row_width(segments: list[DisplaySegment]) -> int:
+    width = 0
+    for segment in reversed(segments):
+        if "\n" not in segment.text:
+            width += cell_len(segment.text)
+            continue
+        width += cell_len(segment.text.rsplit("\n", 1)[-1])
+        break
+    return width
+
+
 class GameViewport(ScrollableContainer):
     """Incrementally reconcile presentation lines while retaining scroll position."""
 
@@ -234,6 +397,12 @@ class GameViewport(ScrollableContainer):
         self.models: list[DisplayLineModel] = []
         self.interactions_enabled = True
         self.presentation_background = "#000000"
+
+    def on_resize(self, event: events.Resize) -> None:
+        # Plain left-aligned history is already no-wrap and needs no new Rich text.
+        for child in self.children:
+            if isinstance(child, GameLine) and child._is_width_sensitive():
+                child.set_layout_width(event.size.width)
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -259,6 +428,7 @@ class GameViewport(ScrollableContainer):
 
     def _line_widget(self, line: DisplayLineModel) -> GameLine:
         widget = GameLine(line)
+        widget.layout_width = max(1, self.size.width)
         widget.interactions_enabled = self.interactions_enabled
         widget.styles.background = self.presentation_background
         return widget

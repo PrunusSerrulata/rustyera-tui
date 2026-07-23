@@ -80,6 +80,7 @@ class RustyEraTui(App[None]):
         self.exit_pending = False
         self.snapshot_exporting = False
         self.presentation_rendering = False
+        self._projection_refresh_scheduled = False
         self.variable_dialog: VariableDialog | None = None
         self.stack_dialog: StackDialog | None = None
         self.console_dialog: DebugConsoleDialog | None = None
@@ -600,8 +601,17 @@ class RustyEraTui(App[None]):
         if not self._debug_interactions_blocked():
             self.worker.send("debug_action", ("read_variable", event.descriptor))
 
-    def on_resize(self, event: events.Resize) -> None:
-        self._send_projection(event.size.width, event.size.height - 3)
+    def on_resize(self, _event: events.Resize) -> None:
+        if not self._projection_refresh_scheduled:
+            self._projection_refresh_scheduled = True
+            self.call_after_refresh(self._send_viewport_projection)
+
+    def _send_viewport_projection(self) -> None:
+        self._projection_refresh_scheduled = False
+        if not self.is_mounted:
+            return
+        viewport = self.query_one(GameViewport)
+        self._send_projection(viewport.size.width, viewport.size.height)
 
     def _send_projection(self, width: int, height: int) -> None:
         # Each observation is bound to the currently applied presentation revision. The

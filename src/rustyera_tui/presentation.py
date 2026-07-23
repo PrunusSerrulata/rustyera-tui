@@ -11,6 +11,8 @@ from rich.cells import cell_len
 from .wire import unwrap_variant, variant
 
 DEFAULT_VIEWPORT_COLUMNS = 100
+MIN_TABLE_COLUMN_WIDTH = 12
+MAX_TABLE_COLUMN_WIDTH = 20
 SAVE_DELETE_PATTERN = re.compile(r"Delete save\d+\.sav")
 
 
@@ -38,6 +40,24 @@ class DisplaySegment:
 
 
 @dataclass(frozen=True, slots=True)
+class ColumnCellLayout:
+    """A semantic PRINTC-family cell over a range of display segments."""
+
+    start: int
+    end: int
+    alignment: int
+    preferred_columns: int
+
+
+@dataclass(frozen=True, slots=True)
+class SeparatorLayout:
+    """A width-dependent separator inserted before one display-segment index."""
+
+    index: int
+    pattern: str
+
+
+@dataclass(frozen=True, slots=True)
 class DisplayLineModel:
     line_id: int
     temporary: bool
@@ -45,6 +65,7 @@ class DisplayLineModel:
     line_end: bool
     alignment: int
     segments: tuple[DisplaySegment, ...]
+    layout: tuple[ColumnCellLayout | SeparatorLayout, ...] = ()
 
 
 @dataclass(slots=True)
@@ -339,8 +360,26 @@ def parse_style(style: dict[int, Any] | None) -> SegmentStyle:
 
 def parse_line(line: dict[int, Any]) -> DisplayLineModel:
     segments: list[DisplaySegment] = []
+    layout: list[ColumnCellLayout | SeparatorLayout] = []
     for run in line.get(5, []):
-        segments.extend(parse_run(run))
+        tag, fields = unwrap_variant(run)
+        if tag == 5:  # PRINTC-family semantic cell
+            content, alignment, preferred_columns = fields
+            start = len(segments)
+            for child in content:
+                segments.extend(parse_run(child))
+            layout.append(
+                ColumnCellLayout(
+                    start,
+                    len(segments),
+                    int(alignment),
+                    int(preferred_columns),
+                )
+            )
+        elif tag == 6:  # Width-independent separator
+            layout.append(SeparatorLayout(len(segments), fields[0] or "-"))
+        else:
+            segments.extend(parse_run(run))
     return DisplayLineModel(
         line_id=line[0],
         temporary=line.get(1, False),
@@ -348,6 +387,7 @@ def parse_line(line: dict[int, Any]) -> DisplayLineModel:
         line_end=line.get(3, True),
         alignment=line.get(4, 0),
         segments=tuple(segments),
+        layout=tuple(layout),
     )
 
 

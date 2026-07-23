@@ -5,12 +5,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from rich.cells import cell_len
+from textual.widgets import DataTable, Input, Static, TextArea
+
 from rustyera_tui.app import RustyEraTui
-from rustyera_tui.presentation import DisplayLineModel, DisplaySegment
+from rustyera_tui.presentation import (
+    ColumnCellLayout,
+    DisplayLineModel,
+    DisplaySegment,
+    SeparatorLayout,
+)
 from rustyera_tui.runtime import FrontendEvent, RuntimeFailure
 from rustyera_tui.widgets import GameLine, GameViewport
 from rustyera_tui.wire import variant
-from textual.widgets import DataTable, Input, Static, TextArea
 
 
 class FakeWorker:
@@ -116,6 +123,138 @@ async def test_horizontal_scrollbar_replaces_the_prompt_separator(tmp_path: Path
         await pilot.pause()
         assert not viewport.show_horizontal_scrollbar
         assert separator.display
+
+
+async def test_column_cells_reflow_live_between_twelve_and_twenty_cells(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    segments = tuple(DisplaySegment(f"[{index}]") for index in range(5))
+    line = DisplayLineModel(
+        1,
+        False,
+        True,
+        True,
+        0,
+        segments,
+        tuple(ColumnCellLayout(index, index + 1, 0, 25) for index in range(5)),
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([line])
+        await pilot.pause()
+        game_line = app.query_one(GameLine)
+        identity = id(game_line)
+
+        rows = game_line.render().plain.splitlines()
+        assert [cell_len(row) for row in rows] == [100]
+
+        await pilot.resize_terminal(80, 30)
+        rows = game_line.render().plain.splitlines()
+        assert [cell_len(row) for row in rows] == [80]
+
+        await pilot.resize_terminal(59, 30)
+        rows = game_line.render().plain.splitlines()
+        assert [cell_len(row) for row in rows] == [56, 14]
+        assert id(app.query_one(GameLine)) == identity
+
+        await pilot.resize_terminal(24, 30)
+        rows = game_line.render().plain.splitlines()
+        assert [cell_len(row) for row in rows] == [24, 24, 12]
+
+        await pilot.resize_terminal(11, 30)
+        rows = game_line.render().plain.splitlines()
+        assert [cell_len(row) for row in rows] == [12, 12, 12, 12, 12]
+        assert viewport.show_horizontal_scrollbar
+
+
+async def test_responsive_layout_preserves_long_text_maps_and_button_coordinates(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    tokens = tuple({0: 8, 1: index} for index in range(5))
+    table = DisplayLineModel(
+        1,
+        False,
+        True,
+        True,
+        0,
+        tuple(
+            DisplaySegment(f"[{index}] option", token=token)
+            for index, token in enumerate(tokens)
+        ),
+        tuple(ColumnCellLayout(index, index + 1, 0, 25) for index in range(5)),
+    )
+    long_cell = DisplayLineModel(
+        2,
+        False,
+        True,
+        True,
+        0,
+        (DisplaySegment("x" * 24),),
+        (ColumnCellLayout(0, 1, 0, 25),),
+    )
+    map_line = DisplayLineModel(
+        3,
+        False,
+        True,
+        True,
+        0,
+        (DisplaySegment("┌" + "─" * 39 + "┐"),),
+    )
+    app.presentation.lines = [table, long_cell, map_line]
+    app.active_wait = {0: 8, 1: 2}
+    async with app.run_test(size=(59, 30)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines(app.presentation.lines)
+        await pilot.pause()
+        game_lines = list(app.query(GameLine))
+
+        assert [region.row for region in game_lines[0].regions] == [0, 0, 0, 0, 1]
+        assert game_lines[1].render().plain == "x" * 24
+        assert "\n" not in game_lines[2].render().plain
+        assert game_lines[2].render().plain == "┌" + "─" * 39 + "┐"
+        assert await pilot.click(game_lines[0], offset=(1, 1))
+        assert ("activate", tokens[4]) in worker.commands
+        map_content = game_lines[2].content
+
+        await pilot.resize_terminal(40, 30)
+        assert game_lines[2].content is map_content
+        assert game_lines[2].render().plain == "┌" + "─" * 39 + "┐"
+        assert viewport.show_horizontal_scrollbar
+
+
+async def test_semantic_separator_tracks_the_viewport_without_wrapping_plain_text(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    separator = DisplayLineModel(
+        1,
+        False,
+        True,
+        True,
+        0,
+        (),
+        (SeparatorLayout(0, "～"),),
+    )
+    async with app.run_test(size=(61, 30)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([separator])
+        await pilot.pause()
+        game_line = app.query_one(GameLine)
+
+        assert cell_len(game_line.render().plain) == viewport.size.width == 61
+        assert "\n" not in game_line.render().plain
+
+        await pilot.resize_terminal(37, 30)
+        assert cell_len(game_line.render().plain) == viewport.size.width == 37
+        assert not viewport.show_horizontal_scrollbar
 
 
 async def test_viewport_update_always_scrolls_to_the_bottom(tmp_path: Path) -> None:
