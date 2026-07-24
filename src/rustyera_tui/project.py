@@ -39,7 +39,12 @@ def _decode_project_source(raw: bytes) -> str:
     except UnicodeDecodeError:
         # The reference loader makes the same strict UTF-8-first choice and treats
         # an invalid stream as Windows-31J. Runtime-facing text remains UTF-8.
-        return raw.decode("cp932")
+        try:
+            return raw.decode("cp932")
+        except UnicodeDecodeError:
+            # Some translated projects contain an isolated GBK source among otherwise
+            # UTF-8 or Windows-31J files. Normalize that legacy file at this I/O boundary.
+            return raw.decode("gbk")
 
 
 def classify_path(path: Path | PurePosixPath) -> int | None:

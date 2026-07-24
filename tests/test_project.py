@@ -38,7 +38,24 @@ def test_project_scanners_normalize_cp932_sources_to_utf8(tmp_path: Path) -> Non
     assert quick.materialize().identity() == scanned.identity()
 
 
-def test_project_scanner_reports_text_invalid_in_utf8_and_cp932(tmp_path: Path) -> None:
+def test_project_scanners_normalize_gbk_sources_to_utf8(tmp_path: Path) -> None:
+    source = ";阶层怪物列表\r\n#DIM KAI_LIST\r\n"
+    path = tmp_path / "main.erh"
+    path.write_bytes(source.encode("gbk"))
+
+    scanned = ProjectBundle.scan(tmp_path)
+    quick = ProjectBundle.scan_quick(tmp_path)
+
+    expected_hash = blake3.blake3(source.encode("utf-8")).digest()
+    assert scanned.files["main.erh"].payload == variant(0, source)
+    assert scanned.files["main.erh"].content_hash == expected_hash
+    assert quick.files["main.erh"].content_hash == expected_hash
+    assert quick.materialize().identity() == scanned.identity()
+
+
+def test_project_scanner_reports_text_invalid_in_supported_encodings(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "main.erb"
     path.write_bytes(b"\x81")
 
