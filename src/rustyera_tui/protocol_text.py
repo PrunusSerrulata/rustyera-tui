@@ -61,9 +61,10 @@ COMMAND_ERROR_CODES = {
 }
 
 DIAGNOSTIC_SEVERITIES = {
-    0: "Information",
-    1: "Warning",
-    2: "Error",
+    0: "Debug",
+    1: "Info",
+    2: "Warning",
+    3: "Error",
 }
 
 SERVICE_KINDS = {

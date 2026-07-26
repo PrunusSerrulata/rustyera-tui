@@ -259,8 +259,9 @@ ModalScreen {
     color: #d8d8d8;
 }
 
-#log-filter-row {
+#log-actions-row {
     height: 3;
+    align-horizontal: right;
     align-vertical: middle;
 }
 

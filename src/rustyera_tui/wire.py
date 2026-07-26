@@ -13,7 +13,7 @@ from typing import Any
 import cbor2
 
 WIRE_VERSION = (2, 0)
-RUNTIME_VERSION = (23, 0)
+RUNTIME_VERSION = (24, 0)
 DEBUG_VERSION = (4, 0)
 
 CHANNEL_RUNTIME = 0

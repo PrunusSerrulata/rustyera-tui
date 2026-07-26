@@ -1,12 +1,16 @@
+import queue
+
+import pytest
 from rich.text import Text
 
 from rustyera_tui.log_model import (
     LogLevel,
+    LogMessage,
     filter_log_entries,
     format_log_entries,
     make_log_entry,
 )
-from rustyera_tui.runtime import diagnostic_log_level, log_event
+from rustyera_tui.runtime import RuntimeClient, log_event, runtime_log_level
 
 
 def test_log_entry_normalizes_repeated_severity_prefixes_and_aligns_levels() -> None:
@@ -61,11 +65,43 @@ def test_log_filter_is_threshold_only_but_export_always_contains_every_entry() -
 
 
 def test_runtime_diagnostic_severity_is_preserved_as_structured_log_data() -> None:
-    assert diagnostic_log_level(0) is LogLevel.INFO
-    assert diagnostic_log_level(1) is LogLevel.WARNING
-    assert diagnostic_log_level(2) is LogLevel.ERROR
+    assert runtime_log_level(0) is LogLevel.DEBUG
+    assert runtime_log_level(1) is LogLevel.INFO
+    assert runtime_log_level(2) is LogLevel.WARNING
+    assert runtime_log_level(3) is LogLevel.ERROR
+    with pytest.raises(ValueError):
+        runtime_log_level(99)
 
-    event = log_event("[runtime.example]: failed", LogLevel.ERROR)
+    event = log_event(
+        "WARNING: backend chose error",
+        LogLevel.ERROR,
+        authoritative=True,
+    )
     assert event.kind == "log"
     assert event.value.level is LogLevel.ERROR
-    assert event.value.message == "[runtime.example]: failed"
+    assert event.value.message == "WARNING: backend chose error"
+    assert event.value.authoritative
+
+    entry = make_log_entry(
+        event.value.message,
+        event.value.level,
+        timestamp="12:00:00",
+        authoritative=event.value.authoritative,
+    )
+    assert entry.level is LogLevel.ERROR
+    assert entry.message == "WARNING: backend chose error"
+
+
+def test_runtime_log_wire_message_preserves_backend_level_and_body() -> None:
+    client = RuntimeClient.__new__(RuntimeClient)
+    client.events = queue.Queue()
+
+    client._handle_runtime(98, {0: 3, 1: "WARNING: authoritative error"}, None)
+
+    event = client.events.get_nowait()
+    assert event.kind == "log"
+    assert event.value == LogMessage(
+        LogLevel.ERROR,
+        "WARNING: authoritative error",
+        authoritative=True,
+    )

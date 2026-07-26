@@ -109,7 +109,7 @@ def wait_for(
             continue
         if predicate(event):
             return event
-        if event.kind in ("error", "runtime_fault"):
+        if event.kind in ("error", "runtime_error", "runtime_fault"):
             raise AssertionError(event.value)
     raise AssertionError("timed out waiting for runtime event")
 
@@ -125,7 +125,7 @@ def wait_for_path(worker: RuntimeWorker, path: Path, timeout: float = 15) -> Non
         except queue.Empty:
             continue
         observed.append(event)
-        if event.kind in ("error", "runtime_fault"):
+        if event.kind in ("error", "runtime_error", "runtime_fault"):
             raise AssertionError(event.value)
     client = worker.client
     state = (
@@ -198,8 +198,7 @@ def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
     try:
         cache_hit = wait_for(
             second,
-            lambda event: event.kind == "log"
-            and "runtime.compiled_cache_hit" in str(event.value),
+            lambda event: event.kind == "log" and "runtime.compiled_cache_hit" in str(event.value),
         )
         assert "compiled_cache_hit" in cache_hit.value
     finally:
@@ -242,9 +241,7 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
         with monkeypatch.context() as context:
             context.setattr(
                 "rustyera_tui.runtime.ProjectBundle.scan",
-                lambda *_args, **_kwargs: pytest.fail(
-                    "snapshot restore must not scan the project"
-                ),
+                lambda *_args, **_kwargs: pytest.fail("snapshot restore must not scan the project"),
             )
             worker.send("restore_snapshot", snapshot_path)
             wait_for(
@@ -383,17 +380,20 @@ def test_real_c_abi_projects_three_channel_background_and_reset(
         black = {0: 0, 1: 0, 2: 0, 3: 255}
         wait_for(
             worker,
-            lambda event: event.kind == "presentation_snapshot"
-            and event.value.get(6, {}).get(2) == blue,
+            lambda event: (
+                event.kind == "presentation_snapshot" and event.value.get(6, {}).get(2) == blue
+            ),
         )
         wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
         worker.send("submit_text", "")
         wait_for(
             worker,
-            lambda event: event.kind == "presentation_delta"
-            and any(
-                operation[0] == 8 and operation[1][0].get(2) == black
-                for operation in event.value[2]
+            lambda event: (
+                event.kind == "presentation_delta"
+                and any(
+                    operation[0] == 8 and operation[1][0].get(2) == black
+                    for operation in event.value[2]
+                )
             ),
         )
     finally:

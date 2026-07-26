@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from rich.cells import cell_len
-from textual.widgets import DataTable, Input, RichLog, Select, Static
+from textual.widgets import Button, DataTable, Input, RichLog, Select, Static
 
 from rustyera_tui.app import RustyEraTui
 from rustyera_tui.dialogs import FatalErrorDialog
-from rustyera_tui.log_model import LogLevel
+from rustyera_tui.log_model import LogLevel, LogMessage
 from rustyera_tui.presentation import (
     ColumnCellLayout,
     DisplayLineModel,
@@ -325,6 +325,9 @@ async def test_log_dialog_filters_entries_at_the_selected_threshold(tmp_path: Pa
         await pilot.pause()
         assert len(view.lines) == 4
         assert view.is_vertical_scroll_end
+        close = app.screen.query_one("#dialog-close", Button)
+        assert level.region.y == close.region.y
+        assert level.region.right <= close.region.x
 
 
 async def test_runtime_fault_remains_visible_in_the_prompt(tmp_path: Path) -> None:
@@ -379,18 +382,31 @@ async def test_prompt_color_tracks_runtime_and_input_state(tmp_path: Path) -> No
         assert label.styles.color.hex6 == "#800080"
 
 
-async def test_log_uses_text_for_runtime_and_debug_enums(tmp_path: Path) -> None:
+async def test_runtime_events_only_log_backend_authoritative_entries(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)) as pilot:
         worker.events.put(FrontendEvent("phase", 5))
         worker.events.put(FrontendEvent("debug_stopped", {1: [2, []]}))
+        worker.events.put(
+            FrontendEvent(
+                "log",
+                LogMessage(LogLevel.DEBUG, "Runtime phase -> WaitingInput", authoritative=True),
+            )
+        )
+        worker.events.put(
+            FrontendEvent(
+                "log",
+                LogMessage(LogLevel.DEBUG, "debug stopped: StepCompleted", authoritative=True),
+            )
+        )
         await pilot.pause(0.1)
         phase_log = next(log for log in app.logs if "Runtime phase -> WaitingInput" in log)
-        pause_log = next(log for log in app.logs if "调试暂停：StepCompleted" in log)
+        pause_log = next(log for log in app.logs if "debug stopped: StepCompleted" in log)
         assert phase_log.level is LogLevel.DEBUG
         assert pause_log.level is LogLevel.DEBUG
+        assert len(app.logs) == 2
 
 
 async def test_single_step_prompt_shows_source_and_f10_advances(tmp_path: Path) -> None:
@@ -805,6 +821,16 @@ async def test_fatal_fault_dialog_exports_diagnosis_and_gates_recovery_actions(
     async with app.run_test(size=(100, 30)) as pilot:
         app._log("DEBUG: before fault", LogLevel.DEBUG)
         failure = RuntimeFailure(code=3, message="place storage is unavailable")
+        app._handle_worker_event(
+            FrontendEvent(
+                "log",
+                LogMessage(
+                    LogLevel.ERROR,
+                    "runtime fault [MissingPlaceStorage]: place storage is unavailable",
+                    authoritative=True,
+                ),
+            )
+        )
         app._handle_worker_event(FrontendEvent("runtime_fault", failure))
         await pilot.pause()
 

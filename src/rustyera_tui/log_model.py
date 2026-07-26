@@ -14,10 +14,10 @@ from rich.text import Text
 class LogLevel(IntEnum):
     """Ordered log severity used as the log-view threshold."""
 
-    DEBUG = 10
-    INFO = 20
-    WARNING = 30
-    ERROR = 40
+    DEBUG = 0
+    INFO = 1
+    WARNING = 2
+    ERROR = 3
 
     @property
     def label(self) -> str:
@@ -58,6 +58,7 @@ class LogMessage:
 
     level: LogLevel
     message: str
+    authoritative: bool = False
 
     def __str__(self) -> str:
         return self.message
@@ -109,8 +110,10 @@ def make_log_entry(
     level: LogLevel = LogLevel.INFO,
     *,
     timestamp: str | None = None,
+    authoritative: bool = False,
 ) -> LogEntry:
-    level, message = normalize_log_message(message, level)
+    if not authoritative:
+        level, message = normalize_log_message(message, level)
     return LogEntry(timestamp or datetime.now().strftime("%H:%M:%S"), level, message)
 
 

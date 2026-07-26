@@ -26,7 +26,6 @@ from .dialogs import (
 from .diagnosis import diagnosis_default_path
 from .log_model import LogEntry, LogLevel, LogMessage, format_log_entries, make_log_entry
 from .presentation import PresentationModel
-from .protocol_text import DEBUG_STOP_REASONS, RUNTIME_PHASES, enum_text, variant_enum_text
 from .runtime import FrontendEvent, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
@@ -188,8 +187,6 @@ class RustyEraTui(App[None]):
                 self.blocking_error = None
             self._update_prompt()
             self._refresh_interaction_lock()
-            phase = enum_text(value, RUNTIME_PHASES, "RuntimePhase")
-            self._log(f"Runtime phase -> {phase}", LogLevel.DEBUG)
         elif kind == "status":
             self._set_status(str(value))
         elif kind == "snapshot_export_finished":
@@ -206,11 +203,13 @@ class RustyEraTui(App[None]):
             self._set_status(f"项目已加载：{self.project}")
         elif kind == "log":
             if isinstance(value, LogMessage):
-                self._log(value.message, value.level)
+                self._log(value.message, value.level, authoritative=value.authoritative)
             else:
                 self._log(str(value))
         elif kind == "error":
             self._log(str(value), LogLevel.ERROR)
+            self.notify(str(value), title="RustyEra", severity="error", timeout=8)
+        elif kind == "runtime_error":
             self.notify(str(value), title="RustyEra", severity="error", timeout=8)
         elif kind == "interaction_rejected":
             if self._wait_identity(value) == self._activated_wait:
@@ -221,7 +220,6 @@ class RustyEraTui(App[None]):
             self.active_wait = None
             self._activated_wait = None
             self.blocking_error = value.display()
-            self._log(self.blocking_error, LogLevel.ERROR)
             self.fault_logs = format_log_entries(self.logs)
             self._update_prompt()
             self._refresh_interaction_lock()
@@ -229,18 +227,15 @@ class RustyEraTui(App[None]):
                 self.fatal_dialog = FatalErrorDialog(self.blocking_error)
                 self.push_screen(self.fatal_dialog)
         elif kind == "snapshot_restore_warning":
-            self._log(str(value), LogLevel.WARNING)
             self.notify(str(value), title="VM 快照恢复警告", severity="warning", timeout=12)
         elif kind == "debug_enabled":
             self._set_debug_enabled(bool(value))
         elif kind == "debug_stopped":
-            reason = variant_enum_text(value.get(1), DEBUG_STOP_REASONS, "StopReason")
             source = value.get(3)
             self.debug_location = (
                 f"{source.get(0)}:{source.get(4)}" if source and source.get(0) is not None else None
             )
             self.debug_paused = True
-            self._log(f"调试暂停：{reason}", LogLevel.DEBUG)
             self._update_prompt()
             self._refresh_interaction_lock()
         elif kind == "debug_response":
@@ -274,8 +269,14 @@ class RustyEraTui(App[None]):
         else:
             self.query_one("#prompt", Input).placeholder = message
 
-    def _log(self, message: str, level: LogLevel = LogLevel.INFO) -> None:
-        entry = make_log_entry(message, level)
+    def _log(
+        self,
+        message: str,
+        level: LogLevel = LogLevel.INFO,
+        *,
+        authoritative: bool = False,
+    ) -> None:
+        entry = make_log_entry(message, level, authoritative=authoritative)
         self.logs.append(entry)
         if self.console_dialog is not None and self.console_dialog.is_mounted:
             if entry.level is LogLevel.DEBUG:
@@ -542,8 +543,6 @@ class RustyEraTui(App[None]):
                 self.console_dialog.write(f"=> {outcome[1]!r}")
             for diagnostic in outcome.get(5, []):
                 self.console_dialog.write(f"{diagnostic.get(0)}: {diagnostic.get(1)}")
-        elif response_tag == 0 and pending:
-            self._log(f"{pending} accepted", LogLevel.DEBUG)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "prompt" or self._game_interactions_blocked():

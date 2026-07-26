@@ -41,7 +41,7 @@ def main() -> int:
                     print("worker stopped before snapshot restore completed")
                     return 1
                 continue
-            if event.kind in ("error", "runtime_fault"):
+            if event.kind in ("error", "runtime_error", "runtime_fault"):
                 print(f"ERROR: {event.value}")
                 return 1
             if event.kind == "presentation_snapshot":

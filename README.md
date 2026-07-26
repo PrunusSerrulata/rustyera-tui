@@ -54,7 +54,7 @@ GlobalSave、Data、Log、snapshot、编译缓存和可写 Project overlay 默�
 成功编译的项目缓存为：
 
 ```text
-.rustyera/cache/compiled-project-v5.bin.zst
+.rustyera/cache/compiled-project-v6.bin.zst
 ```
 
 冷启动和“重启”使用持久化 stat/hash 源文件索引，因此不会重新读取未修改文件；精确

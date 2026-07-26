@@ -146,7 +146,7 @@ def test_stale_projection_rejection_is_recoverable_but_runtime_fault_is_structur
     client._projection_messages.add(10)
     client._handle_runtime(95, {0: 3, 1: "projection dimensions must be positive"}, 10)
     invalid = client.events.get_nowait()
-    assert invalid.kind == "error"
+    assert invalid.kind == "runtime_error"
 
     client._handle_runtime(
         92,
@@ -191,7 +191,7 @@ def test_snapshot_export_purposes_and_restore_warnings_are_frontend_visible(
         97,
         {
             0: "runtime.snapshot_restored_from_diagnosis",
-            1: 1,
+            1: 2,
             2: "restored a VM snapshot captured for diagnosis",
         },
         None,
@@ -237,7 +237,7 @@ def test_rejected_input_reports_the_still_active_wait_to_the_app() -> None:
     rejected = client.events.get_nowait()
     assert rejected == FrontendEvent("interaction_rejected", wait)
     error = client.events.get_nowait()
-    assert error.kind == "error"
+    assert error.kind == "runtime_error"
     assert 23 not in client._input_messages
 
 

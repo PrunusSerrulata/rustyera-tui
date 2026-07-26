@@ -57,16 +57,17 @@ COMPILED_CACHE_RETRY_NS = 250_000_000
 STATE_IMPORT_CHUNK_BYTES = 16 * 1024 * 1024
 
 
-def log_event(message: str, level: LogLevel = LogLevel.INFO) -> FrontendEvent:
-    return FrontendEvent("log", LogMessage(level, message))
+def log_event(
+    message: str,
+    level: LogLevel = LogLevel.INFO,
+    *,
+    authoritative: bool = False,
+) -> FrontendEvent:
+    return FrontendEvent("log", LogMessage(level, message, authoritative))
 
 
-def diagnostic_log_level(value: Any) -> LogLevel:
-    return {
-        0: LogLevel.INFO,
-        1: LogLevel.WARNING,
-        2: LogLevel.ERROR,
-    }.get(value, LogLevel.INFO)
+def runtime_log_level(value: Any) -> LogLevel:
+    return LogLevel(value)
 
 
 def format_project_diagnostic(diagnostic: dict[int, Any], source_text: str | None = None) -> str:
@@ -442,12 +443,6 @@ class RuntimeClient:
         if tag == 1:  # ServerHello
             self.session = value[1]
             self.epoch = value[4]
-            self.events.put(
-                log_event(
-                    f"runtime handshake complete (epoch {self.epoch})",
-                    LogLevel.DEBUG,
-                )
-            )
             if self.pending_bundle is not None:
                 cache_path = (
                     self.storage.compiled_cache_path()
@@ -467,7 +462,7 @@ class RuntimeClient:
                     self._submit_project(None)
             return
         if tag == 2:
-            self.events.put(FrontendEvent("error", f"协议版本被拒绝：{value.get(1, '')}"))
+            self.events.put(FrontendEvent("runtime_error", f"协议版本被拒绝：{value.get(1, '')}"))
         elif tag == 11:  # ProjectLoadReport
             self._handle_project_report(value)
         elif tag == 21:
@@ -588,7 +583,7 @@ class RuntimeClient:
                 projection_request and value.get(0) == 2 and stale_projection
             ):
                 code = enum_text(value.get(0), COMMAND_ERROR_CODES, "CommandErrorCode")
-                self.events.put(FrontendEvent("error", f"命令被拒绝 [{code}]：{rejection}"))
+                self.events.put(FrontendEvent("runtime_error", f"命令被拒绝 [{code}]：{rejection}"))
         elif tag == 96:
             self.epoch = value[0]
             self.phase = value[1]
@@ -602,7 +597,8 @@ class RuntimeClient:
             self.events.put(
                 log_event(
                     f"[{value.get(0)}]: {value.get(2)}{location}",
-                    diagnostic_log_level(value.get(1)),
+                    runtime_log_level(value.get(1)),
+                    authoritative=True,
                 )
             )
             if value.get(0) == "runtime.compiled_cache_ready":
@@ -622,6 +618,14 @@ class RuntimeClient:
                         "该快照来自诊断信息；已确认其状态可恢复，请仅用于问题排查。",
                     )
                 )
+        elif tag == 98:
+            self.events.put(
+                log_event(
+                    str(value.get(1, "")),
+                    runtime_log_level(value.get(0)),
+                    authoritative=True,
+                )
+            )
 
     def _handle_project_report(self, report: dict[int, Any]) -> None:
         cache_hit = False
@@ -659,7 +663,8 @@ class RuntimeClient:
             self.events.put(
                 log_event(
                     format_project_diagnostic(diagnostic, source_text),
-                    diagnostic_log_level(diagnostic.get(1)),
+                    runtime_log_level(diagnostic.get(1)),
+                    authoritative=True,
                 )
             )
             cache_hit = cache_hit or diagnostic.get(0) == "runtime.compiled_cache_hit"
@@ -673,7 +678,7 @@ class RuntimeClient:
             return
         if not report[1]:
             self.reload_candidate = None
-            self.events.put(FrontendEvent("error", "项目加载或热重载失败，请查看日志。"))
+            self.events.put(FrontendEvent("runtime_error", "项目加载或热重载失败，请查看日志。"))
             return
         if self.reload_candidate is not None and report[0] == self.reload_candidate.revision:
             self.bundle = self.reload_candidate
@@ -1018,7 +1023,7 @@ class RuntimeClient:
             reasons = enum_list_text(
                 fields[0], SNAPSHOT_INELIGIBLE_REASONS, "SnapshotIneligibleReason"
             )
-            self.events.put(FrontendEvent("error", f"当前状态不能生成快照：{reasons}"))
+            self.events.put(FrontendEvent("runtime_error", f"当前状态不能生成快照：{reasons}"))
             self.pending_export = None
             self.pending_export_message = None
             if self.pending_export_kind == 2:
@@ -1295,7 +1300,6 @@ class RuntimeClient:
             self.transient_pause_owner = None
             self.transient_close_pending = None
             self.events.put(FrontendEvent("debug_enabled", False))
-            self.events.put(log_event(f"调试权限已撤销：{value.get(1, '')}"))
         elif tag == 11:
             response_tag, fields = unwrap_variant(value)
             pending = self.debug_pending_by_message.pop(correlation_id or 0, "")
@@ -1338,7 +1342,7 @@ class RuntimeClient:
                 self.debug_step_in_flight = False
             if self.debug_disable_pending:
                 self._revoke_debug()
-            self.events.put(FrontendEvent("error", f"调试请求失败：{value.get(1, '')}"))
+            self.events.put(FrontendEvent("runtime_error", f"调试请求失败：{value.get(1, '')}"))
 
     def shutdown(self) -> None:
         if not self.shutting_down and self.session is not None:

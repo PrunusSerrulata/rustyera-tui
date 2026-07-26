@@ -33,7 +33,7 @@ def test_project_diagnostic_renders_path_category_and_utf8_source_span() -> None
     byte_start = source.encode("utf-8").index('"你好"'.encode())
     diagnostic = {
         0: "analyzer.type_mismatch",
-        1: 2,
+        1: 3,
         2: "cannot assign a string to an integer",
         3: {
             0: "ERB/main.erb",
@@ -77,7 +77,7 @@ def test_snapshot_rejection_event_uses_reason_names() -> None:
     client._handle_export_ready({1: [1, [[3]]]})
 
     event = client.events.get_nowait()
-    assert event.kind == "error"
+    assert event.kind == "runtime_error"
     assert event.value == ("当前状态不能生成快照：SnapshotStateUnavailable")
     finished = client.events.get_nowait()
     assert finished.kind == "snapshot_export_finished"

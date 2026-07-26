@@ -34,12 +34,13 @@ def main() -> int:
                 model.apply_snapshot(event.value)
             elif event.kind == "presentation_delta":
                 model.apply_delta(event.value)
-            elif event.kind == "error":
+            elif event.kind in ("error", "runtime_error"):
                 print(json.dumps({"error": event.value}, ensure_ascii=False))
                 return 1
             elif event.kind == "wait" and event.value is not None:
                 output = [
-                    "".join(segment.text for segment in line.segments) for line in model.lines
+                    "".join(segment.text for segment in line.segments)
+                    for line in model.lines
                 ]
                 print(
                     json.dumps(

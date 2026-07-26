@@ -150,7 +150,8 @@ class LogDialog(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide-dialog"):
             yield Label("Runtime / 前端日志", classes="dialog-title")
-            with Horizontal(id="log-filter-row"):
+            yield RichLog(wrap=False, highlight=False, markup=False, id="log-view")
+            with Horizontal(id="log-actions-row", classes="dialog-buttons"):
                 yield Label("最低显示等级", id="log-filter-label")
                 yield Select(
                     (
@@ -163,8 +164,7 @@ class LogDialog(ModalScreen[None]):
                     allow_blank=False,
                     id="log-level",
                 )
-            yield RichLog(wrap=False, highlight=False, markup=False, id="log-view")
-            yield Button("关闭", id="dialog-close")
+                yield Button("关闭", id="dialog-close")
 
     def on_mount(self) -> None:
         self._refresh_logs(LogLevel.INFO)

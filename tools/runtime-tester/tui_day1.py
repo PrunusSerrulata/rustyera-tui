@@ -76,7 +76,8 @@ RuntimeClient._handle_runtime = _traced_handle_runtime
 
 def plain_tail(model: PresentationModel, count: int = 20) -> str:
     return "\n".join(
-        "".join(segment.text for segment in line.segments) for line in model.lines[-count:]
+        "".join(segment.text for segment in line.segments)
+        for line in model.lines[-count:]
     )
 
 
@@ -104,7 +105,10 @@ def main() -> int:
     maximum_day_one_seconds = os.environ.get("ERA_AUDIT_MAX_DAY1_SECONDS")
     maximum_wake_seconds = os.environ.get("ERA_AUDIT_MAX_WAKE_SECONDS")
     maximum_snapshot_seconds = os.environ.get("ERA_AUDIT_MAX_SNAPSHOT_SECONDS")
-    wake_check = os.environ.get("ERA_AUDIT_WAKE_CHECK") == "1" or maximum_wake_seconds is not None
+    wake_check = (
+        os.environ.get("ERA_AUDIT_WAKE_CHECK") == "1"
+        or maximum_wake_seconds is not None
+    )
     wait_for_cache = os.environ.get("ERA_AUDIT_WAIT_FOR_CACHE") == "1"
     item_stage: str | None = None
     day_one_reached = False
@@ -126,7 +130,11 @@ def main() -> int:
     def advance_wait(
         wait: dict[int, object], tail: str, *, snapshot_attempted: bool = False
     ) -> int | None:
-        nonlocal answer_index, snapshot_requested, snapshot_started, snapshot_attempt_wait
+        nonlocal \
+            answer_index, \
+            snapshot_requested, \
+            snapshot_started, \
+            snapshot_attempt_wait
         nonlocal layout_stage, item_stage
         nonlocal day_one_reached, wake_started
         global _wake_profile_active, _wake_profile_origin
@@ -143,7 +151,9 @@ def main() -> int:
                 f"WAKE_TO_HOME_MILESTONE wait={wait[0]} kind={wait[1]} "
                 f"system={wait[5]} elapsed={elapsed:.3f}s"
             )
-            if maximum_wake_seconds is not None and elapsed > float(maximum_wake_seconds):
+            if maximum_wake_seconds is not None and elapsed > float(
+                maximum_wake_seconds
+            ):
                 print(
                     "WAKE_TO_HOME_PERFORMANCE_ERROR "
                     f"elapsed={elapsed:.3f}s limit={float(maximum_wake_seconds):.3f}s"
@@ -293,7 +303,7 @@ def main() -> int:
                     )
                 continue
             if (
-                event.kind == "error"
+                event.kind in ("error", "runtime_error")
                 and snapshot_every_wait
                 and snapshot_requested
                 and "当前状态不能生成快照" in str(event.value)
@@ -311,7 +321,7 @@ def main() -> int:
                     if result is not None:
                         return result
                 continue
-            if event.kind in ("error", "runtime_fault"):
+            if event.kind in ("error", "runtime_error", "runtime_fault"):
                 print(f"ERROR: {event.value}")
                 print(plain_tail(model))
                 return 1
@@ -365,7 +375,12 @@ def main() -> int:
                 f"answer_index={answer_index} elapsed={time.monotonic() - started:.2f}s"
             )
             print(tail[-2000:])
-            if snapshot_every_wait and snapshot_path and wait[2] == 0 and wait.get(8) is None:
+            if (
+                snapshot_every_wait
+                and snapshot_path
+                and wait[2] == 0
+                and wait.get(8) is None
+            ):
                 snapshot_attempts += 1
                 snapshot_requested = True
                 snapshot_started = time.monotonic()
