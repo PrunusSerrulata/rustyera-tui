@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from rich.cells import cell_len
-from textual.widgets import DataTable, Input, Static, TextArea
+from textual.widgets import DataTable, Input, RichLog, Select, Static
 
 from rustyera_tui.app import RustyEraTui
 from rustyera_tui.dialogs import FatalErrorDialog
+from rustyera_tui.log_model import LogLevel
 from rustyera_tui.presentation import (
     ColumnCellLayout,
     DisplayLineModel,
@@ -201,8 +202,7 @@ async def test_responsive_layout_preserves_long_text_maps_and_button_coordinates
         True,
         0,
         tuple(
-            DisplaySegment(f"[{index}] option", token=token)
-            for index, token in enumerate(tokens)
+            DisplaySegment(f"[{index}] option", token=token) for index, token in enumerate(tokens)
         ),
         tuple(ColumnCellLayout(index, index + 1, 0, 25) for index in range(5)),
     )
@@ -300,21 +300,31 @@ async def test_viewport_update_always_scrolls_to_the_bottom(tmp_path: Path) -> N
         assert viewport.is_vertical_scroll_end
 
 
-async def test_log_dialog_uses_selectable_read_only_text(tmp_path: Path) -> None:
+async def test_log_dialog_filters_entries_at_the_selected_threshold(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
-    app.logs = [f"line {index}" for index in range(100)]
+    app._log("debug message", LogLevel.DEBUG)
+    app._log("info message", LogLevel.INFO)
+    app._log("warning message", LogLevel.WARNING)
+    app._log("error message", LogLevel.ERROR)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.click("#menu-debug")
         await pilot.click("#debug-logs")
-        view = app.screen.query_one("#log-view", TextArea)
-        assert view.read_only
+        view = app.screen.query_one("#log-view", RichLog)
+        level = app.screen.query_one("#log-level", Select)
         await pilot.pause()
-        assert view.scroll_y > 0
+        assert level.value == "info"
+        assert len(view.lines) == 3
+
+        level.value = "warning"
+        await pilot.pause()
+        assert len(view.lines) == 2
+
+        level.value = "debug"
+        await pilot.pause()
+        assert len(view.lines) == 4
         assert view.is_vertical_scroll_end
-        view.select_all()
-        assert view.selected_text == "\n".join(app.logs)
 
 
 async def test_runtime_fault_remains_visible_in_the_prompt(tmp_path: Path) -> None:
@@ -377,8 +387,10 @@ async def test_log_uses_text_for_runtime_and_debug_enums(tmp_path: Path) -> None
         worker.events.put(FrontendEvent("phase", 5))
         worker.events.put(FrontendEvent("debug_stopped", {1: [2, []]}))
         await pilot.pause(0.1)
-        assert any("Runtime phase -> WaitingInput" in log for log in app.logs)
-        assert any("调试暂停：StepCompleted" in log for log in app.logs)
+        phase_log = next(log for log in app.logs if "Runtime phase -> WaitingInput" in log)
+        pause_log = next(log for log in app.logs if "调试暂停：StepCompleted" in log)
+        assert phase_log.level is LogLevel.DEBUG
+        assert pause_log.level is LogLevel.DEBUG
 
 
 async def test_single_step_prompt_shows_source_and_f10_advances(tmp_path: Path) -> None:
@@ -474,13 +486,9 @@ async def test_variable_viewer_renders_selected_variable_value(tmp_path: Path) -
         await pilot.press("enter")
         assert ("debug_action", ("read_variable", descriptor)) in worker.commands
 
-        app._handle_debug_response(
-            ("variable_value", 2, [{0: {6: [0]}, 1: variant(0, 42), 2: 9}])
-        )
+        app._handle_debug_response(("variable_value", 2, [{0: {6: [0]}, 1: variant(0, 42), 2: 9}]))
         assert table.get_row_at(0)[5] == "42"
-        assert "当前值[0]：42" in str(
-            app.screen.query_one("#variable-status", Static).render()
-        )
+        assert "当前值[0]：42" in str(app.screen.query_one("#variable-status", Static).render())
 
 
 async def test_stack_viewer_mounts_before_requesting_and_pages_to_the_live_fiber(
@@ -567,12 +575,7 @@ async def test_stack_viewer_fiber_height_depends_only_on_window_size(
             await pilot.pause()
             assert fiber_table.size.height == empty_height
             dialog.set_fibers(
-                {
-                    1: [
-                        {0: fiber_id, 1: 0, 2: False, 3: 1}
-                        for fiber_id in range(2, 10)
-                    ]
-                }
+                {1: [{0: fiber_id, 1: 0, 2: False, 3: 1} for fiber_id in range(2, 10)]}
             )
             await pilot.pause()
             assert fiber_table.size.height == empty_height
@@ -698,8 +701,10 @@ async def test_save_delete_button_requires_confirmation(tmp_path: Path) -> None:
 
         assert await pilot.click(".game-line", offset=(1, 0))
         await pilot.pause()
-        assert app.screen.query_one("#confirm-message", Static).render().plain.endswith(
-            "save01.sav 吗？"
+        assert (
+            app.screen.query_one("#confirm-message", Static)
+            .render()
+            .plain.endswith("save01.sav 吗？")
         )
         assert not any(kind == "activate" for kind, _value in worker.commands)
 
@@ -798,7 +803,7 @@ async def test_fatal_fault_dialog_exports_diagnosis_and_gates_recovery_actions(
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)) as pilot:
-        app._log("before fault")
+        app._log("DEBUG: before fault", LogLevel.DEBUG)
         failure = RuntimeFailure(code=3, message="place storage is unavailable")
         app._handle_worker_event(FrontendEvent("runtime_fault", failure))
         await pilot.pause()
@@ -811,13 +816,17 @@ async def test_fatal_fault_dialog_exports_diagnosis_and_gates_recovery_actions(
         )
         assert "before fault" in app.fault_logs
         assert "place storage is unavailable" in app.fault_logs
+        assert "DEBUG before fault" in app.fault_logs
+        assert "DEBUG: before fault" not in app.fault_logs
 
         app._start_diagnosis_export(None)
         assert not app.diagnosis_exporting
 
+        app._log("post-fault detail", LogLevel.DEBUG)
         target = tmp_path / "eraTW-diagnosis_20260726-140506.tar.zst"
         app._start_diagnosis_export(target)
         assert app.diagnosis_exporting
+        assert "DEBUG post-fault detail" in app.fault_logs
         assert ("export_diagnosis", (target, app.fault_logs)) in worker.commands
         assert all(button.disabled for button in dialog.query(".fatal-buttons Button"))
         assert "正在导出" in str(dialog.query_one("#fatal-export-status", Static).render())

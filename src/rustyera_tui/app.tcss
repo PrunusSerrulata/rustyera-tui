@@ -259,6 +259,21 @@ ModalScreen {
     color: #d8d8d8;
 }
 
+#log-filter-row {
+    height: 3;
+    align-vertical: middle;
+}
+
+#log-filter-label {
+    width: auto;
+    margin: 1 1 0 0;
+    color: #cbd5e1;
+}
+
+#log-level {
+    width: 22;
+}
+
 #path-value, #console-input {
     height: 3;
 }

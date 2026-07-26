@@ -20,10 +20,7 @@ def test_known_wire_enums_use_textual_protocol_names() -> None:
         enum_list_text([3], SNAPSHOT_INELIGIBLE_REASONS, "SnapshotIneligibleReason")
         == "SnapshotStateUnavailable"
     )
-    assert (
-        variant_enum_text([2, []], DEBUG_STOP_REASONS, "StopReason")
-        == "StepCompleted"
-    )
+    assert variant_enum_text([2, []], DEBUG_STOP_REASONS, "StopReason") == "StepCompleted"
     assert enum_text(4, ERA_STATUSES, "EraStatus") == "AbiMismatch"
 
 
@@ -48,7 +45,7 @@ def test_project_diagnostic_renders_path_category_and_utf8_source_span() -> None
     }
 
     assert format_project_diagnostic(diagnostic, source) == (
-        "ERB/main.erb:2:10: error[analyzer.type_mismatch]: "
+        "ERB/main.erb:2:10: [analyzer.type_mismatch]: "
         "cannot assign a string to an integer\n"
         '    RESULT = "你好"\n'
         "             ^~~~~~"
@@ -63,7 +60,7 @@ def test_project_diagnostic_renders_path_category_and_utf8_source_span() -> None
         4: 1,
     }
     assert format_project_diagnostic(diagnostic, tabbed_source) == (
-        "ERB/tabbed.erb:1:2: error[analyzer.type_mismatch]: "
+        "ERB/tabbed.erb:1:2: [analyzer.type_mismatch]: "
         "cannot assign a string to an integer\n"
         "        UNKNOWN\n"
         "        ^~~~~~~"
@@ -81,9 +78,7 @@ def test_snapshot_rejection_event_uses_reason_names() -> None:
 
     event = client.events.get_nowait()
     assert event.kind == "error"
-    assert event.value == (
-        "当前状态不能生成快照：SnapshotStateUnavailable"
-    )
+    assert event.value == ("当前状态不能生成快照：SnapshotStateUnavailable")
     finished = client.events.get_nowait()
     assert finished.kind == "snapshot_export_finished"
     assert finished.value is False

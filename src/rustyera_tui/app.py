@@ -24,6 +24,7 @@ from .dialogs import (
     VariableRefresh,
 )
 from .diagnosis import diagnosis_default_path
+from .log_model import LogEntry, LogLevel, LogMessage, format_log_entries, make_log_entry
 from .presentation import PresentationModel
 from .protocol_text import DEBUG_STOP_REASONS, RUNTIME_PHASES, enum_text, variant_enum_text
 from .runtime import FrontendEvent, RuntimeWorker
@@ -76,7 +77,7 @@ class RustyEraTui(App[None]):
         self._activated_wait: tuple[int, Any] | None = None
         self.blocking_error: str | None = None
         self.input_undo_token: dict[int, Any] | None = None
-        self.logs: list[str] = []
+        self.logs: list[LogEntry] = []
         self.debug_enabled = False
         self.single_step = False
         self.debug_paused = False
@@ -163,7 +164,7 @@ class RustyEraTui(App[None]):
             try:
                 self.presentation.apply_delta(value)
             except ValueError as error:
-                self._log(str(error))
+                self._log(str(error), LogLevel.WARNING)
             return True
         if kind == "wait":
             wait_identity = self._wait_identity(value)
@@ -188,7 +189,7 @@ class RustyEraTui(App[None]):
             self._update_prompt()
             self._refresh_interaction_lock()
             phase = enum_text(value, RUNTIME_PHASES, "RuntimePhase")
-            self._log(f"Runtime phase -> {phase}")
+            self._log(f"Runtime phase -> {phase}", LogLevel.DEBUG)
         elif kind == "status":
             self._set_status(str(value))
         elif kind == "snapshot_export_finished":
@@ -204,9 +205,12 @@ class RustyEraTui(App[None]):
             self.project = Path(value) if value else self.project
             self._set_status(f"项目已加载：{self.project}")
         elif kind == "log":
-            self._log(str(value))
+            if isinstance(value, LogMessage):
+                self._log(value.message, value.level)
+            else:
+                self._log(str(value))
         elif kind == "error":
-            self._log(f"ERROR: {value}")
+            self._log(str(value), LogLevel.ERROR)
             self.notify(str(value), title="RustyEra", severity="error", timeout=8)
         elif kind == "interaction_rejected":
             if self._wait_identity(value) == self._activated_wait:
@@ -217,15 +221,15 @@ class RustyEraTui(App[None]):
             self.active_wait = None
             self._activated_wait = None
             self.blocking_error = value.display()
-            self._log(f"ERROR: {self.blocking_error}")
-            self.fault_logs = "\n".join(self.logs) + "\n"
+            self._log(self.blocking_error, LogLevel.ERROR)
+            self.fault_logs = format_log_entries(self.logs)
             self._update_prompt()
             self._refresh_interaction_lock()
             if self.fatal_dialog is None or not self.fatal_dialog.is_mounted:
                 self.fatal_dialog = FatalErrorDialog(self.blocking_error)
                 self.push_screen(self.fatal_dialog)
         elif kind == "snapshot_restore_warning":
-            self._log(f"WARNING: {value}")
+            self._log(str(value), LogLevel.WARNING)
             self.notify(str(value), title="VM 快照恢复警告", severity="warning", timeout=12)
         elif kind == "debug_enabled":
             self._set_debug_enabled(bool(value))
@@ -233,12 +237,10 @@ class RustyEraTui(App[None]):
             reason = variant_enum_text(value.get(1), DEBUG_STOP_REASONS, "StopReason")
             source = value.get(3)
             self.debug_location = (
-                f"{source.get(0)}:{source.get(4)}"
-                if source and source.get(0) is not None
-                else None
+                f"{source.get(0)}:{source.get(4)}" if source and source.get(0) is not None else None
             )
             self.debug_paused = True
-            self._log(f"调试暂停：{reason}")
+            self._log(f"调试暂停：{reason}", LogLevel.DEBUG)
             self._update_prompt()
             self._refresh_interaction_lock()
         elif kind == "debug_response":
@@ -272,12 +274,12 @@ class RustyEraTui(App[None]):
         else:
             self.query_one("#prompt", Input).placeholder = message
 
-    def _log(self, message: str) -> None:
-        stamp = datetime.now().strftime("%H:%M:%S")
-        self.logs.append(f"[{stamp}] {message}")
+    def _log(self, message: str, level: LogLevel = LogLevel.INFO) -> None:
+        entry = make_log_entry(message, level)
+        self.logs.append(entry)
         if self.console_dialog is not None and self.console_dialog.is_mounted:
-            if message.startswith("DEBUG:"):
-                self.console_dialog.write(message)
+            if entry.level is LogLevel.DEBUG:
+                self.console_dialog.write(entry.plain_text)
 
     def _update_prompt(self) -> None:
         prompt = self.query_one("#prompt", Input)
@@ -301,9 +303,7 @@ class RustyEraTui(App[None]):
             prompt.disabled = True
             location = self.debug_location or "当前位置不可用"
             prompt.placeholder = (
-                f"单步暂停：{location}（F10 继续）"
-                if self.single_step
-                else f"调试暂停：{location}"
+                f"单步暂停：{location}（F10 继续）" if self.single_step else f"调试暂停：{location}"
             )
             return
         prompt.disabled = self.active_wait is None
@@ -358,11 +358,7 @@ class RustyEraTui(App[None]):
         )
 
     def _debug_interactions_blocked(self) -> bool:
-        return (
-            not self.debug_enabled
-            or self.snapshot_exporting
-            or self.blocking_error is not None
-        )
+        return not self.debug_enabled or self.snapshot_exporting or self.blocking_error is not None
 
     def _refresh_interaction_lock(self) -> None:
         if not self.is_mounted:
@@ -475,6 +471,7 @@ class RustyEraTui(App[None]):
             return
         self.diagnosis_exporting = True
         self.fatal_dialog.set_exporting()
+        self.fault_logs = format_log_entries(self.logs)
         self.worker.send("export_diagnosis", (path, self.fault_logs))
 
     def _debug_action(self, item_id: str) -> None:
@@ -546,7 +543,7 @@ class RustyEraTui(App[None]):
             for diagnostic in outcome.get(5, []):
                 self.console_dialog.write(f"{diagnostic.get(0)}: {diagnostic.get(1)}")
         elif response_tag == 0 and pending:
-            self._log(f"DEBUG: {pending} accepted")
+            self._log(f"{pending} accepted", LogLevel.DEBUG)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "prompt" or self._game_interactions_blocked():

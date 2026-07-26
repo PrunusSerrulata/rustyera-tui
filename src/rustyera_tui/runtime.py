@@ -19,6 +19,7 @@ from rich.cells import cell_len
 
 from .abi import RuntimeAbi
 from .diagnosis import resource_name, write_diagnosis_archive
+from .log_model import LogLevel, LogMessage
 from .presentation import (
     ServicePresentationModel,
     coalesce_presentation_deltas,
@@ -28,7 +29,6 @@ from .presentation import (
 from .project import ProjectBundle, StorageBackend
 from .protocol_text import (
     COMMAND_ERROR_CODES,
-    DIAGNOSTIC_SEVERITIES,
     FAULT_CODES,
     SERVICE_KINDS,
     SNAPSHOT_INELIGIBLE_REASONS,
@@ -57,15 +57,26 @@ COMPILED_CACHE_RETRY_NS = 250_000_000
 STATE_IMPORT_CHUNK_BYTES = 16 * 1024 * 1024
 
 
+def log_event(message: str, level: LogLevel = LogLevel.INFO) -> FrontendEvent:
+    return FrontendEvent("log", LogMessage(level, message))
+
+
+def diagnostic_log_level(value: Any) -> LogLevel:
+    return {
+        0: LogLevel.INFO,
+        1: LogLevel.WARNING,
+        2: LogLevel.ERROR,
+    }.get(value, LogLevel.INFO)
+
+
 def format_project_diagnostic(diagnostic: dict[int, Any], source_text: str | None = None) -> str:
     """Render a structured compiler diagnostic without changing its UTF-8 byte offsets."""
 
     code = str(diagnostic.get(0, "unknown"))
-    severity = enum_text(diagnostic.get(1), DIAGNOSTIC_SEVERITIES, "DiagnosticSeverity").lower()
     message = str(diagnostic.get(2, ""))
     source = diagnostic.get(3)
     if not isinstance(source, dict):
-        return f"{severity}[{code}]: {message}"
+        return f"[{code}]: {message}"
 
     path = str(source.get(0, "<unknown>"))
     line = source.get(3)
@@ -96,7 +107,7 @@ def format_project_diagnostic(diagnostic: dict[int, Any], source_text: str | Non
 
     display_line = int(line) + 1 if isinstance(line, int) else "?"
     display_column = int(byte_column) + 1 if isinstance(byte_column, int) else "?"
-    header = f"{path}:{display_line}:{display_column}: {severity}[{code}]: {message}"
+    header = f"{path}:{display_line}:{display_column}: [{code}]: {message}"
     if excerpt is None or marker is None:
         return header
     return f"{header}\n    {excerpt}\n    {marker}"
@@ -432,7 +443,10 @@ class RuntimeClient:
             self.session = value[1]
             self.epoch = value[4]
             self.events.put(
-                FrontendEvent("log", f"runtime handshake complete (epoch {self.epoch})")
+                log_event(
+                    f"runtime handshake complete (epoch {self.epoch})",
+                    LogLevel.DEBUG,
+                )
             )
             if self.pending_bundle is not None:
                 cache_path = (
@@ -443,7 +457,7 @@ class RuntimeClient:
                 try:
                     cache = cache_path.read_bytes() if cache_path is not None else None
                 except OSError as error:
-                    self.events.put(FrontendEvent("log", f"读取编译缓存失败：{error}"))
+                    self.events.put(log_event(f"读取编译缓存失败：{error}", LogLevel.WARNING))
                     cache = None
                 if cache:
                     self.events.put(FrontendEvent("status", "正在载入编译缓存…"))
@@ -481,7 +495,7 @@ class RuntimeClient:
             try:
                 self.presentation.apply_delta(value)
             except ValueError as error:
-                self.events.put(FrontendEvent("log", str(error)))
+                self.events.put(log_event(str(error), LogLevel.WARNING))
                 self.send_runtime(94, {0: self.expected_runtime_output - 1})
             else:
                 self._set_active_wait(self.presentation.input_wait)
@@ -585,9 +599,11 @@ class RuntimeClient:
         elif tag == 97:
             source = value.get(3)
             location = f" ({source.get(0)}:{source.get(3, '?')})" if source else ""
-            severity = enum_text(value.get(1), DIAGNOSTIC_SEVERITIES, "DiagnosticSeverity")
             self.events.put(
-                FrontendEvent("log", f"{severity} {value.get(0)}: {value.get(2)}{location}")
+                log_event(
+                    f"[{value.get(0)}]: {value.get(2)}{location}",
+                    diagnostic_log_level(value.get(1)),
+                )
             )
             if value.get(0) == "runtime.compiled_cache_ready":
                 self.cache_ready = True
@@ -641,7 +657,10 @@ class RuntimeClient:
                 ):
                     source_text = item.payload[1][0]
             self.events.put(
-                FrontendEvent("log", format_project_diagnostic(diagnostic, source_text))
+                log_event(
+                    format_project_diagnostic(diagnostic, source_text),
+                    diagnostic_log_level(diagnostic.get(1)),
+                )
             )
             cache_hit = cache_hit or diagnostic.get(0) == "runtime.compiled_cache_hit"
         if report.get(3, False):
@@ -718,10 +737,7 @@ class RuntimeClient:
 
     def maybe_refresh_compiled_cache(self) -> None:
         if self.pending_diagnosis is not None:
-            if (
-                self.pending_diagnosis.stage == "export_wait"
-                and self.pending_export is None
-            ):
+            if self.pending_diagnosis.stage == "export_wait" and self.pending_export is None:
                 self._start_diagnosis_snapshot_export()
             elif (
                 self.pending_diagnosis.stage == "artifact_wait"
@@ -843,11 +859,11 @@ class RuntimeClient:
 
     def submit_text(self, text: str) -> None:
         if self.phase == 7:
-            self.events.put(FrontendEvent("log", "调试暂停解除前暂不提交游戏输入。"))
+            self.events.put(log_event("调试暂停解除前暂不提交游戏输入。", LogLevel.WARNING))
             return
         wait = self.active_wait
         if wait is None:
-            self.events.put(FrontendEvent("log", "当前没有可提交的输入等待。"))
+            self.events.put(log_event("当前没有可提交的输入等待。", LogLevel.WARNING))
             return
         kind = wait[1]
         if kind == 0:
@@ -1090,7 +1106,7 @@ class RuntimeClient:
                 try:
                     obsolete.unlink(missing_ok=True)
                 except OSError as error:
-                    self.events.put(FrontendEvent("log", f"删除旧编译缓存失败：{error}"))
+                    self.events.put(log_event(f"删除旧编译缓存失败：{error}", LogLevel.WARNING))
         if after == "start":
             self.events.put(
                 FrontendEvent(
@@ -1279,7 +1295,7 @@ class RuntimeClient:
             self.transient_pause_owner = None
             self.transient_close_pending = None
             self.events.put(FrontendEvent("debug_enabled", False))
-            self.events.put(FrontendEvent("log", f"调试权限已撤销：{value.get(1, '')}"))
+            self.events.put(log_event(f"调试权限已撤销：{value.get(1, '')}"))
         elif tag == 11:
             response_tag, fields = unwrap_variant(value)
             pending = self.debug_pending_by_message.pop(correlation_id or 0, "")
@@ -1387,7 +1403,9 @@ class RuntimeWorker(threading.Thread):
                 try:
                     abi.close()
                 except Exception as error:  # noqa: BLE001
-                    self.events.put(FrontendEvent("log", f"关闭 Runtime session 失败：{error}"))
+                    self.events.put(
+                        log_event(f"关闭 Runtime session 失败：{error}", LogLevel.WARNING)
+                    )
             self.events.put(FrontendEvent("worker_stopped"))
 
     def _process_commands(self) -> None:

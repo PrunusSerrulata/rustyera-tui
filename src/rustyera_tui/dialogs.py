@@ -17,9 +17,11 @@ from textual.widgets import (
     Input,
     Label,
     RichLog,
+    Select,
     Static,
-    TextArea,
 )
+
+from .log_model import LogEntry, LogLevel, filter_log_entries
 
 
 class ConfirmDialog(ModalScreen[bool]):
@@ -134,25 +136,52 @@ class PathDialog(ModalScreen[Path | None]):
 
 
 class LogDialog(ModalScreen[None]):
-    def __init__(self, lines: list[str]) -> None:
+    _THRESHOLDS = {
+        "error": LogLevel.ERROR,
+        "warning": LogLevel.WARNING,
+        "info": LogLevel.INFO,
+        "debug": LogLevel.DEBUG,
+    }
+
+    def __init__(self, entries: list[LogEntry]) -> None:
         super().__init__()
-        self.lines = lines
+        self.entries = entries
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide-dialog"):
             yield Label("Runtime / 前端日志", classes="dialog-title")
-            yield TextArea(
-                "\n".join(self.lines),
-                read_only=True,
-                soft_wrap=False,
-                show_line_numbers=False,
-                id="log-view",
-            )
+            with Horizontal(id="log-filter-row"):
+                yield Label("最低显示等级", id="log-filter-label")
+                yield Select(
+                    (
+                        ("Error", "error"),
+                        ("Warning", "warning"),
+                        ("Info", "info"),
+                        ("Debug", "debug"),
+                    ),
+                    value="info",
+                    allow_blank=False,
+                    id="log-level",
+                )
+            yield RichLog(wrap=False, highlight=False, markup=False, id="log-view")
             yield Button("关闭", id="dialog-close")
 
     def on_mount(self) -> None:
+        self._refresh_logs(LogLevel.INFO)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "log-level":
+            return
+        threshold = self._THRESHOLDS.get(str(event.value), LogLevel.INFO)
+        self._refresh_logs(threshold)
+
+    def _refresh_logs(self, threshold: LogLevel) -> None:
+        view = self.query_one("#log-view", RichLog)
+        view.clear()
+        for entry in filter_log_entries(self.entries, threshold):
+            view.write(entry.render())
         self.call_after_refresh(
-            self.query_one("#log-view", TextArea).scroll_end,
+            view.scroll_end,
             animate=False,
             immediate=True,
             x_axis=False,
