@@ -535,15 +535,48 @@ async def test_stack_viewer_mounts_before_requesting_and_pages_to_the_live_fiber
                 ],
             )
         )
-        assert worker.commands == [("debug_action", ("operand_stack", (2048, 99)))]
-
-        app._handle_debug_response(
-            ("operand_stack", 7, [{3: [{0: 0, 1: variant(0, 42)}]}])
-        )
+        assert worker.commands == []
         frame_table = app.screen.query_one("#frame-table", DataTable)
-        operand_table = app.screen.query_one("#operand-table", DataTable)
         assert frame_table.get_row_at(0)[1] == "EVENTTRAIN"
-        assert operand_table.get_row_at(0) == ["0", "42"]
+        assert not app.screen.query("#operand-table")
+
+
+async def test_stack_viewer_fiber_height_depends_only_on_window_size(
+    tmp_path: Path,
+) -> None:
+    for screen_height in (30, 60):
+        app = RustyEraTui(tmp_path, None)
+        worker = FakeWorker()
+        app.worker = worker  # type: ignore[assignment]
+        async with app.run_test(size=(100, screen_height)) as pilot:
+            app._set_debug_enabled(True)
+            app._debug_action("debug-stack")
+            await pilot.pause()
+
+            dialog = app.stack_dialog
+            assert dialog is not None
+            assert str(dialog.query_one(".dialog-title").render()) == "纤程与调用栈"
+            fiber_table = dialog.query_one("#fiber-table", DataTable)
+            frame_table = dialog.query_one("#frame-table", DataTable)
+            empty_height = fiber_table.size.height
+            assert empty_height <= 11
+
+            dialog.set_fibers({1: []})
+            assert "当前无活动纤程" in str(dialog.query_one("#stack-status").render())
+            dialog.set_fibers({1: [{0: 1, 1: 0, 2: True, 3: 1}]})
+            await pilot.pause()
+            assert fiber_table.size.height == empty_height
+            dialog.set_fibers(
+                {
+                    1: [
+                        {0: fiber_id, 1: 0, 2: False, 3: 1}
+                        for fiber_id in range(2, 10)
+                    ]
+                }
+            )
+            await pilot.pause()
+            assert fiber_table.size.height == empty_height
+            assert frame_table.size.height > fiber_table.size.height
 
 
 async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path) -> None:

@@ -534,11 +534,7 @@ class RustyEraTui(App[None]):
             elif next_cursor is not None:
                 self.worker.send("debug_action", ("fibers", next_cursor))
         elif response_tag == 6 and fields and self.stack_dialog and self.stack_dialog.is_mounted:
-            target = self.stack_dialog.set_frames(fields[0])
-            if target is not None:
-                self.worker.send("debug_action", ("operand_stack", target))
-        elif response_tag == 7 and fields and self.stack_dialog and self.stack_dialog.is_mounted:
-            self.stack_dialog.set_operands(fields[0])
+            self.stack_dialog.set_frames(fields[0])
         elif (
             response_tag == 8 and fields and self.console_dialog and self.console_dialog.is_mounted
         ):

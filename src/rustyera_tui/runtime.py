@@ -107,7 +107,7 @@ def _debug_action_owner(action: str) -> str | None:
         return "console"
     if action in {"variables", "read_variable"}:
         return "variables"
-    if action in {"fibers", "call_stack", "operand_stack"}:
+    if action in {"fibers", "call_stack"}:
         return "stack"
     return None
 
@@ -1245,11 +1245,6 @@ class RuntimeClient:
             self._debug_request(variant(30, self.stop_token, value, 1024), "fibers")
         elif action == "call_stack":
             self._debug_request(variant(31, self.stop_token, int(value)), "call_stack")
-        elif action == "operand_stack":
-            fiber_id, frame_id = value
-            self._debug_request(
-                variant(32, self.stop_token, fiber_id, frame_id, None, 500), "operand_stack"
-            )
         elif action == "console_evaluate":
             self._debug_request(variant(40, self.stop_token, variant(0, str(value))), "console")
         elif action == "console_execute":

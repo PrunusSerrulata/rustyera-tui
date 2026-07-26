@@ -81,8 +81,9 @@ runtime 规范化游戏展示，因此 TUI 差分只把双方共同的脚本输�
 - F10：启用 single-step 时执行一个源码行步骤；
 - Ctrl+Q：正常退出。
 
-调试菜单会显式完成 debug protocol handshake。变量、stack 和 console dialog 会先暂停
-VM，再请求一致的 stopped-state view，不读取 Rust 内部对象。
+调试菜单会显式完成 debug protocol handshake。变量、纤程与调用栈、console dialog 会先
+暂停 VM，再请求一致的 stopped-state view，不读取 Rust 内部对象。纤程表按窗口高度占据
+表格区约三分之一，最多显示八个数据行；TUI 不展示操作数栈，但底层调试协议仍保留该能力。
 
 ## 测试
 

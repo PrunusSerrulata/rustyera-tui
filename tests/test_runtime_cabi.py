@@ -293,12 +293,6 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
             lambda event: event.kind == "debug_response" and event.value[0] == "call_stack",
         ).value[2][0]
         assert stack[2]
-        worker.send("debug_action", ("operand_stack", (fiber_id, stack[2][0][0])))
-        operands = wait_for(
-            worker,
-            lambda event: event.kind == "debug_response" and event.value[0] == "operand_stack",
-        )
-        assert operands.value[1] == 7
 
         worker.send("debug_action", ("console_evaluate", "1 + 2"))
         console = wait_for(

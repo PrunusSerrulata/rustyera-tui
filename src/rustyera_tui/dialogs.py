@@ -300,17 +300,15 @@ class StackDialog(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide-dialog"):
-            yield Label("纤程、调用栈与操作数栈", classes="dialog-title")
+            yield Label("纤程与调用栈", classes="dialog-title")
             yield Static("正在请求一致的栈视图…", id="stack-status")
             yield DataTable(id="fiber-table", zebra_stripes=True)
             yield DataTable(id="frame-table", zebra_stripes=True)
-            yield DataTable(id="operand-table", zebra_stripes=True)
             yield Button("关闭", id="dialog-close")
 
     def on_mount(self) -> None:
         self.query_one("#fiber-table", DataTable).add_columns("Fiber", "状态", "主纤程", "帧数")
         self.query_one("#frame-table", DataTable).add_columns("Frame", "函数", "指令", "源码")
-        self.query_one("#operand-table", DataTable).add_columns("偏移", "值")
         self.post_message(self.Ready())
 
     def set_fibers(self, page: dict[int, Any]) -> tuple[int | None, int | None]:
@@ -326,7 +324,12 @@ class StackDialog(ModalScreen[None]):
                 str(fiber.get(3, 0)),
             )
         next_cursor = page.get(2)
-        self.query_one("#stack-status", Static).update(f"已载入 {len(self.fibers)} 个纤程")
+        status = (
+            "当前无活动纤程"
+            if not self.fibers and next_cursor is None
+            else f"已载入 {len(self.fibers)} 个纤程"
+        )
+        self.query_one("#stack-status", Static).update(status)
         selected = next(
             (fiber for fiber in self.fibers if fiber.get(2) and fiber.get(3, 0) > 0),
             None,
@@ -338,7 +341,7 @@ class StackDialog(ModalScreen[None]):
             )
         return (selected.get(0) if selected else None, next_cursor)
 
-    def set_frames(self, stack: dict[int, Any]) -> tuple[int, int] | None:
+    def set_frames(self, stack: dict[int, Any]) -> None:
         table = self.query_one("#frame-table", DataTable)
         table.clear()
         frames = stack.get(2, [])
@@ -346,13 +349,6 @@ class StackDialog(ModalScreen[None]):
             source = frame.get(5)
             location = f"{source.get(0)}:{source.get(4)}" if source else ""
             table.add_row(str(frame.get(0)), frame.get(3, ""), str(frame.get(4, 0)), location)
-        return (stack.get(1), frames[0].get(0)) if frames else None
-
-    def set_operands(self, page: dict[int, Any]) -> None:
-        table = self.query_one("#operand-table", DataTable)
-        table.clear()
-        for operand in page.get(3, []):
-            table.add_row(str(operand.get(0)), _debug_value_text(operand.get(1)))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "dialog-close":

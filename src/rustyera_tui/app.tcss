@@ -236,9 +236,20 @@ ModalScreen {
     margin: 0 1;
 }
 
-#path-tree, #log-view, #console-output, #variable-table,
-#fiber-table, #frame-table, #operand-table {
+#path-tree, #log-view, #console-output, #variable-table {
     height: 1fr;
+    border: solid #334155;
+}
+
+#fiber-table {
+    height: 1fr;
+    /* Two border rows, one header row, and at most eight visible data rows. */
+    max-height: 11;
+    border: solid #334155;
+}
+
+#frame-table {
+    height: 2fr;
     border: solid #334155;
 }
 
