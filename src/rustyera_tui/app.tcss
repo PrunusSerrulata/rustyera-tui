@@ -87,6 +87,7 @@ Screen {
     height: 1fr;
     overflow-x: auto;
     overflow-y: auto;
+    scrollbar-gutter: stable;
     background: #000000;
     scrollbar-color: #475569;
     scrollbar-color-hover: #38bdf8;

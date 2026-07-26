@@ -167,10 +167,10 @@ async def test_gameplay_output_commits_once_at_the_next_wait_without_a_tail_flas
         set_lines_calls = 0
         original_set_lines = viewport.set_lines
 
-        async def counted_set_lines(*args: Any, **kwargs: Any) -> None:
+        async def counted_set_lines(*args: Any, **kwargs: Any) -> bool:
             nonlocal set_lines_calls
             set_lines_calls += 1
-            await original_set_lines(*args, **kwargs)
+            return await original_set_lines(*args, **kwargs)
 
         monkeypatch.setattr(viewport, "set_lines", counted_set_lines)
         provisional = {
@@ -271,11 +271,11 @@ async def test_column_cells_reflow_around_the_five_column_target(
         identity = id(game_line)
 
         rows = game_line.render().plain.splitlines()
-        assert [cell_len(row) for row in rows] == [100, 60]
+        assert [cell_len(row) for row in rows] == [95, 57]
 
         await pilot.resize_terminal(80, 30)
         rows = game_line.render().plain.splitlines()
-        assert [cell_len(row) for row in rows] == [80, 48]
+        assert [cell_len(row) for row in rows] == [76, 76]
 
         await pilot.resize_terminal(79, 30)
         rows = game_line.render().plain.splitlines()
@@ -288,7 +288,7 @@ async def test_column_cells_reflow_around_the_five_column_target(
 
         await pilot.resize_terminal(24, 30)
         rows = game_line.render().plain.splitlines()
-        assert [cell_len(row) for row in rows] == [24] * 8
+        assert [cell_len(row) for row in rows] == [22] * 8
 
         await pilot.resize_terminal(15, 30)
         rows = game_line.render().plain.splitlines()
@@ -296,15 +296,18 @@ async def test_column_cells_reflow_around_the_five_column_target(
         assert viewport.show_horizontal_scrollbar
 
         await pilot.resize_terminal(120, 30)
-        assert [cell_len(row) for row in game_line.render().plain.splitlines()] == [120, 72]
+        assert [cell_len(row) for row in game_line.render().plain.splitlines()] == [115, 69]
 
         await pilot.resize_terminal(121, 30)
-        assert [cell_len(row) for row in game_line.render().plain.splitlines()] == [120, 72]
+        assert [cell_len(row) for row in game_line.render().plain.splitlines()] == [115, 69]
 
         await pilot.resize_terminal(143, 30)
         assert [cell_len(row) for row in game_line.render().plain.splitlines()] == [120, 72]
 
         await pilot.resize_terminal(144, 30)
+        assert [cell_len(row) for row in game_line.render().plain.splitlines()] == [120, 72]
+
+        await pilot.resize_terminal(146, 30)
         assert [cell_len(row) for row in game_line.render().plain.splitlines()] == [144, 48]
 
 
@@ -386,12 +389,54 @@ async def test_semantic_separator_tracks_the_viewport_without_wrapping_plain_tex
         await pilot.pause()
         game_line = app.query_one(GameLine)
 
-        assert cell_len(game_line.render().plain) == viewport.size.width == 61
+        assert cell_len(game_line.render().plain) == viewport.content_width == 59
         assert "\n" not in game_line.render().plain
 
         await pilot.resize_terminal(37, 30)
-        assert cell_len(game_line.render().plain) == viewport.size.width == 37
+        assert cell_len(game_line.render().plain) == viewport.content_width == 35
         assert not viewport.show_horizontal_scrollbar
+
+
+async def test_vertical_scrollbar_gutter_does_not_create_transient_horizontal_overflow(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    history = [
+        DisplayLineModel(index, False, True, True, 0, (DisplaySegment(f"line {index}"),))
+        for index in range(44)
+    ]
+    semantic_separator = DisplayLineModel(
+        44,
+        False,
+        True,
+        True,
+        0,
+        (),
+        (SeparatorLayout(0, "-"),),
+    )
+    async with app.run_test(size=(100, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        separator = app.query_one("#separator-line")
+        with app.batch_update():
+            overflow = await viewport.set_lines([*history, semantic_separator])
+            separator.display = not overflow
+
+        for _ in range(3):
+            await pilot.pause()
+            rendered_separator = list(app.query(GameLine))[-1]
+            assert viewport.content_width == 98
+            assert cell_len(rendered_separator.render().plain) == 98
+            assert viewport.virtual_size.width == 98
+            assert viewport.max_scroll_x == 0
+            assert not viewport.show_horizontal_scrollbar
+            assert separator.display
+
+        app._send_viewport_projection()
+        projection = next(value for kind, value in reversed(worker.commands) if kind == "projection")
+        assert projection[:2] == viewport.content_dimensions
+        assert projection[0] == 98
 
 
 async def test_viewport_update_always_scrolls_to_the_bottom(tmp_path: Path) -> None:

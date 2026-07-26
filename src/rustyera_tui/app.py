@@ -152,17 +152,18 @@ class RustyEraTui(App[None]):
         viewport = self.query_one(GameViewport)
         changed_from, trimmed_prefix = self.presentation.take_render_change()
         with self.batch_update():
-            await viewport.set_lines(
+            horizontal_overflow = await viewport.set_lines(
                 self.presentation.lines,
                 changed_from=changed_from,
                 trimmed_prefix=trimmed_prefix,
             )
+            self.query_one("#separator-line").display = not horizontal_overflow
             self.title = self.presentation.title or self.TITLE
             viewport.set_presentation_background(self.presentation.background)
         revision = self.presentation.revision
         self._presentation_dirty = False
         self._presentation_commit_ready = False
-        self._send_projection(viewport.size.width, viewport.size.height)
+        self._schedule_viewport_projection()
         self.call_after_refresh(self._finish_presentation_render, revision)
 
     def _handle_worker_event(self, event: FrontendEvent) -> bool:
@@ -636,8 +637,8 @@ class RustyEraTui(App[None]):
         ):
             self.worker.send("skip_enter_waits")
 
-    def on_game_viewport_horizontal_scrollbar_changed(
-        self, event: GameViewport.HorizontalScrollbarChanged
+    def on_game_viewport_horizontal_overflow_changed(
+        self, event: GameViewport.HorizontalOverflowChanged
     ) -> None:
         self.query_one("#separator-line").display = not event.visible
 
@@ -681,6 +682,9 @@ class RustyEraTui(App[None]):
             self.action_request_quit()
 
     def on_resize(self, _event: events.Resize) -> None:
+        self._schedule_viewport_projection()
+
+    def _schedule_viewport_projection(self) -> None:
         if not self._projection_refresh_scheduled:
             self._projection_refresh_scheduled = True
             self.call_after_refresh(self._send_viewport_projection)
@@ -690,7 +694,7 @@ class RustyEraTui(App[None]):
         if not self.is_mounted:
             return
         viewport = self.query_one(GameViewport)
-        self._send_projection(viewport.size.width, viewport.size.height)
+        self._send_projection(*viewport.content_dimensions)
 
     def _send_projection(self, width: int, height: int) -> None:
         # Each observation is bound to the currently applied presentation revision. The

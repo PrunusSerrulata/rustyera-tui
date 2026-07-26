@@ -395,7 +395,7 @@ class GameViewport(ScrollableContainer):
     class SkipEnterRequested(Message):
         """A secondary click requests continuous message-skip for Enter waits."""
 
-    class HorizontalScrollbarChanged(Message):
+    class HorizontalOverflowChanged(Message):
         def __init__(self, visible: bool) -> None:
             super().__init__()
             self.visible = visible
@@ -405,12 +405,26 @@ class GameViewport(ScrollableContainer):
         self.models: list[DisplayLineModel] = []
         self.interactions_enabled = True
         self.presentation_background = "#000000"
+        self._horizontal_overflow = False
 
-    def on_resize(self, event: events.Resize) -> None:
+    @property
+    def content_width(self) -> int:
+        """Width available to game lines after stable scrollbar gutters."""
+
+        return max(1, self.scrollable_content_region.width)
+
+    @property
+    def content_dimensions(self) -> tuple[int, int]:
+        region = self.scrollable_content_region
+        return max(1, region.width), max(1, region.height)
+
+    def on_resize(self, _event: events.Resize) -> None:
         # Plain left-aligned history is already no-wrap and needs no new Rich text.
+        width = self.content_width
         for child in self.children:
             if isinstance(child, GameLine) and child._is_width_sensitive():
-                child.set_layout_width(event.size.width)
+                child.set_layout_width(width)
+        self._set_horizontal_overflow(self._content_overflows(width))
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -418,9 +432,6 @@ class GameViewport(ScrollableContainer):
             self.post_message(self.ContinueRequested())
         elif event.button == 3:
             self.post_message(self.SkipEnterRequested())
-
-    def watch_show_horizontal_scrollbar(self, visible: bool) -> None:
-        self.post_message(self.HorizontalScrollbarChanged(visible))
 
     def disable_interactions(self) -> None:
         self.interactions_enabled = False
@@ -436,10 +447,18 @@ class GameViewport(ScrollableContainer):
 
     def _line_widget(self, line: DisplayLineModel) -> GameLine:
         widget = GameLine(line)
-        widget.layout_width = max(1, self.size.width)
+        widget.layout_width = self.content_width
         widget.interactions_enabled = self.interactions_enabled
         widget.styles.background = self.presentation_background
         return widget
+
+    def _content_overflows(self, width: int) -> bool:
+        return any(_projected_line_width(line, width) > width for line in self.models)
+
+    def _set_horizontal_overflow(self, visible: bool) -> None:
+        if visible != self._horizontal_overflow:
+            self._horizontal_overflow = visible
+            self.post_message(self.HorizontalOverflowChanged(visible))
 
     def set_presentation_background(self, color: str) -> None:
         self.presentation_background = color
@@ -453,7 +472,7 @@ class GameViewport(ScrollableContainer):
         lines: list[DisplayLineModel],
         changed_from: int | None = None,
         trimmed_prefix: int = 0,
-    ) -> None:
+    ) -> bool:
         lines = _merge_save_delete_lines(lines)
         old = self.models
         children = list(self.children)
@@ -489,9 +508,30 @@ class GameViewport(ScrollableContainer):
             await self.remove_children()
             await self.mount(*(self._line_widget(line) for line in lines))
         self.models = list(lines)
+        width = self.content_width
+        for child in self.children:
+            if isinstance(child, GameLine):
+                child.set_layout_width(width)
+        self._set_horizontal_overflow(self._content_overflows(width))
         # Re-anchor after every presentation change so the next layout pass follows
         # the newly appended content even when the user had scrolled into history.
         self.anchor()
+        return self._horizontal_overflow
+
+
+def _projected_line_width(line: DisplayLineModel, width: int) -> int:
+    """Return the widest projected row without depending on a provisional layout."""
+
+    widest = 0
+    current = 0
+    for segment in _project_responsive_segments(line, width):
+        parts = segment.text.split("\n")
+        for index, part in enumerate(parts):
+            current += cell_len(part)
+            if index + 1 < len(parts):
+                widest = max(widest, current)
+                current = 0
+    return max(widest, current)
 
 
 def _merge_save_delete_lines(lines: list[DisplayLineModel]) -> list[DisplayLineModel]:
