@@ -37,7 +37,7 @@ jobs:
             install_aarch64_gcc: true
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -75,7 +75,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -116,13 +116,13 @@ jobs:
 
     steps:
       - name: Download packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: packages
           merge-multiple: true
 
       - name: Create or update prerelease
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v6
         with:
           tag_name: ${{ inputs.tag_name }}
           target_commitish: ${{ github.sha }}
