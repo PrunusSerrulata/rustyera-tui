@@ -43,6 +43,53 @@ class ConfirmDialog(ModalScreen[bool]):
         self.dismiss(event.button.id == "confirm-accept")
 
 
+class FatalErrorDialog(ModalScreen[None]):
+    """Keep recovery and diagnosis actions available after an unrecoverable runtime fault."""
+
+    class Action(Message):
+        def __init__(self, action: str) -> None:
+            super().__init__()
+            self.action = action
+
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self.error = error
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog fatal-dialog"):
+            yield Label("遇到了无法恢复的错误", classes="dialog-title fatal-title")
+            yield Static(self.error, id="fatal-error")
+            yield Static("", id="fatal-export-status")
+            with Horizontal(classes="dialog-buttons fatal-buttons"):
+                yield Button("导出诊断信息…", id="fatal-export", variant="primary")
+                yield Button("返回主菜单", id="fatal-title")
+                yield Button("重启并重新编译", id="fatal-recompile")
+                yield Button("退出", id="fatal-exit", variant="error")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        action = {
+            "fatal-export": "export",
+            "fatal-title": "title",
+            "fatal-recompile": "recompile",
+            "fatal-exit": "exit",
+        }.get(event.button.id or "")
+        if action is not None:
+            self.post_message(self.Action(action))
+
+    def set_exporting(self) -> None:
+        self.query_one("#fatal-export-status", Static).update("正在导出诊断信息……")
+        self._set_buttons_disabled(True)
+
+    def finish_export(self, success: bool, message: str) -> None:
+        status = f"导出成功：{message}" if success else f"导出失败：{message}"
+        self.query_one("#fatal-export-status", Static).update(status)
+        self._set_buttons_disabled(False)
+
+    def _set_buttons_disabled(self, disabled: bool) -> None:
+        for button in self.query(".fatal-buttons Button"):
+            button.disabled = disabled
+
+
 class PathDialog(ModalScreen[Path | None]):
     def __init__(self, title: str, mode: str, initial: Path) -> None:
         super().__init__()
@@ -63,7 +110,8 @@ class PathDialog(ModalScreen[Path | None]):
                 yield Button("取消", id="path-cancel")
 
     def on_directory_tree_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
-        self.query_one("#path-value", Input).value = str(event.path)
+        value = event.path / self.initial_value.name if self.mode == "save" else event.path
+        self.query_one("#path-value", Input).value = str(value)
 
     def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
         self.query_one("#path-value", Input).value = str(event.path)

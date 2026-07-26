@@ -46,6 +46,7 @@ def test_compiled_cache_persistence_waits_until_the_deferred_deadline(
     client.cache_ready = False
     client.cache_refresh_after_ns = 100
     client.pending_export = None
+    client.pending_diagnosis = None
     requested: list[str] = []
     client._refresh_compiled_cache = requested.append  # type: ignore[method-assign]
 
@@ -230,7 +231,7 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
         wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
 
         snapshot_path = tmp_path / "runtime.snapshot"
-        worker.send("export_snapshot", snapshot_path)
+        worker.send("export_snapshot", (snapshot_path, "normal"))
         exported = wait_for(
             worker,
             lambda event: event.kind == "snapshot_export_finished",

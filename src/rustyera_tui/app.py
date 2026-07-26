@@ -16,12 +16,14 @@ from textual.widgets import Button, Input, Rule, Static
 from .dialogs import (
     ConfirmDialog,
     DebugConsoleDialog,
+    FatalErrorDialog,
     LogDialog,
     PathDialog,
     StackDialog,
     VariableDialog,
     VariableRefresh,
 )
+from .diagnosis import diagnosis_default_path
 from .presentation import PresentationModel
 from .protocol_text import DEBUG_STOP_REASONS, RUNTIME_PHASES, enum_text, variant_enum_text
 from .runtime import FrontendEvent, RuntimeWorker
@@ -83,11 +85,14 @@ class RustyEraTui(App[None]):
         self.environment_revision = 0
         self.exit_pending = False
         self.snapshot_exporting = False
+        self.diagnosis_exporting = False
         self.presentation_rendering = False
         self._projection_refresh_scheduled = False
         self.variable_dialog: VariableDialog | None = None
         self.stack_dialog: StackDialog | None = None
         self.console_dialog: DebugConsoleDialog | None = None
+        self.fatal_dialog: FatalErrorDialog | None = None
+        self.fault_logs = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="app-root"):
@@ -190,6 +195,11 @@ class RustyEraTui(App[None]):
             self.snapshot_exporting = False
             self._update_prompt()
             self._refresh_interaction_lock()
+        elif kind == "diagnosis_export_finished":
+            self.diagnosis_exporting = False
+            success, message = value
+            if self.fatal_dialog is not None and self.fatal_dialog.is_mounted:
+                self.fatal_dialog.finish_export(bool(success), str(message))
         elif kind == "project_loaded":
             self.project = Path(value) if value else self.project
             self._set_status(f"项目已加载：{self.project}")
@@ -208,9 +218,15 @@ class RustyEraTui(App[None]):
             self._activated_wait = None
             self.blocking_error = value.display()
             self._log(f"ERROR: {self.blocking_error}")
+            self.fault_logs = "\n".join(self.logs) + "\n"
             self._update_prompt()
             self._refresh_interaction_lock()
-            self.notify(self.blocking_error, title="RustyEra", severity="error", timeout=12)
+            if self.fatal_dialog is None or not self.fatal_dialog.is_mounted:
+                self.fatal_dialog = FatalErrorDialog(self.blocking_error)
+                self.push_screen(self.fatal_dialog)
+        elif kind == "snapshot_restore_warning":
+            self._log(f"WARNING: {value}")
+            self.notify(str(value), title="VM 快照恢复警告", severity="warning", timeout=12)
         elif kind == "debug_enabled":
             self._set_debug_enabled(bool(value))
         elif kind == "debug_stopped":
@@ -241,6 +257,10 @@ class RustyEraTui(App[None]):
                 self.snapshot_exporting = False
                 self._update_prompt()
                 self._refresh_interaction_lock()
+            if self.diagnosis_exporting:
+                self.diagnosis_exporting = False
+                if self.fatal_dialog is not None and self.fatal_dialog.is_mounted:
+                    self.fatal_dialog.finish_export(False, "Runtime worker 已停止")
             if self.exit_pending:
                 self.exit()
         return False
@@ -255,8 +275,6 @@ class RustyEraTui(App[None]):
     def _log(self, message: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
         self.logs.append(f"[{stamp}] {message}")
-        if len(self.logs) > 10_000:
-            del self.logs[: len(self.logs) - 10_000]
         if self.console_dialog is not None and self.console_dialog.is_mounted:
             if message.startswith("DEBUG:"):
                 self.console_dialog.write(message)
@@ -449,7 +467,15 @@ class RustyEraTui(App[None]):
         self.snapshot_exporting = True
         self._update_prompt()
         self._refresh_interaction_lock()
-        self.worker.send("export_snapshot", path)
+        purpose = "debug" if self.debug_enabled else "normal"
+        self.worker.send("export_snapshot", (path, purpose))
+
+    def _start_diagnosis_export(self, path: Path | None) -> None:
+        if path is None or self.diagnosis_exporting or self.fatal_dialog is None:
+            return
+        self.diagnosis_exporting = True
+        self.fatal_dialog.set_exporting()
+        self.worker.send("export_diagnosis", (path, self.fault_logs))
 
     def _debug_action(self, item_id: str) -> None:
         if self.snapshot_exporting and item_id != "debug-logs":
@@ -613,6 +639,31 @@ class RustyEraTui(App[None]):
     def on_variable_dialog_read_requested(self, event: VariableDialog.ReadRequested) -> None:
         if not self._debug_interactions_blocked():
             self.worker.send("debug_action", ("read_variable", event.descriptor))
+
+    def on_fatal_error_dialog_action(self, event: FatalErrorDialog.Action) -> None:
+        if self.diagnosis_exporting:
+            return
+        if event.action == "export":
+            initial = diagnosis_default_path(self.project or Path.cwd())
+            self.push_screen(
+                PathDialog("导出诊断信息", "save", initial),
+                lambda path: self._start_diagnosis_export(
+                    None
+                    if path is None
+                    else (path if path.is_dir() else path.parent) / initial.name
+                ),
+            )
+            return
+        dialog = self.fatal_dialog
+        self.fatal_dialog = None
+        if dialog is not None and dialog.is_mounted:
+            dialog.dismiss(None)
+        if event.action == "title":
+            self.worker.send("return_title")
+        elif event.action == "recompile":
+            self.worker.send("restart_recompile")
+        elif event.action == "exit":
+            self.action_request_quit()
 
     def on_resize(self, _event: events.Resize) -> None:
         if not self._projection_refresh_scheduled:

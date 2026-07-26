@@ -9,6 +9,7 @@ from rich.cells import cell_len
 from textual.widgets import DataTable, Input, Static, TextArea
 
 from rustyera_tui.app import RustyEraTui
+from rustyera_tui.dialogs import FatalErrorDialog
 from rustyera_tui.presentation import (
     ColumnCellLayout,
     DisplayLineModel,
@@ -744,7 +745,7 @@ async def test_snapshot_export_locks_gameplay_and_uses_a_timestamped_name(
         app.on_game_viewport_continue_requested(None)  # type: ignore[arg-type]
         app.on_game_viewport_skip_enter_requested(None)  # type: ignore[arg-type]
         app.action_input_undo()
-        assert ("export_snapshot", target) in worker.commands
+        assert ("export_snapshot", (target, "normal")) in worker.commands
         assert not any(
             kind in ("submit_text", "skip_enter_waits", "input_undo")
             for kind, _value in worker.commands
@@ -755,6 +756,57 @@ async def test_snapshot_export_locks_gameplay_and_uses_a_timestamped_name(
         assert not app.snapshot_exporting
         assert not prompt.disabled
         assert viewport.interactions_enabled
+
+
+async def test_fatal_fault_dialog_exports_diagnosis_and_gates_recovery_actions(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._log("before fault")
+        failure = RuntimeFailure(code=3, message="place storage is unavailable")
+        app._handle_worker_event(FrontendEvent("runtime_fault", failure))
+        await pilot.pause()
+
+        dialog = app.screen
+        assert isinstance(dialog, FatalErrorDialog)
+        assert "无法恢复" in str(dialog.query_one(".fatal-title", Static).render())
+        assert "place storage is unavailable" in str(
+            dialog.query_one("#fatal-error", Static).render()
+        )
+        assert "before fault" in app.fault_logs
+        assert "place storage is unavailable" in app.fault_logs
+
+        app._start_diagnosis_export(None)
+        assert not app.diagnosis_exporting
+
+        target = tmp_path / "eraTW-diagnosis_20260726-140506.tar.zst"
+        app._start_diagnosis_export(target)
+        assert app.diagnosis_exporting
+        assert ("export_diagnosis", (target, app.fault_logs)) in worker.commands
+        assert all(button.disabled for button in dialog.query(".fatal-buttons Button"))
+        assert "正在导出" in str(dialog.query_one("#fatal-export-status", Static).render())
+
+        app._handle_worker_event(FrontendEvent("diagnosis_export_finished", (True, str(target))))
+        assert not app.diagnosis_exporting
+        assert all(not button.disabled for button in dialog.query(".fatal-buttons Button"))
+        assert "导出成功" in str(dialog.query_one("#fatal-export-status", Static).render())
+
+        app.on_fatal_error_dialog_action(FatalErrorDialog.Action("recompile"))
+        assert ("restart_recompile", None) in worker.commands
+
+
+async def test_debug_mode_marks_manual_snapshot_exports(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)):
+        app.debug_enabled = True
+        target = tmp_path / "debug.snapshot"
+        app._start_snapshot_export(target)
+        assert ("export_snapshot", (target, "debug")) in worker.commands
 
 
 async def test_gameplay_stays_locked_until_presentation_refresh_finishes(

@@ -188,6 +188,33 @@ ModalScreen {
     height: 10;
 }
 
+.fatal-dialog {
+    width: 84;
+    height: 18;
+    border: round #ef4444;
+}
+
+.fatal-title {
+    color: #f87171;
+}
+
+#fatal-error {
+    height: 1fr;
+    padding: 1;
+    border: solid #7f1d1d;
+    overflow-y: auto;
+}
+
+#fatal-export-status {
+    height: 2;
+    color: #fbbf24;
+    padding: 0 1;
+}
+
+.fatal-buttons {
+    height: 4;
+}
+
 #confirm-message {
     height: 1fr;
     padding: 1 0;

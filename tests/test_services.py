@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import queue
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from rustyera_tui.presentation import ServicePresentationModel
@@ -21,6 +23,10 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client._input_messages = set()
     client._message_skip_active = False
     client._message_skip_wait_id = None
+    client.pending_cache_export_message = None
+    client.pending_export_message = None
+    client.pending_export_kind = None
+    client.pending_diagnosis = None
     client.single_step_enabled = False
     captured: list[tuple[int, Any]] = []
     client.send_runtime = (  # type: ignore[method-assign]
@@ -160,6 +166,60 @@ def test_stale_projection_rejection_is_recoverable_but_runtime_fault_is_structur
     assert isinstance(fault.value, RuntimeFailure)
     assert fault.value.function == "EVENTTRAIN"
     assert fault.value.source_line == 28
+
+
+def test_snapshot_export_purposes_and_restore_warnings_are_frontend_visible(
+    tmp_path: Path,
+) -> None:
+    client, captured = client_with_capture()
+    client.pending_export = None
+    client.pending_export_kind = None
+    client.pending_export_message = None
+    client.pending_diagnosis = None
+    client.bundle = SimpleNamespace(root=tmp_path / "eraTW")
+
+    client.export_snapshot(tmp_path / "debug.snapshot", "debug")
+    assert captured.pop() == (60, {0: 1, 1: 1})
+
+    client.pending_export = None
+    client.pending_export_kind = None
+    client.pending_export_message = None
+    client.export_diagnosis(tmp_path / "diagnosis.tar.zst", "complete log\n")
+    assert captured.pop() == (60, {0: 1, 1: 2})
+
+    client._handle_runtime(
+        97,
+        {
+            0: "runtime.snapshot_restored_from_diagnosis",
+            1: 1,
+            2: "restored a VM snapshot captured for diagnosis",
+        },
+        None,
+    )
+    assert client.events.get_nowait().kind == "log"
+    warning = client.events.get_nowait()
+    assert warning.kind == "snapshot_restore_warning"
+    assert "诊断信息" in warning.value
+
+
+def test_diagnosis_export_waits_for_an_existing_state_transfer(tmp_path: Path) -> None:
+    client, captured = client_with_capture()
+    client.bundle = SimpleNamespace(root=tmp_path / "eraTW")
+    client.pending_export = (tmp_path / "compiled.bin", bytearray(), None)
+    client.pending_export_kind = 2
+
+    client.export_diagnosis(tmp_path / "diagnosis.tar.zst", "fault log\n")
+
+    assert captured == []
+    assert client.pending_diagnosis is not None
+    assert client.pending_diagnosis.stage == "export_wait"
+
+    client.pending_export = None
+    client.maybe_refresh_compiled_cache()
+
+    assert captured == [(60, {0: 1, 1: 2})]
+    assert client.pending_export_kind == 3
+    assert client.pending_diagnosis.stage == "snapshot"
 
 
 def test_rejected_input_reports_the_still_active_wait_to_the_app() -> None:

@@ -74,6 +74,8 @@ def test_snapshot_rejection_event_uses_reason_names() -> None:
     client = RuntimeClient.__new__(RuntimeClient)
     client.events = queue.Queue()
     client.pending_export = (None, bytearray(), None)
+    client.pending_export_kind = 1
+    client.pending_export_message = None
 
     client._handle_export_ready({1: [1, [[3]]]})
 
@@ -95,6 +97,8 @@ def test_snapshot_export_emits_a_dedicated_completion_event(tmp_path: Path) -> N
     path = tmp_path / "runtime.snapshot"
     descriptor = {0: 7, 2: len(data), 3: blake3.blake3(data).digest()}
     client.pending_export = (path, bytearray(), descriptor)
+    client.pending_export_kind = 1
+    client.pending_export_message = None
 
     client._handle_export_chunk({0: 7, 1: 0, 2: data, 3: True})
 

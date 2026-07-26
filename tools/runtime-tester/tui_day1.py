@@ -151,7 +151,7 @@ def main() -> int:
                 return 5
             if snapshot_path and not snapshot_attempted:
                 snapshot_started = time.monotonic()
-                worker.send("export_snapshot", snapshot_path)
+                worker.send("export_snapshot", (snapshot_path, "normal"))
                 snapshot_requested = True
                 snapshot_attempt_wait = (wait, tail)
                 return None
@@ -236,7 +236,7 @@ def main() -> int:
                 worker.send("submit_text", "100")
             elif snapshot_path and not snapshot_attempted:
                 snapshot_started = time.monotonic()
-                worker.send("export_snapshot", snapshot_path)
+                worker.send("export_snapshot", (snapshot_path, "normal"))
                 snapshot_requested = True
                 snapshot_attempt_wait = (wait, tail)
             elif snapshot_every_wait:
@@ -370,7 +370,7 @@ def main() -> int:
                 snapshot_requested = True
                 snapshot_started = time.monotonic()
                 snapshot_attempt_wait = (wait, tail)
-                worker.send("export_snapshot", snapshot_path)
+                worker.send("export_snapshot", (snapshot_path, "normal"))
                 continue
             result = advance_wait(wait, tail)
             if result is not None:

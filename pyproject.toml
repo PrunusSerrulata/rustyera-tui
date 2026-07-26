@@ -9,6 +9,7 @@ dependencies = [
     "blake3>=1.0.5",
     "cbor2>=5.6.5",
     "textual>=6.0.0",
+    "zstandard>=0.23.0",
 ]
 
 [project.scripts]

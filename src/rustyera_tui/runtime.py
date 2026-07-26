@@ -18,6 +18,7 @@ import blake3
 from rich.cells import cell_len
 
 from .abi import RuntimeAbi
+from .diagnosis import resource_name, write_diagnosis_archive
 from .presentation import (
     ServicePresentationModel,
     coalesce_presentation_deltas,
@@ -123,6 +124,17 @@ class FrontendCommand:
     value: Any = None
 
 
+@dataclass(slots=True)
+class DiagnosisExport:
+    target: Path
+    project_name: str
+    logs: str
+    snapshot: bytes | None = None
+    compiled_artifact: bytes | None = None
+    stage: str = "snapshot"
+    retry_after_ns: int = 0
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeFailure:
     """Terminal runtime fault retained as structured frontend-observable state."""
@@ -172,6 +184,8 @@ class RuntimeClient:
         self.active_wait: dict[int, Any] | None = None
         self.pending_restore: tuple[Path, bytes] | None = None
         self.pending_export: tuple[Path, bytearray, dict[int, Any] | None] | None = None
+        self.pending_export_message: int | None = None
+        self.pending_diagnosis: DiagnosisExport | None = None
         self.import_bytes: bytes | None = None
         self.import_transfer_id: int | None = None
         self.import_purpose: str | None = None
@@ -182,6 +196,7 @@ class RuntimeClient:
         self.cache_ready = False
         self.cache_refresh_after_ns = 0
         self.cache_preparation_started = False
+        self.allow_compiled_cache_load = True
         self.debug_requested = False
         self.debug_grant: dict[int, Any] | None = None
         self.stop_token: dict[int, Any] | None = None
@@ -232,17 +247,30 @@ class RuntimeClient:
         self._input_messages.clear()
         self._message_skip_active = False
         self._message_skip_wait_id = None
+        self.pending_export = None
+        self.pending_export_kind = None
+        self.pending_export_message = None
+        self.pending_diagnosis = None
+        self.pending_cache_after = None
+        self.pending_cache_export_message = None
         self.cache_refresh_pending = False
         self.cache_ready = False
         self.cache_refresh_after_ns = 0
         self.cache_preparation_started = False
 
-    def recreate(self, bundle: ProjectBundle, restore: tuple[Path, bytes] | None = None) -> None:
+    def recreate(
+        self,
+        bundle: ProjectBundle,
+        restore: tuple[Path, bytes] | None = None,
+        *,
+        allow_compiled_cache: bool = True,
+    ) -> None:
         self.events.put(FrontendEvent("status", "正在创建新的 Runtime session…"))
         self.abi.recreate_session()
         self._reset_wire_state()
         self.pending_bundle = bundle
         self.pending_restore = restore
+        self.allow_compiled_cache_load = allow_compiled_cache
         self.storage = StorageBackend(bundle.root)
         self._send_hello()
 
@@ -407,7 +435,11 @@ class RuntimeClient:
                 FrontendEvent("log", f"runtime handshake complete (epoch {self.epoch})")
             )
             if self.pending_bundle is not None:
-                cache_path = self.storage.compiled_cache_path() if self.storage else None
+                cache_path = (
+                    self.storage.compiled_cache_path()
+                    if self.storage and self.allow_compiled_cache_load
+                    else None
+                )
                 try:
                     cache = cache_path.read_bytes() if cache_path is not None else None
                 except OSError as error:
@@ -500,8 +532,12 @@ class RuntimeClient:
                 self.events.put(
                     FrontendEvent("interaction_rejected", copy.deepcopy(self.active_wait))
                 )
-            cache_export_rejection = correlation_id == getattr(
-                self, "pending_cache_export_message", None
+            cache_export_rejection = correlation_id == self.pending_cache_export_message
+            diagnosis_export_rejection = (
+                correlation_id == self.pending_export_message and self.pending_export_kind in (3, 4)
+            )
+            snapshot_export_rejection = (
+                correlation_id == self.pending_export_message and self.pending_export_kind == 1
             )
             if cache_export_rejection:
                 self.pending_export = None
@@ -514,10 +550,27 @@ class RuntimeClient:
                     self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
                 else:
                     self._finish_cache_export(False)
+            elif diagnosis_export_rejection:
+                stage = self.pending_export_kind
+                self.pending_export = None
+                self.pending_export_message = None
+                if stage == 4 and value.get(0) == 0 and self.pending_diagnosis is not None:
+                    self.pending_export_kind = None
+                    self.pending_diagnosis.stage = "artifact_wait"
+                    self.pending_diagnosis.retry_after_ns = (
+                        time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
+                    )
+                else:
+                    self._finish_diagnosis_export(False, f"命令被拒绝：{rejection}")
+            elif snapshot_export_rejection:
+                self.pending_export = None
+                self.pending_export_kind = None
+                self.pending_export_message = None
+                self.events.put(FrontendEvent("snapshot_export_finished", False))
             # A presentation may advance after the frontend rendered an observation but
             # before the caller-pumped runtime handles it. This is a benign stale sample;
             # a later rendered revision will submit a replacement observation.
-            if not cache_export_rejection and not (
+            if not (cache_export_rejection or diagnosis_export_rejection) and not (
                 projection_request and value.get(0) == 2 and stale_projection
             ):
                 code = enum_text(value.get(0), COMMAND_ERROR_CODES, "CommandErrorCode")
@@ -539,6 +592,20 @@ class RuntimeClient:
             if value.get(0) == "runtime.compiled_cache_ready":
                 self.cache_ready = True
                 self.cache_refresh_after_ns = 0
+            elif value.get(0) == "runtime.snapshot_restored_from_debug":
+                self.events.put(
+                    FrontendEvent(
+                        "snapshot_restore_warning",
+                        "该快照由调试模式导出；已确认其状态可恢复，但内容可能包含调试影响。",
+                    )
+                )
+            elif value.get(0) == "runtime.snapshot_restored_from_diagnosis":
+                self.events.put(
+                    FrontendEvent(
+                        "snapshot_restore_warning",
+                        "该快照来自诊断信息；已确认其状态可恢复，请仅用于问题排查。",
+                    )
+                )
 
     def _handle_project_report(self, report: dict[int, Any]) -> None:
         cache_hit = False
@@ -647,9 +714,22 @@ class RuntimeClient:
         if not self.cache_preparation_started:
             self.cache_preparation_started = True
             self.events.put(FrontendEvent("status", "正在后台生成编译缓存…"))
-        self.pending_cache_export_message = self.send_runtime(60, {0: 2})
+        self.pending_cache_export_message = self.send_runtime(60, {0: 2, 1: 0})
 
     def maybe_refresh_compiled_cache(self) -> None:
+        if self.pending_diagnosis is not None:
+            if (
+                self.pending_diagnosis.stage == "export_wait"
+                and self.pending_export is None
+            ):
+                self._start_diagnosis_snapshot_export()
+            elif (
+                self.pending_diagnosis.stage == "artifact_wait"
+                and self.pending_export is None
+                and time.monotonic_ns() >= self.pending_diagnosis.retry_after_ns
+            ):
+                self._start_diagnosis_artifact_export()
+            return
         if (
             self.cache_refresh_pending
             and self.pending_export is None
@@ -882,14 +962,41 @@ class RuntimeClient:
         self.events.put(FrontendEvent("status", f"正在热重载 {path.name}…"))
         self.send_runtime(12, request)
 
-    def export_snapshot(self, path: Path) -> None:
+    def export_snapshot(self, path: Path, purpose: str) -> None:
+        purpose_id = {"normal": 0, "debug": 1}.get(purpose)
+        if purpose_id is None:
+            raise ValueError(f"unknown snapshot export purpose {purpose}")
         self.pending_export = (path, bytearray(), None)
         self.pending_export_kind = 1
-        self.send_runtime(60, {0: 1})
+        self.pending_export_message = self.send_runtime(60, {0: 1, 1: purpose_id})
+
+    def export_diagnosis(self, path: Path, logs: str) -> None:
+        if self.bundle is None:
+            raise RuntimeError("no project is active")
+        if self.pending_diagnosis is not None:
+            raise RuntimeError("another diagnosis export is already active")
+        self.pending_diagnosis = DiagnosisExport(
+            target=path,
+            project_name=resource_name(self.bundle.root),
+            logs=logs,
+            stage="export_wait",
+        )
+        if self.pending_export is None:
+            self._start_diagnosis_snapshot_export()
+
+    def _start_diagnosis_snapshot_export(self) -> None:
+        diagnosis = self.pending_diagnosis
+        if diagnosis is None:
+            return
+        diagnosis.stage = "snapshot"
+        self.pending_export = (diagnosis.target, bytearray(), None)
+        self.pending_export_kind = 3
+        self.pending_export_message = self.send_runtime(60, {0: 1, 1: 2})
 
     def _handle_export_ready(self, ready: dict[int, Any]) -> None:
         if self.pending_export is None:
             return
+        self.pending_export_message = None
         result_tag, fields = unwrap_variant(ready[1])
         if result_tag == 1:
             reasons = enum_list_text(
@@ -897,9 +1004,13 @@ class RuntimeClient:
             )
             self.events.put(FrontendEvent("error", f"当前状态不能生成快照：{reasons}"))
             self.pending_export = None
-            if getattr(self, "pending_export_kind", 1) == 2:
+            self.pending_export_message = None
+            if self.pending_export_kind == 2:
                 self._finish_cache_export(False)
+            elif self.pending_export_kind in (3, 4):
+                self._finish_diagnosis_export(False, f"当前状态不能导出：{reasons}")
             else:
+                self.pending_export_kind = None
                 self.events.put(FrontendEvent("snapshot_export_finished", False))
             return
         descriptor = fields[0]
@@ -919,14 +1030,54 @@ class RuntimeClient:
             return
         if len(data) != descriptor[2] or blake3.blake3(data).digest() != descriptor[3]:
             raise RuntimeError("snapshot export digest verification failed")
-        _atomic_write(path, data)
+        export_kind = self.pending_export_kind
         self.pending_export = None
-        if getattr(self, "pending_export_kind", 1) == 2:
+        self.pending_export_message = None
+        if export_kind == 2:
+            _atomic_write(path, data)
             self._finish_cache_export(True)
+        elif export_kind == 3:
+            if self.pending_diagnosis is None:
+                raise RuntimeError("diagnosis export state is missing")
+            self.pending_diagnosis.snapshot = bytes(data)
+            self._start_diagnosis_artifact_export()
+        elif export_kind == 4:
+            if self.pending_diagnosis is None:
+                raise RuntimeError("diagnosis export state is missing")
+            self.pending_diagnosis.compiled_artifact = bytes(data)
+            try:
+                write_diagnosis_archive(
+                    self.pending_diagnosis.target,
+                    project_name=self.pending_diagnosis.project_name,
+                    snapshot=self.pending_diagnosis.snapshot or b"",
+                    logs=self.pending_diagnosis.logs,
+                    compiled_artifact=self.pending_diagnosis.compiled_artifact,
+                )
+            except Exception as error:  # noqa: BLE001 - report filesystem/compression failures
+                self._finish_diagnosis_export(False, str(error))
+            else:
+                self._finish_diagnosis_export(True, str(self.pending_diagnosis.target))
         else:
+            _atomic_write(path, data)
             self.pending_export_kind = None
             self.events.put(FrontendEvent("snapshot_export_finished", True))
             self.events.put(FrontendEvent("status", f"VM 快照已导出到 {path}"))
+
+    def _start_diagnosis_artifact_export(self) -> None:
+        diagnosis = self.pending_diagnosis
+        if diagnosis is None:
+            return
+        diagnosis.stage = "artifact"
+        self.pending_export = (diagnosis.target, bytearray(), None)
+        self.pending_export_kind = 4
+        self.pending_export_message = self.send_runtime(60, {0: 2, 1: 0})
+
+    def _finish_diagnosis_export(self, success: bool, message: str) -> None:
+        self.pending_export = None
+        self.pending_export_kind = None
+        self.pending_export_message = None
+        self.pending_diagnosis = None
+        self.events.put(FrontendEvent("diagnosis_export_finished", (success, message)))
 
     def _finish_cache_export(self, success: bool) -> None:
         after = self.pending_cache_after
@@ -1266,6 +1417,13 @@ class RuntimeWorker(threading.Thread):
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
                     client.recreate(ProjectBundle.scan_quick(client.bundle.root, 1))
+                case "restart_recompile":
+                    if client.bundle is None:
+                        raise RuntimeError("no project is active")
+                    client.recreate(
+                        ProjectBundle.scan(client.bundle.root, 1),
+                        allow_compiled_cache=False,
+                    )
                 case "return_title":
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
@@ -1285,7 +1443,11 @@ class RuntimeWorker(threading.Thread):
                 case "projection":
                     client.projection(*command.value)
                 case "export_snapshot":
-                    client.export_snapshot(Path(command.value))
+                    path, purpose = command.value
+                    client.export_snapshot(Path(path), str(purpose))
+                case "export_diagnosis":
+                    path, logs = command.value
+                    client.export_diagnosis(Path(path), str(logs))
                 case "restore_snapshot":
                     if client.bundle is None:
                         raise RuntimeError("load the matching project before restoring a snapshot")
@@ -1313,7 +1475,11 @@ class RuntimeWorker(threading.Thread):
         except Exception as error:  # noqa: BLE001 - command boundary
             if command.kind == "export_snapshot":
                 client.pending_export = None
+                client.pending_export_kind = None
+                client.pending_export_message = None
                 self.events.put(FrontendEvent("snapshot_export_finished", False))
+            elif command.kind == "export_diagnosis":
+                client._finish_diagnosis_export(False, str(error))
             self.events.put(FrontendEvent("error", str(error)))
 
     def _load_project(self, root: Path) -> None:
