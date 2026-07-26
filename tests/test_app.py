@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from rich.cells import cell_len
 from textual.widgets import Button, DataTable, Input, RichLog, Select, Static
 
@@ -17,7 +18,7 @@ from rustyera_tui.presentation import (
     DisplaySegment,
     SeparatorLayout,
 )
-from rustyera_tui.runtime import FrontendEvent, RuntimeFailure
+from rustyera_tui.runtime import FrontendEvent, PresentationBatch, RuntimeFailure
 from rustyera_tui.widgets import GameLine, GameViewport
 from rustyera_tui.wire import variant
 
@@ -125,6 +126,125 @@ async def test_horizontal_scrollbar_replaces_the_prompt_separator(tmp_path: Path
         await pilot.pause()
         assert not viewport.show_horizontal_scrollbar
         assert separator.display
+
+
+async def test_gameplay_output_commits_once_at_the_next_wait_without_a_tail_flash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+
+    def line(line_id: int, text: str, *, line_end: bool = True) -> dict[int, Any]:
+        return {
+            0: line_id,
+            1: False,
+            2: True,
+            3: line_end,
+            4: 0,
+            5: [variant(0, text, None, None)],
+        }
+
+    first_wait = {0: 1, 1: 0, 11: {0: 1, 1: 1}}
+    next_wait = {0: 2, 1: 0, 11: {0: 1, 1: 2}}
+    snapshot = {
+        0: 1,
+        1: "Game",
+        2: {0: [line(1, "before")], 1: []},
+        5: first_wait,
+    }
+    async with app.run_test(size=(100, 20)) as pilot:
+        worker.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(snapshot, None, first_wait, True),
+            )
+        )
+        await pilot.pause(0.1)
+        viewport = app.query_one(GameViewport)
+        assert [model.segments[0].text for model in viewport.models] == ["before"]
+
+        set_lines_calls = 0
+        original_set_lines = viewport.set_lines
+
+        async def counted_set_lines(*args: Any, **kwargs: Any) -> None:
+            nonlocal set_lines_calls
+            set_lines_calls += 1
+            await original_set_lines(*args, **kwargs)
+
+        monkeypatch.setattr(viewport, "set_lines", counted_set_lines)
+        provisional = {
+            0: 1,
+            1: 2,
+            2: [variant(6), variant(0, line(2, "x" * 240, line_end=False))],
+        }
+        worker.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(None, provisional, None, False),
+            )
+        )
+        await pilot.pause(0.1)
+
+        assert app.presentation.revision == 2
+        assert len(app.presentation.lines) == 2
+        assert [model.segments[0].text for model in viewport.models] == ["before"]
+        assert set_lines_calls == 0
+        assert not viewport.show_horizontal_scrollbar
+        assert app.presentation_rendering
+        assert app.query_one("#prompt", Input).disabled
+
+        final_lines = [line(line_id, f"line {line_id}") for line_id in range(2, 12)]
+        final = {
+            0: 2,
+            1: 3,
+            2: [
+                variant(1, 1),
+                *(variant(0, value) for value in final_lines),
+                variant(6, next_wait),
+            ],
+        }
+        worker.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(None, final, next_wait, True),
+            )
+        )
+        await pilot.pause(0.1)
+
+        assert set_lines_calls == 1
+        assert [model.segments[0].text for model in viewport.models] == [
+            "before",
+            *(f"line {line_id}" for line_id in range(2, 12)),
+        ]
+        assert not viewport.show_horizontal_scrollbar
+        assert not app.presentation_rendering
+        assert not app.query_one("#prompt", Input).disabled
+
+        terminal = {
+            0: 3,
+            1: 4,
+            2: [variant(6), variant(0, line(12, "terminal output"))],
+        }
+        worker.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(None, terminal, None, False),
+            )
+        )
+        await pilot.pause(0.1)
+        assert set_lines_calls == 1
+        assert viewport.models[-1].segments[0].text == "line 11"
+
+        worker.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(None, None, None, True),
+            )
+        )
+        await pilot.pause(0.1)
+        assert set_lines_calls == 2
+        assert viewport.models[-1].segments[0].text == "terminal output"
 
 
 async def test_column_cells_reflow_around_the_five_column_target(
@@ -641,8 +761,12 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
     wait = {0: 1, 1: 6, 11: {0: 1, 1: 2}}
     snapshot = {0: 1, 1: "Game", 2: {0: [line], 1: []}, 5: wait, 6: settings}
     async with app.run_test(size=(100, 30)) as pilot:
-        worker.events.put(FrontendEvent("presentation_snapshot", snapshot))
-        worker.events.put(FrontendEvent("wait", wait))
+        worker.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(snapshot, None, wait, True),
+            )
+        )
         await pilot.pause(0.1)
         game_line = app.query_one(GameLine)
         assert game_line.regions[0].start == 0
@@ -678,8 +802,13 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         worker.commands.clear()
         worker.events.put(
             FrontendEvent(
-                "presentation_delta",
-                {0: 1, 1: 2, 2: [variant(13, 1)]},
+                "presentation_batch",
+                PresentationBatch(
+                    None,
+                    {0: 1, 1: 2, 2: [variant(13, 1)]},
+                    wait,
+                    True,
+                ),
             )
         )
         await pilot.pause(0.1)
@@ -718,8 +847,12 @@ async def test_save_delete_button_requires_confirmation(tmp_path: Path) -> None:
     snapshot = {0: 1, 1: "Game", 2: {0: [line], 1: []}, 5: wait}
 
     async with app.run_test(size=(100, 30)) as pilot:
-        worker.events.put(FrontendEvent("presentation_snapshot", snapshot))
-        worker.events.put(FrontendEvent("wait", wait))
+        worker.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(snapshot, None, wait, True),
+            )
+        )
         await pilot.pause(0.1)
 
         assert await pilot.click(".game-line", offset=(1, 0))
@@ -924,13 +1057,21 @@ async def test_presentation_background_reaches_existing_and_new_game_lines(
         app.presentation.background = "#01183c"
         worker.events.put(
             FrontendEvent(
-                "presentation_snapshot",
-                {
-                    0: 1,
-                    1: "Game",
-                    2: {0: [], 1: []},
-                    6: {2: {0: 1, 1: 24, 2: 60, 3: 255}, 3: {0: 0, 1: 0, 2: 0, 3: 255}},
-                },
+                "presentation_batch",
+                PresentationBatch(
+                    {
+                        0: 1,
+                        1: "Game",
+                        2: {0: [], 1: []},
+                        6: {
+                            2: {0: 1, 1: 24, 2: 60, 3: 255},
+                            3: {0: 0, 1: 0, 2: 0, 3: 255},
+                        },
+                    },
+                    None,
+                    None,
+                    True,
+                ),
             )
         )
         await pilot.pause(0.1)

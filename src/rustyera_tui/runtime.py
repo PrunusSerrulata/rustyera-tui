@@ -131,6 +131,16 @@ class FrontendEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class PresentationBatch:
+    """One worker-side presentation observation delivered atomically to Textual."""
+
+    snapshot: dict[int, Any] | None
+    delta: dict[int, Any] | None
+    active_wait: dict[int, Any] | None
+    render: bool
+
+
+@dataclass(frozen=True, slots=True)
 class FrontendCommand:
     kind: str
     value: Any = None
@@ -224,6 +234,7 @@ class RuntimeClient:
         self.shutting_down = False
         self._pending_presentation_events: list[tuple[str, dict[int, Any]]] = []
         self._wait_event_dirty = False
+        self._presentation_boundary_dirty = False
         self._projection_messages: set[int] = set()
         self._input_messages: set[int] = set()
         self._message_skip_active = False
@@ -255,6 +266,7 @@ class RuntimeClient:
         self.shutting_down = False
         self._pending_presentation_events.clear()
         self._wait_event_dirty = False
+        self._presentation_boundary_dirty = False
         self._projection_messages.clear()
         self._input_messages.clear()
         self._message_skip_active = False
@@ -373,6 +385,7 @@ class RuntimeClient:
     def pump(self) -> bool:
         self._pending_presentation_events.clear()
         self._wait_event_dirty = False
+        self._presentation_boundary_dirty = False
         report = self.abi.drive()
         emitted = False
         acknowledge_through: int | None = None
@@ -391,8 +404,9 @@ class RuntimeClient:
         return emitted or report.state in (1, 2)
 
     def _flush_presentation_events(self) -> None:
+        snapshot: dict[int, Any] | None = None
+        delta: dict[int, Any] | None = None
         if self._pending_presentation_events:
-            snapshot: dict[int, Any] | None = None
             deltas: list[dict[int, Any]] = []
             for kind, value in self._pending_presentation_events:
                 if kind == "snapshot":
@@ -400,14 +414,29 @@ class RuntimeClient:
                     deltas.clear()
                 else:
                     deltas.append(value)
-            if snapshot is not None:
-                self.events.put(FrontendEvent("presentation_snapshot", snapshot))
             if deltas:
-                self.events.put(
-                    FrontendEvent("presentation_delta", coalesce_presentation_deltas(deltas))
-                )
-        if self._wait_event_dirty:
-            self.events.put(FrontendEvent("wait", copy.deepcopy(self.active_wait)))
+                delta = coalesce_presentation_deltas(deltas)
+        if snapshot is None and delta is None and not (
+            self._wait_event_dirty or self._presentation_boundary_dirty
+        ):
+            return
+        # A single queue item prevents Textual from observing presentation and wait halves
+        # from different runtime pumps. Intermediate running batches still update its staged
+        # model, but only a stable boundary may become a visible frame.
+        render = self._presentation_boundary_dirty or (
+            self.active_wait is not None and not self._message_skip_active
+        )
+        self.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(
+                    snapshot,
+                    delta,
+                    copy.deepcopy(self.active_wait),
+                    render,
+                ),
+            )
+        )
 
     def _handle_envelope(self, data: bytes) -> int | None:
         envelope = decode_envelope(data)
@@ -468,8 +497,11 @@ class RuntimeClient:
         elif tag == 21:
             self.phase = value[0]
             self.epoch = value[2]
+            if self.phase in {7, 9, 10, 11}:
+                self._presentation_boundary_dirty = True
             self.events.put(FrontendEvent("phase", self.phase))
         elif tag == 22:
+            self._presentation_boundary_dirty = True
             reason = "重启" if value[0] == 1 else "退出"
             self.events.put(FrontendEvent("exit_requested", reason))
         elif tag == 32:
@@ -511,8 +543,10 @@ class RuntimeClient:
         elif tag == 68:
             self._handle_export_chunk(value)
         elif tag == 91:
+            self._presentation_boundary_dirty = True
             self.events.put(FrontendEvent("shutdown_ready", value))
         elif tag == 92:
+            self._presentation_boundary_dirty = True
             self._message_skip_active = False
             self._message_skip_wait_id = None
             origin = value.get(2) or {}
@@ -1328,6 +1362,7 @@ class RuntimeClient:
             if self.debug_disable_pending:
                 self._debug_request(variant(1, self.stop_token), "disable_continue")
                 return
+            self._presentation_boundary_dirty = True
             self.events.put(FrontendEvent("debug_stopped", value))
             pending = list(self.pending_debug_actions)
             self.pending_debug_actions.clear()

@@ -9,7 +9,13 @@ import pytest
 
 from rustyera_tui.abi import DEFAULT_MAXIMUM_VM_INSTRUCTIONS, AbiError, discover_library
 from rustyera_tui.project import StorageBackend
-from rustyera_tui.runtime import FrontendCommand, FrontendEvent, RuntimeClient, RuntimeWorker
+from rustyera_tui.runtime import (
+    FrontendCommand,
+    FrontendEvent,
+    PresentationBatch,
+    RuntimeClient,
+    RuntimeWorker,
+)
 
 try:
     RUNTIME_LIBRARY = discover_library(resource_directory=Path(__file__).parents[1])
@@ -36,6 +42,31 @@ def test_worker_applies_backpressure_to_presentation_events() -> None:
     worker = RuntimeWorker(None, None)
 
     assert worker.events.maxsize == 4_096
+
+
+def test_worker_delivers_presentation_and_wait_as_one_atomic_batch() -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client._pending_presentation_events = [
+        ("delta", {0: 1, 1: 2, 2: []}),
+        ("delta", {0: 2, 1: 3, 2: []}),
+    ]
+    client._wait_event_dirty = True
+    client._presentation_boundary_dirty = False
+    client.active_wait = {0: 7, 1: 0, 11: {0: 1, 1: 9}}
+    client._message_skip_active = False
+
+    client._flush_presentation_events()
+
+    event = client.events.get_nowait()
+    assert event.kind == "presentation_batch"
+    assert event.value == PresentationBatch(
+        None,
+        {0: 1, 1: 3, 2: []},
+        client.active_wait,
+        True,
+    )
+    assert client.events.empty()
 
 
 def test_compiled_cache_persistence_waits_until_the_deferred_deadline(
@@ -114,6 +145,17 @@ def wait_for(
     raise AssertionError("timed out waiting for runtime event")
 
 
+def wait_for_input(worker: RuntimeWorker) -> dict[int, object]:
+    event = wait_for(
+        worker,
+        lambda candidate: (
+            candidate.kind == "presentation_batch"
+            and candidate.value.active_wait is not None
+        ),
+    )
+    return event.value.active_wait
+
+
 def wait_for_path(worker: RuntimeWorker, path: Path, timeout: float = 15) -> None:
     deadline = time.monotonic() + timeout
     observed: list[FrontendEvent] = []
@@ -187,7 +229,7 @@ def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
     first.start()
     try:
         wait_for(first, lambda event: event.kind == "project_loaded")
-        wait_for(first, lambda event: event.kind == "wait" and event.value is not None)
+        wait_for_input(first)
         wait_for_path(first, cache_path)
     finally:
         first.stop()
@@ -217,8 +259,8 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
     worker.start()
     try:
         wait_for(worker, lambda event: event.kind == "project_loaded")
-        wait = wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
-        assert wait.value[1] == 0
+        wait = wait_for_input(worker)
+        assert wait[1] == 0
         wait_for_path(worker, StorageBackend(project).compiled_cache_path())
 
         worker.send("restart")
@@ -227,7 +269,7 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
             lambda event: event.kind == "log" and "runtime.compiled_cache_hit" in str(event.value),
         )
         assert "compiled_cache_hit" in cache_hit.value
-        wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
+        wait_for_input(worker)
 
         snapshot_path = tmp_path / "runtime.snapshot"
         worker.send("export_snapshot", (snapshot_path, "normal"))
@@ -248,7 +290,7 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
                 worker,
                 lambda event: event.kind == "status" and "正在恢复 VM" in str(event.value),
             )
-            wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
+            wait_for_input(worker)
 
         worker.send("reload_all")
         reloaded = wait_for(
@@ -315,7 +357,7 @@ def test_real_c_abi_single_step_crosses_input_wait_without_rejected_commands(
     worker = RuntimeWorker(RUNTIME_LIBRARY, project)
     worker.start()
     try:
-        wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
+        wait_for_input(worker)
         worker.send("debug_enable")
         wait_for(worker, lambda event: event.kind == "debug_enabled" and event.value)
         worker.send("debug_single_step", True)
@@ -378,21 +420,25 @@ def test_real_c_abi_projects_three_channel_background_and_reset(
     try:
         blue = {0: 1, 1: 24, 2: 60, 3: 255}
         black = {0: 0, 1: 0, 2: 0, 3: 255}
-        wait_for(
+        initial = wait_for(
             worker,
             lambda event: (
-                event.kind == "presentation_snapshot" and event.value.get(6, {}).get(2) == blue
+                event.kind == "presentation_batch"
+                and event.value.snapshot is not None
+                and event.value.snapshot.get(6, {}).get(2) == blue
+                and event.value.active_wait is not None
             ),
         )
-        wait_for(worker, lambda event: event.kind == "wait" and event.value is not None)
+        assert initial.value.render
         worker.send("submit_text", "")
         wait_for(
             worker,
             lambda event: (
-                event.kind == "presentation_delta"
+                event.kind == "presentation_batch"
+                and event.value.delta is not None
                 and any(
                     operation[0] == 8 and operation[1][0].get(2) == black
-                    for operation in event.value[2]
+                    for operation in event.value.delta[2]
                 )
             ),
         )

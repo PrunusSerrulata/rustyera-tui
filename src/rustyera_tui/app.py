@@ -26,7 +26,7 @@ from .dialogs import (
 from .diagnosis import diagnosis_default_path
 from .log_model import LogEntry, LogLevel, LogMessage, format_log_entries, make_log_entry
 from .presentation import PresentationModel
-from .runtime import FrontendEvent, RuntimeWorker
+from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
 
@@ -87,6 +87,8 @@ class RustyEraTui(App[None]):
         self.snapshot_exporting = False
         self.diagnosis_exporting = False
         self.presentation_rendering = False
+        self._presentation_dirty = False
+        self._presentation_commit_ready = False
         self._projection_refresh_scheduled = False
         self.variable_dialog: VariableDialog | None = None
         self.stack_dialog: StackDialog | None = None
@@ -128,19 +130,28 @@ class RustyEraTui(App[None]):
             self.worker.join(timeout=2)
 
     async def _drain_worker_events(self) -> None:
-        presentation_dirty = False
+        queue_exhausted = False
         for _ in range(1000):
             try:
                 event = self.worker.events.get_nowait()
             except queue.Empty:
+                queue_exhausted = True
                 break
-            if event.kind in ("presentation_snapshot", "presentation_delta"):
-                self._begin_presentation_render()
             dirty = self._handle_worker_event(event)
-            presentation_dirty = presentation_dirty or dirty
-        if presentation_dirty:
-            viewport = self.query_one(GameViewport)
-            changed_from, trimmed_prefix = self.presentation.take_render_change()
+            if dirty and not self._presentation_dirty:
+                self._begin_presentation_render()
+            self._presentation_dirty = self._presentation_dirty or dirty
+        if (
+            queue_exhausted
+            and self._presentation_dirty
+            and self._presentation_commit_ready
+        ):
+            await self._commit_presentation()
+
+    async def _commit_presentation(self) -> None:
+        viewport = self.query_one(GameViewport)
+        changed_from, trimmed_prefix = self.presentation.take_render_change()
+        with self.batch_update():
             await viewport.set_lines(
                 self.presentation.lines,
                 changed_from=changed_from,
@@ -148,30 +159,34 @@ class RustyEraTui(App[None]):
             )
             self.title = self.presentation.title or self.TITLE
             viewport.set_presentation_background(self.presentation.background)
-            self._send_projection(viewport.size.width, viewport.size.height)
-            self.call_after_refresh(
-                self._finish_presentation_render,
-                self.presentation.revision,
-            )
+        revision = self.presentation.revision
+        self._presentation_dirty = False
+        self._presentation_commit_ready = False
+        self._send_projection(viewport.size.width, viewport.size.height)
+        self.call_after_refresh(self._finish_presentation_render, revision)
 
     def _handle_worker_event(self, event: FrontendEvent) -> bool:
         kind, value = event.kind, event.value
-        if kind == "presentation_snapshot":
-            self.presentation.apply_snapshot(value)
-            return True
-        if kind == "presentation_delta":
-            try:
-                self.presentation.apply_delta(value)
-            except ValueError as error:
-                self._log(str(error), LogLevel.WARNING)
-            return True
+        if kind == "presentation_batch":
+            if not isinstance(value, PresentationBatch):
+                self._log("worker returned an invalid presentation batch", LogLevel.WARNING)
+                return False
+            dirty = False
+            if value.snapshot is not None:
+                self.presentation.apply_snapshot(value.snapshot)
+                dirty = True
+            if value.delta is not None:
+                try:
+                    self.presentation.apply_delta(value.delta)
+                except ValueError as error:
+                    self._log(str(error), LogLevel.WARNING)
+                else:
+                    dirty = True
+            self._set_active_wait(value.active_wait)
+            self._presentation_commit_ready = value.render
+            return dirty
         if kind == "wait":
-            wait_identity = self._wait_identity(value)
-            if wait_identity != self._wait_identity(self.active_wait):
-                self._activated_wait = None
-            self.active_wait = value
-            self._update_prompt()
-            self._refresh_interaction_lock()
+            self._set_active_wait(value)
         elif kind == "input_undo":
             self.input_undo_token = value.get(4) if value.get(0) else None
         elif kind == "text_box":
@@ -261,6 +276,14 @@ class RustyEraTui(App[None]):
             if self.exit_pending:
                 self.exit()
         return False
+
+    def _set_active_wait(self, value: dict[int, Any] | None) -> None:
+        wait_identity = self._wait_identity(value)
+        if wait_identity != self._wait_identity(self.active_wait):
+            self._activated_wait = None
+        self.active_wait = value
+        self._update_prompt()
+        self._refresh_interaction_lock()
 
     def _set_status(self, message: str) -> None:
         self._log(message)
