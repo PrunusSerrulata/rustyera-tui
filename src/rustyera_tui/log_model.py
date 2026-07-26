@@ -81,8 +81,9 @@ class LogEntry:
 
     def render(self) -> Text:
         rendered = Text()
-        rendered.append(f"[{self.timestamp}]", style="bold green")
-        rendered.append(" ")
+        rendered.append("[")
+        rendered.append(self.timestamp, style="bold green")
+        rendered.append("] ")
         rendered.append(self.level.label, style=self.level.rich_style)
         rendered.append(f" {self.message}")
         return rendered

@@ -164,6 +164,8 @@ class LogDialog(ModalScreen[None]):
                     allow_blank=False,
                     id="log-level",
                 )
+                yield Static(id="log-actions-spacer")
+                yield Button("清空日志", id="log-clear")
                 yield Button("关闭", id="dialog-close")
 
     def on_mount(self) -> None:
@@ -188,7 +190,10 @@ class LogDialog(ModalScreen[None]):
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "dialog-close":
+        if event.button.id == "log-clear":
+            self.entries.clear()
+            self.query_one("#log-view", RichLog).clear()
+        elif event.button.id == "dialog-close":
             self.dismiss(None)
 
 

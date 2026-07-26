@@ -40,6 +40,8 @@ def test_log_entry_renders_colored_bold_time_and_level() -> None:
         rendered = make_log_entry("message", level, timestamp="01:02:03").render()
         assert isinstance(rendered, Text)
         assert rendered.plain.startswith(f"[01:02:03] {level.label}")
+        assert rendered.spans[0].start == 1
+        assert rendered.spans[0].end == 9
         assert str(rendered.spans[0].style) == "bold green"
         assert str(rendered.spans[1].style) == expected_style
 

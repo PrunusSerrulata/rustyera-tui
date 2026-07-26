@@ -507,7 +507,7 @@ class RustyEraTui(App[None]):
             )
             self.worker.send("debug_single_step", self.single_step)
         elif item_id == "debug-logs":
-            self.push_screen(LogDialog(list(self.logs)))
+            self.push_screen(LogDialog(self.logs))
 
     def _handle_debug_response(self, value: tuple[str, int, list[Any]]) -> None:
         pending, response_tag, fields = value

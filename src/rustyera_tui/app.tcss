@@ -261,7 +261,6 @@ ModalScreen {
 
 #log-actions-row {
     height: 3;
-    align-horizontal: right;
     align-vertical: middle;
 }
 
@@ -273,6 +272,10 @@ ModalScreen {
 
 #log-level {
     width: 22;
+}
+
+#log-actions-spacer {
+    width: 1fr;
 }
 
 #path-value, #console-input {

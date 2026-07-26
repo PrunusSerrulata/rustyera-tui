@@ -325,9 +325,16 @@ async def test_log_dialog_filters_entries_at_the_selected_threshold(tmp_path: Pa
         await pilot.pause()
         assert len(view.lines) == 4
         assert view.is_vertical_scroll_end
+        clear = app.screen.query_one("#log-clear", Button)
         close = app.screen.query_one("#dialog-close", Button)
+        assert level.region.x < clear.region.x
+        assert clear.region.y == close.region.y
         assert level.region.y == close.region.y
-        assert level.region.right <= close.region.x
+        assert clear.region.right <= close.region.x
+
+        await pilot.click("#log-clear")
+        assert app.logs == []
+        assert len(view.lines) == 0
 
 
 async def test_runtime_fault_remains_visible_in_the_prompt(tmp_path: Path) -> None:
