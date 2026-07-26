@@ -198,6 +198,10 @@ class RustyEraTui(App[None]):
         elif kind == "error":
             self._log(f"ERROR: {value}")
             self.notify(str(value), title="RustyEra", severity="error", timeout=8)
+        elif kind == "interaction_rejected":
+            if self._wait_identity(value) == self._activated_wait:
+                self._activated_wait = None
+                self._refresh_interaction_lock()
         elif kind == "runtime_fault":
             self.snapshot_exporting = False
             self.active_wait = None
@@ -472,7 +476,6 @@ class RustyEraTui(App[None]):
                 self.stack_dialog,
                 lambda _result: self.worker.send("debug_surface_closed", "stack"),
             )
-            self.worker.send("debug_action", ("fibers", None))
         elif item_id == "debug-step-toggle" and self.debug_enabled:
             self.single_step = not self.single_step
             self.query_one("#debug-step-toggle", Button).label = (
@@ -499,9 +502,11 @@ class RustyEraTui(App[None]):
         ):
             self.variable_dialog.set_value(fields[0])
         elif response_tag == 5 and fields and self.stack_dialog and self.stack_dialog.is_mounted:
-            fiber_id = self.stack_dialog.set_fibers(fields[0])
+            fiber_id, next_cursor = self.stack_dialog.set_fibers(fields[0])
             if fiber_id is not None:
                 self.worker.send("debug_action", ("call_stack", fiber_id))
+            elif next_cursor is not None:
+                self.worker.send("debug_action", ("fibers", next_cursor))
         elif response_tag == 6 and fields and self.stack_dialog and self.stack_dialog.is_mounted:
             target = self.stack_dialog.set_frames(fields[0])
             if target is not None:
@@ -526,6 +531,10 @@ class RustyEraTui(App[None]):
             return
         self.worker.send("submit_text", event.value)
         event.input.value = ""
+
+    def on_stack_dialog_ready(self, _event: StackDialog.Ready) -> None:
+        if not self._debug_interactions_blocked():
+            self.worker.send("debug_action", ("fibers", None))
 
     def on_game_line_activated(self, event: GameLine.Activated) -> None:
         wait_identity = self._wait_identity(self.active_wait)

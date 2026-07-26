@@ -3,6 +3,7 @@ from rustyera_tui.presentation import (
     MAX_TABLE_COLUMN_WIDTH,
     MIN_TABLE_COLUMN_WIDTH,
     TARGET_TABLE_COLUMNS,
+    VIEWPORT_BUFFER_LINES,
     ColumnCellLayout,
     PresentationModel,
     SeparatorLayout,
@@ -335,6 +336,65 @@ def test_trim_lines_removes_the_oldest_history_and_reports_incremental_hints() -
     assert [item.line_id for item in rich.lines] == [2, 3, 4]
     assert [item[0] for item in service.lines] == [2, 3, 4]
     assert rich.take_render_change() == (2, 1)
+
+
+def test_main_viewport_keeps_only_the_newest_thousand_logical_lines() -> None:
+    model = PresentationModel()
+    initial = snapshot()
+    initial[2][0] = [
+        {0: line_id, 1: False, 2: True, 3: True, 4: 0, 5: []}
+        for line_id in range(1, VIEWPORT_BUFFER_LINES + 3)
+    ]
+    initial[6][4] = 5_000
+
+    model.apply_snapshot(initial)
+
+    assert len(model.lines) == VIEWPORT_BUFFER_LINES
+    assert [item.line_id for item in model.lines[:2]] == [3, 4]
+    assert model.lines[-1].segments == ()
+    assert model.maximum_physical_lines == VIEWPORT_BUFFER_LINES
+
+    model.take_render_change()
+    model.apply_delta({0: 1, 1: 2, 2: [variant(14, 2)]})
+    assert len(model.lines) == VIEWPORT_BUFFER_LINES
+    assert model.lines[0].line_id == 3
+    assert model.take_render_change() == (None, 0)
+
+
+def test_viewport_limit_trims_incremental_blank_lines_with_render_hints() -> None:
+    model = PresentationModel()
+    initial = snapshot()
+    initial[2][0] = [
+        {0: line_id, 1: False, 2: True, 3: True, 4: 0, 5: []}
+        for line_id in range(1, VIEWPORT_BUFFER_LINES + 1)
+    ]
+    model.apply_snapshot(initial)
+    model.take_render_change()
+
+    model.apply_delta(
+        {
+            0: 1,
+            1: 2,
+            2: [
+                variant(
+                    0,
+                    {
+                        0: VIEWPORT_BUFFER_LINES + 1,
+                        1: False,
+                        2: True,
+                        3: True,
+                        4: 0,
+                        5: [],
+                    },
+                )
+            ],
+        }
+    )
+
+    assert len(model.lines) == VIEWPORT_BUFFER_LINES
+    assert model.lines[0].line_id == 2
+    assert model.lines[-1].segments == ()
+    assert model.take_render_change() == (VIEWPORT_BUFFER_LINES - 1, 1)
 
 
 def test_raw_worker_projection_tracks_rich_text_and_wait_state() -> None:

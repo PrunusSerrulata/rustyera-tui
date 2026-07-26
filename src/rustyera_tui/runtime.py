@@ -198,6 +198,7 @@ class RuntimeClient:
         self._pending_presentation_events: list[tuple[str, dict[int, Any]]] = []
         self._wait_event_dirty = False
         self._projection_messages: set[int] = set()
+        self._input_messages: set[int] = set()
         self._message_skip_active = False
         self._message_skip_wait_id: int | None = None
         self._send_hello()
@@ -228,6 +229,7 @@ class RuntimeClient:
         self._pending_presentation_events.clear()
         self._wait_event_dirty = False
         self._projection_messages.clear()
+        self._input_messages.clear()
         self._message_skip_active = False
         self._message_skip_wait_id = None
         self.cache_refresh_pending = False
@@ -492,6 +494,12 @@ class RuntimeClient:
             projection_request = correlation_id in self._projection_messages
             if projection_request:
                 self._projection_messages.discard(correlation_id)
+            input_request = correlation_id in self._input_messages
+            if input_request:
+                self._input_messages.discard(correlation_id)
+                self.events.put(
+                    FrontendEvent("interaction_rejected", copy.deepcopy(self.active_wait))
+                )
             cache_export_rejection = correlation_id == getattr(
                 self, "pending_cache_export_message", None
             )
@@ -667,6 +675,12 @@ class RuntimeClient:
         self._wait_event_dirty = True
 
     def _set_active_wait(self, wait: dict[int, Any] | None) -> None:
+        old_identity = (
+            (self.active_wait.get(0), self.active_wait.get(11)) if self.active_wait else None
+        )
+        new_identity = (wait.get(0), wait.get(11)) if wait else None
+        if old_identity != new_identity:
+            self._input_messages.clear()
         self.active_wait = wait
         if not self._message_skip_active or wait is None:
             return
@@ -807,7 +821,7 @@ class RuntimeClient:
     def _submit_input(
         self, wait: dict[int, Any], intent: list[Any], *, message_skip: bool = False
     ) -> None:
-        self.send_runtime(
+        message_id = self.send_runtime(
             30,
             {
                 0: wait[0],
@@ -817,6 +831,9 @@ class RuntimeClient:
                 4: message_skip,
             },
         )
+        if len(self._input_messages) >= 256:
+            self._input_messages.clear()
+        self._input_messages.add(message_id)
         if self.single_step_enabled and self.stop_token is None:
             self.request_debug_action("pause_only")
 
@@ -1074,7 +1091,7 @@ class RuntimeClient:
                 reference[5] = 0
             self._debug_request(variant(11, self.stop_token, reference), "variable_value")
         elif action == "fibers":
-            self._debug_request(variant(30, self.stop_token, None, 100), "fibers")
+            self._debug_request(variant(30, self.stop_token, value, 1024), "fibers")
         elif action == "call_stack":
             self._debug_request(variant(31, self.stop_token, int(value)), "call_stack")
         elif action == "operand_stack":

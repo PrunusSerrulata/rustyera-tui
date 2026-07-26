@@ -15,6 +15,7 @@ MIN_TABLE_COLUMN_WIDTH = 16
 MAX_TABLE_COLUMN_WIDTH = 24
 TARGET_TABLE_COLUMNS = 5
 SAVE_DELETE_PATTERN = re.compile(r"Delete save\d+\.sav")
+VIEWPORT_BUFFER_LINES = 1_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,9 +78,11 @@ class PresentationModel:
     input_wait: dict[int, Any] | None = None
     background: str = "#000000"
     button_focus: str = "#000000"
-    maximum_physical_lines: int = 5_000
+    maximum_physical_lines: int = VIEWPORT_BUFFER_LINES
     changed_from: int | None = 0
     trimmed_prefix: int = 0
+    # Runtime TrimLines counts canonical rows that may already be outside this viewport.
+    _hidden_prefix: int = field(default=0, init=False, repr=False)
     _line_indices: dict[int, int] = field(default_factory=dict, init=False, repr=False)
 
     def apply_snapshot(self, snapshot: dict[int, Any]) -> None:
@@ -87,6 +90,8 @@ class PresentationModel:
         self.title = snapshot[1]
         history = snapshot[2]
         self.lines = [parse_line(line) for line in history.get(0, [])]
+        self._hidden_prefix = 0
+        self._trim_viewport_lines()
         self._rebuild_line_indices()
         self.changed_from = 0
         self.trimmed_prefix = 0
@@ -106,14 +111,17 @@ class PresentationModel:
                 self._line_indices[line.line_id] = len(self.lines)
                 self.lines.append(line)
             elif tag == 1:
-                count = min(fields[0], len(self.lines))
+                requested = fields[0]
+                count = min(requested, len(self.lines))
                 if count:
                     for line in self.lines[-count:]:
                         self._line_indices.pop(line.line_id, None)
                     del self.lines[-count:]
                     self._mark_changed(len(self.lines))
+                self._hidden_prefix = max(0, self._hidden_prefix - (requested - count))
             elif tag == 2:
                 self.lines.clear()
+                self._hidden_prefix = 0
                 self._line_indices.clear()
                 self._mark_changed(0)
             elif tag == 3:
@@ -137,7 +145,10 @@ class PresentationModel:
             elif tag == 13:
                 self._disable_old_buttons(fields[0])
             elif tag == 14:
-                count = min(fields[0], len(self.lines))
+                requested = fields[0]
+                hidden = min(requested, self._hidden_prefix)
+                self._hidden_prefix -= hidden
+                count = min(requested - hidden, len(self.lines))
                 if count:
                     del self.lines[:count]
                     self._rebuild_line_indices()
@@ -148,6 +159,7 @@ class PresentationModel:
                         self.changed_from = max(0, self.changed_from - count)
             # Background images, audio, resource replay, HTML islands, redraw state, and
             # tooltip settings have no standalone terminal rendering operation.
+        self._trim_viewport_lines()
         self.revision = delta[1]
 
     def take_render_change(self) -> tuple[int | None, int]:
@@ -165,12 +177,25 @@ class PresentationModel:
         # scan for every update to the pending logical line during output-heavy game startup.
         self._line_indices = {line.line_id: index for index, line in enumerate(self.lines)}
 
+    def _trim_viewport_lines(self) -> None:
+        count = len(self.lines) - VIEWPORT_BUFFER_LINES
+        if count <= 0:
+            return
+        del self.lines[:count]
+        self._hidden_prefix += count
+        self._rebuild_line_indices()
+        self.trimmed_prefix += count
+        if self.changed_from is not None:
+            self.changed_from = max(0, self.changed_from - count)
+
     def _apply_settings(self, settings: dict[int, Any] | None) -> None:
         if not settings:
             return
         self.background = color_hex(settings[2])
         self.button_focus = color_hex(settings[3])
-        self.maximum_physical_lines = settings.get(4, 5_000)
+        # The runtime setting describes its canonical physical history. The terminal
+        # viewport deliberately keeps a smaller, frontend-owned logical-line buffer.
+        self.maximum_physical_lines = VIEWPORT_BUFFER_LINES
 
     def _disable_old_buttons(self, generation: int) -> None:
         for index, line in enumerate(self.lines):

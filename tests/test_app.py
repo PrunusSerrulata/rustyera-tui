@@ -482,6 +482,69 @@ async def test_variable_viewer_renders_selected_variable_value(tmp_path: Path) -
         )
 
 
+async def test_stack_viewer_mounts_before_requesting_and_pages_to_the_live_fiber(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._set_debug_enabled(True)
+        app._debug_action("debug-stack")
+        await pilot.pause()
+        assert ("debug_action", ("fibers", None)) in worker.commands
+
+        worker.commands.clear()
+        app._handle_debug_response(
+            (
+                "fibers",
+                5,
+                [{1: [{0: 1, 1: 3, 2: False, 3: 0}], 2: 1024}],
+            )
+        )
+        assert worker.commands == [("debug_action", ("fibers", 1024))]
+
+        worker.commands.clear()
+        app._handle_debug_response(
+            (
+                "fibers",
+                5,
+                [{1: [{0: 2048, 1: 6, 2: True, 3: 2}]}],
+            )
+        )
+        assert worker.commands == [("debug_action", ("call_stack", 2048))]
+
+        worker.commands.clear()
+        app._handle_debug_response(
+            (
+                "call_stack",
+                6,
+                [
+                    {
+                        1: 2048,
+                        2: [
+                            {
+                                0: 99,
+                                3: "EVENTTRAIN",
+                                4: 17,
+                                5: {0: "ERB/TRAIN.ERB", 4: 42},
+                            }
+                        ],
+                    }
+                ],
+            )
+        )
+        assert worker.commands == [("debug_action", ("operand_stack", (2048, 99)))]
+
+        app._handle_debug_response(
+            ("operand_stack", 7, [{3: [{0: 0, 1: variant(0, 42)}]}])
+        )
+        frame_table = app.screen.query_one("#frame-table", DataTable)
+        operand_table = app.screen.query_one("#operand-table", DataTable)
+        assert frame_table.get_row_at(0)[1] == "EVENTTRAIN"
+        assert operand_table.get_row_at(0) == ["0", "42"]
+
+
 async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
@@ -540,6 +603,13 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         assert await pilot.click(".game-line", offset=(1, 0))
         assert not any(kind == "activate" for kind, _value in worker.commands)
 
+        app._handle_worker_event(FrontendEvent("interaction_rejected", wait))
+        assert game_line.regions[0].enabled
+        assert app.query_one(GameViewport).interactions_enabled
+        assert await pilot.click(".game-line", offset=(1, 0))
+        assert ("activate", token) in worker.commands
+
+        worker.commands.clear()
         app.active_wait = {0: 7, 1: 0}
         assert await pilot.click(".game-line", offset=(1, 0), button=3)
         assert ("skip_enter_waits", None) in worker.commands

@@ -243,6 +243,13 @@ def _debug_value_text(value: Any) -> str:
 
 
 class StackDialog(ModalScreen[None]):
+    class Ready(Message):
+        """The stack tables are mounted and ready to receive debugger data."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fibers: list[dict[int, Any]] = []
+
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide-dialog"):
             yield Label("纤程、调用栈与操作数栈", classes="dialog-title")
@@ -256,12 +263,13 @@ class StackDialog(ModalScreen[None]):
         self.query_one("#fiber-table", DataTable).add_columns("Fiber", "状态", "主纤程", "帧数")
         self.query_one("#frame-table", DataTable).add_columns("Frame", "函数", "指令", "源码")
         self.query_one("#operand-table", DataTable).add_columns("偏移", "值")
+        self.post_message(self.Ready())
 
-    def set_fibers(self, page: dict[int, Any]) -> int | None:
+    def set_fibers(self, page: dict[int, Any]) -> tuple[int | None, int | None]:
         table = self.query_one("#fiber-table", DataTable)
-        table.clear()
         state_names = ["可运行", "等待 Host", "等待恢复", "完成", "故障", "取消", "调试暂停"]
         fibers = page.get(1, [])
+        self.fibers.extend(fibers)
         for fiber in fibers:
             table.add_row(
                 str(fiber.get(0)),
@@ -269,9 +277,18 @@ class StackDialog(ModalScreen[None]):
                 "是" if fiber.get(2) else "否",
                 str(fiber.get(3, 0)),
             )
-        self.query_one("#stack-status", Static).update(f"共 {len(fibers)} 个纤程")
-        selected = next((fiber for fiber in fibers if fiber.get(2)), fibers[0] if fibers else None)
-        return selected.get(0) if selected else None
+        next_cursor = page.get(2)
+        self.query_one("#stack-status", Static).update(f"已载入 {len(self.fibers)} 个纤程")
+        selected = next(
+            (fiber for fiber in self.fibers if fiber.get(2) and fiber.get(3, 0) > 0),
+            None,
+        )
+        if selected is None and next_cursor is None:
+            selected = next(
+                (fiber for fiber in self.fibers if fiber.get(3, 0) > 0),
+                next((fiber for fiber in self.fibers if fiber.get(2)), None),
+            )
+        return (selected.get(0) if selected else None, next_cursor)
 
     def set_frames(self, stack: dict[int, Any]) -> tuple[int, int] | None:
         table = self.query_one("#frame-table", DataTable)
@@ -287,7 +304,7 @@ class StackDialog(ModalScreen[None]):
         table = self.query_one("#operand-table", DataTable)
         table.clear()
         for operand in page.get(3, []):
-            table.add_row(str(operand.get(0)), repr(operand.get(1)))
+            table.add_row(str(operand.get(0)), _debug_value_text(operand.get(1)))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "dialog-close":

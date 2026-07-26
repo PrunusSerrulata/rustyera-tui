@@ -4,7 +4,7 @@ import queue
 from typing import Any
 
 from rustyera_tui.presentation import ServicePresentationModel
-from rustyera_tui.runtime import RuntimeClient, RuntimeFailure
+from rustyera_tui.runtime import FrontendEvent, RuntimeClient, RuntimeFailure
 from rustyera_tui.wire import decode, encode, unwrap_variant, variant
 
 
@@ -16,7 +16,9 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     )
     client.events = queue.Queue()
     client.session = {0: 1, 1: 2}
+    client.active_wait = None
     client._projection_messages = set()
+    client._input_messages = set()
     client._message_skip_active = False
     client._message_skip_wait_id = None
     client.single_step_enabled = False
@@ -158,6 +160,41 @@ def test_stale_projection_rejection_is_recoverable_but_runtime_fault_is_structur
     assert isinstance(fault.value, RuntimeFailure)
     assert fault.value.function == "EVENTTRAIN"
     assert fault.value.source_line == 28
+
+
+def test_rejected_input_reports_the_still_active_wait_to_the_app() -> None:
+    client, _captured = client_with_capture()
+    wait = {0: 7, 1: 6, 11: {0: 1, 1: 2}}
+    client.active_wait = wait
+    client._input_messages.add(23)
+
+    client._handle_runtime(
+        95,
+        {0: 3, 1: "input value does not match the active wait"},
+        23,
+    )
+
+    rejected = client.events.get_nowait()
+    assert rejected == FrontendEvent("interaction_rejected", wait)
+    error = client.events.get_nowait()
+    assert error.kind == "error"
+    assert 23 not in client._input_messages
+
+
+def test_fiber_pages_use_the_requested_cursor_and_protocol_maximum() -> None:
+    client, captured = debug_client_with_capture()
+    stop = {0: 1, 1: 2, 2: 3, 3: 4}
+    client.stop_token = stop
+
+    client._run_debug_action("fibers", 1024)
+
+    assert captured == [
+        (
+            10,
+            {0: client.debug_grant[1], 1: variant(30, stop, 1024, 1024)},
+            "fibers",
+        )
+    ]
 
 
 def test_single_step_host_wait_auto_continues_before_gameplay_input() -> None:
