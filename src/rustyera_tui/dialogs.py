@@ -21,7 +21,7 @@ from textual.widgets import (
     Static,
 )
 
-from .log_model import LogEntry, LogLevel, filter_log_entries
+from .log_model import LogEntry, LogLevel, filter_log_entries, format_log_entries
 
 
 class ConfirmDialog(ModalScreen[bool]):
@@ -59,11 +59,23 @@ class FatalErrorDialog(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog fatal-dialog"):
-            yield Label("遇到了无法恢复的错误", classes="dialog-title fatal-title")
-            yield Static(self.error, id="fatal-error")
-            yield Static("", id="fatal-export-status")
+            yield Label("游戏错误", classes="dialog-title fatal-title")
+            yield Static("游戏遇到了无法恢复的错误：", markup=False, classes="fatal-description")
+            yield Static(self.error, markup=False, id="fatal-error")
+            yield Static(
+                "您可以将此错误和诊断信息发送给该游戏项目的开发者和 RustyEra 的开发者，"
+                "以更好地帮助他们解决错误。",
+                markup=False,
+                classes="fatal-description",
+            )
+            yield Static(
+                "诊断信息将包含故障时的 VM 快照、日志与编译产物。",
+                markup=False,
+                id="fatal-export-status",
+            )
             with Horizontal(classes="dialog-buttons fatal-buttons"):
                 yield Button("导出诊断信息…", id="fatal-export", variant="primary")
+                yield Static(classes="fatal-buttons-spacer")
                 yield Button("返回主菜单", id="fatal-title")
                 yield Button("重启并重新编译", id="fatal-recompile")
                 yield Button("退出", id="fatal-exit", variant="error")
@@ -136,6 +148,12 @@ class PathDialog(ModalScreen[Path | None]):
 
 
 class LogDialog(ModalScreen[None]):
+    class Action(Message):
+        def __init__(self, action: str, contents: str) -> None:
+            super().__init__()
+            self.action = action
+            self.contents = contents
+
     _THRESHOLDS = {
         "error": LogLevel.ERROR,
         "warning": LogLevel.WARNING,
@@ -146,6 +164,7 @@ class LogDialog(ModalScreen[None]):
     def __init__(self, entries: list[LogEntry]) -> None:
         super().__init__()
         self.entries = entries
+        self.threshold = LogLevel.INFO
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide-dialog"):
@@ -165,7 +184,10 @@ class LogDialog(ModalScreen[None]):
                     id="log-level",
                 )
                 yield Static(id="log-actions-spacer")
+                yield Button("复制日志", id="log-copy")
+                yield Button("导出日志", id="log-export")
                 yield Button("清空日志", id="log-clear")
+                yield Static(id="log-close-spacer")
                 yield Button("关闭", id="dialog-close")
 
     def on_mount(self) -> None:
@@ -174,8 +196,11 @@ class LogDialog(ModalScreen[None]):
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id != "log-level":
             return
-        threshold = self._THRESHOLDS.get(str(event.value), LogLevel.INFO)
-        self._refresh_logs(threshold)
+        self.threshold = self._THRESHOLDS.get(str(event.value), LogLevel.INFO)
+        self._refresh_logs(self.threshold)
+
+    def _visible_log_text(self) -> str:
+        return format_log_entries(filter_log_entries(self.entries, self.threshold))
 
     def _refresh_logs(self, threshold: LogLevel) -> None:
         view = self.query_one("#log-view", RichLog)
@@ -190,7 +215,13 @@ class LogDialog(ModalScreen[None]):
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "log-clear":
+        if event.button.id == "log-copy":
+            contents = self._visible_log_text()
+            self.app.copy_to_clipboard(contents)
+            self.notify("日志已复制到剪贴板")
+        elif event.button.id == "log-export":
+            self.post_message(self.Action("export", self._visible_log_text()))
+        elif event.button.id == "log-clear":
             self.entries.clear()
             self.query_one("#log-view", RichLog).clear()
         elif event.button.id == "dialog-close":

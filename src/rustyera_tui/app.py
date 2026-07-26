@@ -141,11 +141,7 @@ class RustyEraTui(App[None]):
             if dirty and not self._presentation_dirty:
                 self._begin_presentation_render()
             self._presentation_dirty = self._presentation_dirty or dirty
-        if (
-            queue_exhausted
-            and self._presentation_dirty
-            and self._presentation_commit_ready
-        ):
+        if queue_exhausted and self._presentation_dirty and self._presentation_commit_ready:
             await self._commit_presentation()
 
     async def _commit_presentation(self) -> None:
@@ -482,6 +478,20 @@ class RustyEraTui(App[None]):
         timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
         return (self.project or Path.cwd()) / f"runtime_{timestamp}.snapshot"
 
+    def _log_default_path(self, now: datetime | None = None) -> Path:
+        timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+        return (self.project or Path.cwd()) / f"log_{timestamp}.log"
+
+    def _export_logs(self, path: Path | None, contents: str) -> None:
+        if path is None:
+            return
+        try:
+            path.write_text(contents, encoding="utf-8")
+        except OSError as error:
+            self.notify(f"日志导出失败：{error}", severity="error")
+        else:
+            self.notify(f"日志已导出：{path}")
+
     def _start_snapshot_export(self, path: Path | None) -> None:
         if path is None or self.snapshot_exporting:
             return
@@ -680,6 +690,14 @@ class RustyEraTui(App[None]):
             self.worker.send("restart_recompile")
         elif event.action == "exit":
             self.action_request_quit()
+
+    def on_log_dialog_action(self, event: LogDialog.Action) -> None:
+        if event.action != "export":
+            return
+        self.push_screen(
+            PathDialog("导出日志", "save", self._log_default_path()),
+            lambda path: self._export_logs(path, event.contents),
+        )
 
     def on_resize(self, _event: events.Resize) -> None:
         self._schedule_viewport_projection()

@@ -190,8 +190,8 @@ ModalScreen {
 }
 
 .fatal-dialog {
-    width: 84;
-    height: 18;
+    width: 100;
+    height: 24;
     border: round #ef4444;
 }
 
@@ -206,6 +206,11 @@ ModalScreen {
     overflow-y: auto;
 }
 
+.fatal-description {
+    height: auto;
+    margin: 1 1 0 1;
+}
+
 #fatal-export-status {
     height: 2;
     color: #fbbf24;
@@ -214,6 +219,10 @@ ModalScreen {
 
 .fatal-buttons {
     height: 4;
+}
+
+.fatal-buttons-spacer {
+    width: 1fr;
 }
 
 #confirm-message {
@@ -277,6 +286,10 @@ ModalScreen {
 
 #log-actions-spacer {
     width: 1fr;
+}
+
+#log-close-spacer {
+    width: 2;
 }
 
 #path-value, #console-input {

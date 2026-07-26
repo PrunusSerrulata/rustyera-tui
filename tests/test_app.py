@@ -434,7 +434,9 @@ async def test_vertical_scrollbar_gutter_does_not_create_transient_horizontal_ov
             assert separator.display
 
         app._send_viewport_projection()
-        projection = next(value for kind, value in reversed(worker.commands) if kind == "projection")
+        projection = next(
+            value for kind, value in reversed(worker.commands) if kind == "projection"
+        )
         assert projection[:2] == viewport.content_dimensions
         assert projection[0] == 98
 
@@ -471,8 +473,8 @@ async def test_log_dialog_filters_entries_at_the_selected_threshold(tmp_path: Pa
     app.worker = worker  # type: ignore[assignment]
     app._log("debug message", LogLevel.DEBUG)
     app._log("info message", LogLevel.INFO)
-    app._log("warning message", LogLevel.WARNING)
-    app._log("error message", LogLevel.ERROR)
+    app._log("warned event", LogLevel.WARNING)
+    app._log("failed event", LogLevel.ERROR)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.click("#menu-debug")
         await pilot.click("#debug-logs")
@@ -490,16 +492,49 @@ async def test_log_dialog_filters_entries_at_the_selected_threshold(tmp_path: Pa
         await pilot.pause()
         assert len(view.lines) == 4
         assert view.is_vertical_scroll_end
+        copy = app.screen.query_one("#log-copy", Button)
+        export = app.screen.query_one("#log-export", Button)
         clear = app.screen.query_one("#log-clear", Button)
         close = app.screen.query_one("#dialog-close", Button)
         assert level.region.x < clear.region.x
         assert clear.region.y == close.region.y
         assert level.region.y == close.region.y
-        assert clear.region.right <= close.region.x
+        assert copy.region.right <= export.region.x
+        assert export.region.right <= clear.region.x
+        assert clear.region.right < close.region.x
+        assert view.allow_select
+
+        level.value = "warning"
+        await pilot.pause()
+        await pilot.click("#log-copy")
+        assert "warned event" in app.clipboard
+        assert "failed event" in app.clipboard
+        assert "info message" not in app.clipboard
+
+        await pilot.click("#log-export")
+        await pilot.pause()
+        path_input = app.screen.query_one("#path-value", Input)
+        assert Path(path_input.value).name.startswith("log_")
+        assert Path(path_input.value).suffix == ".log"
+        target = tmp_path / "filtered.log"
+        path_input.value = str(target)
+        await pilot.click("#path-accept")
+        await pilot.pause()
+        exported = target.read_text(encoding="utf-8")
+        assert "warned event" in exported
+        assert "failed event" in exported
+        assert "info message" not in exported
 
         await pilot.click("#log-clear")
         assert app.logs == []
         assert len(view.lines) == 0
+
+
+def test_log_export_default_path_uses_timestamp(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    now = datetime(2026, 7, 26, 14, 5, 6)
+
+    assert app._log_default_path(now) == tmp_path / "log_20260726-140506.log"
 
 
 async def test_runtime_fault_remains_visible_in_the_prompt(tmp_path: Path) -> None:
@@ -1021,10 +1056,24 @@ async def test_fatal_fault_dialog_exports_diagnosis_and_gates_recovery_actions(
 
         dialog = app.screen
         assert isinstance(dialog, FatalErrorDialog)
-        assert "无法恢复" in str(dialog.query_one(".fatal-title", Static).render())
-        assert "place storage is unavailable" in str(
-            dialog.query_one("#fatal-error", Static).render()
+        assert str(dialog.query_one(".fatal-title", Static).render()) == "游戏错误"
+        assert "游戏遇到了无法恢复的错误：" in str(
+            dialog.query_one(".fatal-description", Static).render()
         )
+        fatal_error = dialog.query_one("#fatal-error", Static)
+        assert "Runtime 故障 [VmFault]" in str(fatal_error.render())
+        assert fatal_error.allow_select
+        descriptions = list(dialog.query(".fatal-description"))
+        assert "RustyEra 的开发者" in str(descriptions[-1].render())
+        assert "VM 快照" in str(dialog.query_one("#fatal-export-status", Static).render())
+        export_button = dialog.query_one("#fatal-export", Button)
+        title_button = dialog.query_one("#fatal-title", Button)
+        recompile_button = dialog.query_one("#fatal-recompile", Button)
+        exit_button = dialog.query_one("#fatal-exit", Button)
+        assert export_button.region.x < title_button.region.x
+        assert export_button.region.right < title_button.region.x
+        assert title_button.region.right <= recompile_button.region.x
+        assert recompile_button.region.right <= exit_button.region.x
         assert "before fault" in app.fault_logs
         assert "place storage is unavailable" in app.fault_logs
         assert "DEBUG before fault" in app.fault_logs
