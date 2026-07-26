@@ -122,7 +122,7 @@ jobs:
           merge-multiple: true
 
       - name: Create or update prerelease
-        uses: softprops/action-gh-release@v6
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
           target_commitish: ${{ github.sha }}
