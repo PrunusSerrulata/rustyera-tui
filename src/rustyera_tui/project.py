@@ -6,6 +6,7 @@ import fnmatch
 import json
 import os
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -31,6 +32,11 @@ IO_OTHER = 6
 IO_CONFLICT = 7
 
 RESOURCE_IMAGE_SUFFIXES = frozenset({".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"})
+DEFAULT_MAXIMUM_ENVELOPE_BYTES = 128 * 1024 * 1024
+DEFAULT_MAXIMUM_PAYLOAD_BYTES = 127 * 1024 * 1024
+MAXIMUM_PROJECT_ENVELOPE_BYTES = 1024 * 1024 * 1024
+PROJECT_ENVELOPE_HEADROOM_BYTES = 1024 * 1024
+PROJECT_FILE_WIRE_OVERHEAD_BYTES = 256
 
 
 def _decode_project_source(raw: bytes) -> str:
@@ -86,6 +92,7 @@ class ProjectFile:
     category: int
     payload: list[Any] | None
     content_hash: bytes | None
+    content_size: int = 0
 
     def submitted(self) -> dict[int, Any]:
         if self.payload is None:
@@ -142,7 +149,7 @@ class ProjectBundle:
             category = _classify_project_path(root, path, canonical_roots)
             if category is None:
                 continue
-            relative = path.relative_to(root).as_posix()
+            relative = _normalize_relative_path(path.relative_to(root).as_posix())
             try:
                 stat = path.stat()
                 signature = [
@@ -157,21 +164,21 @@ class ProjectBundle:
                     prior
                     and prior.get("signature") == signature
                     and prior.get("category") == category
+                    and isinstance(prior.get("size"), int)
                 ):
                     digest = bytes.fromhex(prior["hash"])
+                    content_size = prior["size"]
                 else:
                     raw = path.read_bytes()
-                    normalized = (
-                        raw
-                        if category == FILE_RESOURCE
-                        else _decode_project_source(raw).encode("utf-8")
-                    )
+                    normalized = _normalized_project_bytes(raw, category)
                     digest = blake3.blake3(normalized).digest()
-                files[relative] = ProjectFile(relative, category, None, digest)
+                    content_size = len(normalized)
+                files[relative] = ProjectFile(relative, category, None, digest, content_size)
                 next_index[relative] = {
                     "category": category,
                     "signature": signature,
                     "hash": digest.hex(),
+                    "size": content_size,
                 }
             except (OSError, UnicodeError, ValueError):
                 # Error payloads and malformed index entries need the normal scanner's
@@ -210,6 +217,24 @@ class ProjectBundle:
             raise RuntimeError("project source payloads have not been materialized")
         ordered = sorted(self.files.values(), key=lambda item: item.relative_path.casefold())
         return {0: self.revision, 1: [item.submitted() for item in ordered]}
+
+    def requested_wire_limits(self) -> tuple[int, int]:
+        """Return a conservative one-envelope project submission budget."""
+
+        payload_bytes = sum(
+            item.content_size
+            + len(item.relative_path.encode("utf-8"))
+            + PROJECT_FILE_WIRE_OVERHEAD_BYTES
+            for item in self.files.values()
+        )
+        envelope_bytes = payload_bytes + PROJECT_ENVELOPE_HEADROOM_BYTES
+        requested_payload = max(DEFAULT_MAXIMUM_PAYLOAD_BYTES, payload_bytes)
+        requested_envelope = max(DEFAULT_MAXIMUM_ENVELOPE_BYTES, envelope_bytes)
+        if requested_envelope > MAXIMUM_PROJECT_ENVELOPE_BYTES:
+            raise ValueError(
+                "project submission exceeds the frontend's 1 GiB envelope safety limit"
+            )
+        return requested_envelope, requested_payload
 
     def resource_bytes(self, resource_id: str, content_digest: bytes) -> bytes:
         item = self.files.get(resource_id)
@@ -254,7 +279,7 @@ class ProjectBundle:
         if not lexical.is_file():
             raise FileNotFoundError(lexical)
         try:
-            relative = lexical.relative_to(self.root).as_posix()
+            relative = _normalize_relative_path(lexical.relative_to(self.root).as_posix())
         except ValueError as error:
             raise ValueError("the script file must be inside the active project") from error
         category = _classify_project_path(self.root, lexical, _canonical_source_roots(self.root))
@@ -271,17 +296,54 @@ class ProjectBundle:
 
 
 def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
-    relative = path.relative_to(root).as_posix()
+    relative = _normalize_relative_path(path.relative_to(root).as_posix())
     try:
         raw = path.read_bytes()
         if category == FILE_RESOURCE:
-            return ProjectFile(relative, category, variant(1, raw), blake3.blake3(raw).digest())
+            return ProjectFile(
+                relative, category, variant(1, raw), blake3.blake3(raw).digest(), len(raw)
+            )
         text = _decode_project_source(raw)
+        if category == FILE_RESOURCE_MANIFEST:
+            text = _normalize_resource_manifest_paths(text)
+        normalized = text.encode("utf-8")
         return ProjectFile(
-            relative, category, variant(0, text), blake3.blake3(text.encode("utf-8")).digest()
+            relative,
+            category,
+            variant(0, text),
+            blake3.blake3(normalized).digest(),
+            len(normalized),
         )
     except (OSError, UnicodeError) as error:
         return ProjectFile(relative, category, variant(2, _frontend_error(error)), None)
+
+
+def _normalize_relative_path(path: str) -> str:
+    return unicodedata.normalize("NFC", path)
+
+
+def _normalize_resource_manifest_paths(text: str) -> str:
+    normalized: list[str] = []
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        ending = line[len(body) :]
+        fields = body.split(",")
+        if len(fields) >= 2 and fields[1].strip() and fields[1].strip().casefold() != "anime":
+            value = fields[1]
+            leading = value[: len(value) - len(value.lstrip())]
+            trailing = value[len(value.rstrip()) :]
+            fields[1] = f"{leading}{unicodedata.normalize('NFC', value.strip())}{trailing}"
+        normalized.append(",".join(fields) + ending)
+    return "".join(normalized)
+
+
+def _normalized_project_bytes(raw: bytes, category: int) -> bytes:
+    if category == FILE_RESOURCE:
+        return raw
+    text = _decode_project_source(raw)
+    if category == FILE_RESOURCE_MANIFEST:
+        text = _normalize_resource_manifest_paths(text)
+    return text.encode("utf-8")
 
 
 def _write_source_index(path: Path, value: dict[str, Any]) -> None:

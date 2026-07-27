@@ -145,6 +145,34 @@ def test_image_metadata_service_decodes_submitted_webp_resource(tmp_path: Path) 
     assert ready_payload(captured) == {0: 1000, 1: 1125, 2: "webp", 3: False}
 
 
+def test_client_hello_negotiates_the_pending_project_envelope_size(tmp_path: Path) -> None:
+    client = object.__new__(RuntimeClient)
+    client.pending_bundle = ProjectBundle(
+        tmp_path,
+        1,
+        {
+            "large.erb": ProjectFile(
+                "large.erb",
+                2,
+                None,
+                b"\x00" * 32,
+                200 * 1024 * 1024,
+            )
+        },
+    )
+    captured: list[tuple[int, Any]] = []
+    client.send_runtime = (  # type: ignore[method-assign]
+        lambda tag, value, **_kwargs: captured.append((tag, value)) or 1
+    )
+
+    client._send_hello()
+
+    assert captured[0][0] == 0
+    limits = captured[0][1][3]
+    assert limits[1] >= 200 * 1024 * 1024
+    assert limits[0] > limits[1]
+
+
 def test_projection_is_bound_to_the_revision_the_tui_rendered() -> None:
     client, captured = client_with_capture()
 

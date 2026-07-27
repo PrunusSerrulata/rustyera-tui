@@ -324,9 +324,14 @@ class RuntimeClient:
             10: service_capabilities,
             11: {0: True, 1: True, 2: True, 3: True},
         }
+        maximum_envelope_bytes, maximum_payload_bytes = (
+            self.pending_bundle.requested_wire_limits()
+            if self.pending_bundle is not None
+            else (128 * 1024 * 1024, 127 * 1024 * 1024)
+        )
         limits = {
-            0: 128 * 1024 * 1024,
-            1: 127 * 1024 * 1024,
+            0: maximum_envelope_bytes,
+            1: maximum_payload_bytes,
             2: 128,
             3: 4096,
             4: 1_000_000,

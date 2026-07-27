@@ -1,3 +1,4 @@
+import unicodedata
 from pathlib import Path
 
 import blake3
@@ -50,6 +51,44 @@ def test_project_scanners_submit_nested_sprite_manifests_and_images(tmp_path: Pa
     assert resource_image.category == FILE_RESOURCE
     assert resource_image.payload == variant(1, image)
     assert quick.materialize().identity() == scanned.identity()
+
+
+def test_project_scanners_normalize_resource_paths_and_manifests_to_nfc(tmp_path: Path) -> None:
+    resources = tmp_path / "RESOURCES"
+    resources.mkdir()
+    image_name = "CIOバニー巨.png"
+    decomposed_name = unicodedata.normalize("NFD", image_name)
+    (resources / "sprites.csv").write_text(f"FACE,{decomposed_name}\n", encoding="utf-8")
+    (resources / decomposed_name).write_bytes(b"png")
+
+    scanned = ProjectBundle.scan(tmp_path)
+    quick = ProjectBundle.scan_quick(tmp_path)
+
+    image_path = f"RESOURCES/{image_name}"
+    assert image_path in scanned.files
+    assert scanned.files["RESOURCES/sprites.csv"].payload == variant(0, f"FACE,{image_name}\n")
+    assert quick.materialize().identity() == scanned.identity()
+
+
+def test_project_wire_limits_expand_from_scanned_content_size(tmp_path: Path) -> None:
+    bundle = ProjectBundle(
+        tmp_path,
+        1,
+        {
+            "large.erb": ProjectFile(
+                "large.erb",
+                2,
+                None,
+                b"\x00" * 32,
+                200 * 1024 * 1024,
+            )
+        },
+    )
+
+    maximum_envelope, maximum_payload = bundle.requested_wire_limits()
+
+    assert maximum_payload >= 200 * 1024 * 1024
+    assert maximum_envelope > maximum_payload
 
 
 def test_project_scanners_normalize_cp932_sources_to_utf8(tmp_path: Path) -> None:
