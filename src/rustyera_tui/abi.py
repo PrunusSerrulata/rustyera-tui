@@ -131,12 +131,17 @@ def discover_library(
         return Path(configured).expanduser().resolve()
     suffix = {"darwin": ".dylib", "win32": ".dll"}.get(sys.platform, ".so")
     prefix = "" if sys.platform == "win32" else "lib"
+    filename = f"{prefix}era_runtime_capi{suffix}"
     resource_root = (resource_directory or Path.cwd()).expanduser().resolve()
-    candidate = resource_root / f"{prefix}era_runtime_capi{suffix}"
-    if candidate.is_file():
-        return candidate
+    resource_candidate = resource_root / filename
+    if resource_candidate.is_file():
+        return resource_candidate
+    package_candidate = Path(__file__).resolve().parent / filename
+    if package_candidate.is_file():
+        return package_candidate
     raise AbiError(
-        f"era-runtime-capi dynamic library was not found in {resource_root}; "
+        "era-runtime-capi dynamic library was not found at "
+        f"{package_candidate} or {resource_candidate}; "
         "build and link the release library there or pass --runtime-library"
     )
 

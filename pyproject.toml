@@ -8,6 +8,7 @@ license = "GPL-3.0-only"
 dependencies = [
     "blake3>=1.0.5",
     "cbor2>=5.6.5",
+    "pyinstaller>=6.21.0",
     "textual>=6.0.0",
     "zstandard>=0.23.0",
 ]

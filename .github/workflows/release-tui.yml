@@ -1,11 +1,20 @@
-name: Publish TUI prerelease
+name: Build and publish TUI
 
 on:
   workflow_dispatch:
     inputs:
-      tag_name:
-        description: Prerelease tag to create or update (for example, v0.1.0-rc.1)
+      publish_type:
+        description: Release type
         required: true
+        default: prerelease
+        type: choice
+        options:
+          - release
+          - prerelease
+          - none
+      tag_name:
+        description: Tag to create or update when publishing (for example, v0.1.0-rc.1)
+        required: false
         type: string
 
 permissions:
@@ -22,39 +31,44 @@ jobs:
           - name: windows-x86_64
             runner: windows-latest
             library: era_runtime_capi.dll
-            cargo_target: ""
             library_path: target/release/era_runtime_capi.dll
           - name: linux-x86_64
             runner: ubuntu-latest
             library: libera_runtime_capi.so
-            cargo_target: ""
             library_path: target/release/libera_runtime_capi.so
           - name: linux-aarch64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04-arm
             library: libera_runtime_capi.so
-            cargo_target: --target aarch64-unknown-linux-gnu
-            library_path: target/aarch64-unknown-linux-gnu/release/libera_runtime_capi.so
-            install_aarch64_gcc: true
+            library_path: target/release/libera_runtime_capi.so
+          - name: macos-x86_64
+            runner: macos-15-intel
+            library: libera_runtime_capi.dylib
+            library_path: target/release/libera_runtime_capi.dylib
+          - name: macos-arm64
+            runner: macos-latest
+            library: libera_runtime_capi.dylib
+            library_path: target/release/libera_runtime_capi.dylib
 
     steps:
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Linux aarch64 linker
-        if: matrix.install_aarch64_gcc
-        run: sudo apt-get update && sudo apt-get install --yes gcc-aarch64-linux-gnu
-
-      - name: Install Linux aarch64 Rust target
-        if: matrix.install_aarch64_gcc
-        run: rustup target add aarch64-unknown-linux-gnu
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: frontends/era-tui/uv.lock
 
       - name: Build the release C API library
-        run: cargo build --package era-runtime-capi --release ${{ matrix.cargo_target }}
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --package era-runtime-capi --release
 
-      - name: Assemble distribution directory
+      - name: Install the runtime library in the TUI package
+        shell: pwsh
+        working-directory: frontends/era-tui
+        run: |
+          Copy-Item -Force "../../${{ matrix.library_path }}" "src/rustyera_tui/${{ matrix.library }}"
+
+      - name: Assemble source distribution
         shell: pwsh
         run: |
           $package = "rustyera-tui-${{ matrix.name }}"
@@ -63,80 +77,67 @@ jobs:
           Copy-Item -Force "${{ matrix.library_path }}" $package
           Compress-Archive -Path $package -DestinationPath "$package.zip"
 
-      - name: Upload package
-        uses: actions/upload-artifact@v4
+      - name: Build the standalone TUI
+        shell: pwsh
+        working-directory: frontends/era-tui
+        run: |
+          uv sync --locked
+          uv run pyinstaller --clean --noconfirm rustyera_tui.spec
+          Compress-Archive -Path dist/rustyera_tui -DestinationPath "../../rustsera-tui-${{ matrix.name }}-standalone.zip"
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
         with:
           name: rustyera-tui-${{ matrix.name }}
-          path: rustyera-tui-${{ matrix.name }}.zip
-          if-no-files-found: error
-
-  package_macos:
-    name: Package (macOS x86_64 and arm64)
-    runs-on: macos-latest
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin
-
-      - name: Build the release C API libraries
-        run: |
-          cargo build --package era-runtime-capi --release
-          cargo build --package era-runtime-capi --release --target x86_64-apple-darwin
-
-      - name: Assemble distribution directories
-        shell: pwsh
-        run: |
-          $packages = @(
-            @{ Name = "rustyera-tui-macos-x86_64"; Library = "target/x86_64-apple-darwin/release/libera_runtime_capi.dylib" },
-            @{ Name = "rustyera-tui-macos-arm64"; Library = "target/release/libera_runtime_capi.dylib" }
-          )
-          foreach ($item in $packages) {
-            New-Item -ItemType Directory -Force -Path $item.Name | Out-Null
-            Copy-Item -Recurse -Force frontends/era-tui/* $item.Name
-            Copy-Item -Force $item.Library $item.Name
-            Compress-Archive -Path $item.Name -DestinationPath "$($item.Name).zip"
-          }
-
-      - name: Upload macOS packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: rustyera-tui-macos
           path: |
-            rustyera-tui-macos-x86_64.zip
-            rustyera-tui-macos-arm64.zip
+            rustyera-tui-${{ matrix.name }}.zip
+            rustsera-tui-${{ matrix.name }}-standalone.zip
           if-no-files-found: error
 
   publish:
-    name: Publish prerelease
-    needs: [package, package_macos]
+    name: Publish ${{ inputs.publish_type }}
+    if: inputs.publish_type != 'none'
+    needs: package
     runs-on: ubuntu-latest
 
     steps:
+      - name: Require a tag name
+        if: inputs.tag_name == ''
+        run: |
+          echo "tag_name is required when publish_type is not none" >&2
+          exit 1
+
       - name: Download packages
         uses: actions/download-artifact@v8
         with:
           path: packages
           merge-multiple: true
 
-      - name: Create or update prerelease
+      - name: Create or update release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
           target_commitish: ${{ github.sha }}
-          prerelease: true
+          prerelease: ${{ inputs.publish_type == 'prerelease' }}
           generate_release_notes: true
           body: |
             ## 使用方法
 
-            1. 下载与操作系统和 CPU 架构相符的 ZIP：`windows-x86_64`、`linux-x86_64`、`linux-aarch64`、`macos-x86_64` 或 `macos-arm64`。
+            ### Standalone 版本
+
+            1. 下载与操作系统和 CPU 架构相符、文件名以 `-standalone.zip` 结尾的 ZIP，并解压。Standalone 压缩包已包含 TUI 及对应平台的 runtime 动态库，无需安装 Python 或 uv；不包含游戏资源。
+            2. 将游戏的 `CSV/` 和 `ERB/` 等资源目录放到解压后的 `rustyera_tui` 目录，在该目录运行 `rustyera_tui`（Windows 上为 `rustyera_tui.exe`）。也可以运行 `rustyera_tui GAME_DIRECTORY`，指定包含游戏资源的其他目录。
+            3. macOS 可能因下载文件的隔离属性阻止程序运行。可在包含解压所得 `rustyera_tui` 目录的上级目录执行 `xattr -dr com.apple.quarantine rustyera_tui`，再进入该目录运行 `./rustyera_tui`。
+
+            ### Python/uv 版本
+
+            1. 下载与操作系统和 CPU 架构相符的非 Standalone ZIP：`windows-x86_64`、`linux-x86_64`、`linux-aarch64`、`macos-x86_64` 或 `macos-arm64`。
             2. 解压 ZIP。压缩包包含 Textual TUI 源码、`pyproject.toml`/`uv.lock` 和对应平台的 `era-runtime-capi` 动态库；不包含游戏资源。
             3. 安装 Python 3.12 或更高版本及 [uv](https://docs.astral.sh/uv/)，然后在解压目录运行 `uv sync` 安装依赖。
             4. 将游戏的 `CSV/` 和 `ERB/` 等资源目录放入解压目录后，可在该目录运行 `uv run rustyera-tui`。
 
-            如游戏资源和/或runtime动态库位于其他目录，请在解压目录运行以下命令，并作如下替换：
+            如游戏资源和/或 runtime 动态库位于其他目录，请在解压目录运行以下命令，并作如下替换：
+
             * `GAME_DIRECTORY` 替换为包含 `CSV/` 和 `ERB/` 的路径
             * `LIBRARY_FILE` 替换为当前压缩包内的动态库文件名：
               * Windows 为 `era_runtime_capi.dll`

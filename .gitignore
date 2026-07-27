@@ -5,9 +5,9 @@ __pycache__/
 *.pyc
 /CSV
 /ERB
-/era_runtime_capi.dll
-/libera_runtime_capi.dylib
-/libera_runtime_capi.so
+/src/rustyera_tui/era_runtime_capi.dll
+/src/rustyera_tui/libera_runtime_capi.dylib
+/src/rustyera_tui/libera_runtime_capi.so
 /project/
 /save/
 /global/

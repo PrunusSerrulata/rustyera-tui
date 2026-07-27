@@ -38,6 +38,21 @@ def test_runtime_library_is_discovered_in_the_resource_directory(
     assert discover_library(resource_directory=tmp_path) == library
 
 
+def test_runtime_library_is_discovered_beside_the_packaged_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ERA_RUNTIME_LIBRARY", raising=False)
+    monkeypatch.setattr("rustyera_tui.abi.sys.platform", "darwin")
+    module = tmp_path / "rustyera_tui" / "abi.py"
+    module.parent.mkdir()
+    module.write_text("", encoding="utf-8")
+    library = module.parent / "libera_runtime_capi.dylib"
+    library.write_bytes(b"library")
+    monkeypatch.setattr("rustyera_tui.abi.__file__", str(module))
+
+    assert discover_library(resource_directory=tmp_path) == library
+
+
 def test_worker_applies_backpressure_to_presentation_events() -> None:
     worker = RuntimeWorker(None, None)
 
