@@ -85,13 +85,18 @@ jobs:
           uv run pyinstaller --clean --noconfirm rustyera_tui.spec
           Compress-Archive -Path dist/rustyera_tui -DestinationPath "../../rustsera-tui-${{ matrix.name }}-standalone.zip"
 
-      - name: Upload packages
+      - name: Upload source package
         uses: actions/upload-artifact@v7
         with:
           name: rustyera-tui-${{ matrix.name }}
-          path: |
-            rustyera-tui-${{ matrix.name }}.zip
-            rustsera-tui-${{ matrix.name }}-standalone.zip
+          path: rustyera-tui-${{ matrix.name }}.zip
+          if-no-files-found: error
+
+      - name: Upload standalone package
+        uses: actions/upload-artifact@v7
+        with:
+          name: rustsera-tui-${{ matrix.name }}-standalone
+          path: rustsera-tui-${{ matrix.name }}-standalone.zip
           if-no-files-found: error
 
   publish:
