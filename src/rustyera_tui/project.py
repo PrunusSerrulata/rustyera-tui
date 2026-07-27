@@ -500,14 +500,15 @@ class StorageBackend:
         }
         return roots.get(namespace, self.project_root)
 
-    def _resolve_for_read(self, namespace: int, relative: str) -> Path:
+    def _resolve_for_read(self, namespace: int, relative: str) -> tuple[Path, Path]:
+        root = self._namespace_root(namespace).resolve()
         primary = self._resolve(namespace, relative)
-        if namespace == 0 and not primary.exists():
+        if namespace in (0, 3) and not primary.exists():
             pure = PurePosixPath(relative)
             fallback = self.project_root.joinpath(*pure.parts).resolve()
             if fallback == self.project_root or self.project_root in fallback.parents:
-                return fallback
-        return primary
+                return self.project_root, fallback
+        return root, primary
 
     def _resolve(self, namespace: int, relative: str) -> Path:
         if not relative:
@@ -549,11 +550,11 @@ class StorageBackend:
     def _operate(
         self, namespace: int, relative: str, operation_tag: int, fields: list[Any]
     ) -> list[Any]:
-        path = (
-            self._resolve_for_read(namespace, relative)
-            if operation_tag in (0, 4, 5)
-            else self._resolve(namespace, relative)
-        )
+        if operation_tag in (0, 2, 4, 5):
+            read_root, path = self._resolve_for_read(namespace, relative)
+        else:
+            read_root = self._namespace_root(namespace).resolve()
+            path = self._resolve(namespace, relative)
         if operation_tag == 0:  # Read
             data = path.read_bytes()
             return variant(0, data, blake3.blake3(data).hexdigest())
@@ -578,13 +579,12 @@ class StorageBackend:
             return variant(1, blake3.blake3(data).hexdigest())
         if operation_tag == 2:  # List
             pattern, recursive = fields
-            root = self._namespace_root(namespace).resolve()
-            search_root = path if relative else root
+            search_root = path if relative else read_root
             candidates: Iterable[Path]
             candidates = search_root.rglob("*") if recursive else search_root.glob("*")
             entries = []
             for candidate in sorted((item for item in candidates if item.is_file())):
-                candidate_relative = candidate.relative_to(root).as_posix()
+                candidate_relative = candidate.relative_to(read_root).as_posix()
                 if pattern and not fnmatch.fnmatch(PurePosixPath(candidate_relative).name, pattern):
                     continue
                 stat = candidate.stat()

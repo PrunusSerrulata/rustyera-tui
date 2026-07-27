@@ -69,8 +69,9 @@ UV_CACHE_DIR=/tmp/rustyera-uv-cache \
 
 脚本约定：
 
-- `tui_day1.py` 驱动真实前端 worker 至日 1 菜单。`ERA_AUDIT_ANSWERS` 是逗号分隔的整数
-  输入序列；`ERA_AUDIT_STDIN=1` 允许序列耗尽后从 stdin 读取；
+- `tui_day1.py` 驱动真实前端 worker 至日 1 菜单，并主动以 `STATUS:`、`LOG:` 和
+  `WORKER_STOPPED` 输出所有状态、日志及意外停止事件，使非交互测试日志保留前端故障原因。
+  `ERA_AUDIT_ANSWERS` 是逗号分隔的整数输入序列；`ERA_AUDIT_STDIN=1` 允许序列耗尽后从 stdin 读取；
   `ERA_AUDIT_FALLBACK_ANSWER` 提供非交互 fallback。stdout 输出每次 wait、答案、进度和
   `DAY1_MILESTONE`。退出码 0 表示到达里程碑或成功导出 snapshot，1 表示 runtime/前端错误，
   2 表示输入耗尽，3 表示超时，4 表示扫描完等待点仍无合格 snapshot，5 表示超过显式性能门槛。

@@ -309,6 +309,22 @@ def test_storage_enforces_revision_preconditions_and_lists_root(tmp_path: Path) 
     assert chunk_fields[:3] == [b"t", 0, False]
 
 
+def test_data_storage_reads_and_lists_packaged_project_files(tmp_path: Path) -> None:
+    project = tmp_path / "game"
+    xml = project / "XML"
+    xml.mkdir(parents=True)
+    skill = xml / "SKILL_LIFE.xml"
+    skill.write_text("<skilldef />", encoding="utf-8")
+    backend = StorageBackend(project, data_root=tmp_path / "frontend-data")
+
+    read = backend.handle({0: 1, 1: 3, 2: "XML/SKILL_LIFE.xml", 3: variant(0), 4: ""})
+    assert unwrap_variant(read[1])[1][0] == b"<skilldef />"
+
+    listed = backend.handle({0: 2, 1: 3, 2: "XML", 3: variant(2, "SKILL*.xml", False), 4: ""})
+    entries = unwrap_variant(listed[1])[1][0]
+    assert [entry[0] for entry in entries] == ["XML/SKILL_LIFE.xml"]
+
+
 def test_storage_defaults_to_the_project_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

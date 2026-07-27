@@ -17,7 +17,12 @@ sys.path.insert(0, str(ROOT / "frontends" / "era-tui" / "src"))
 from rustyera_tui.abi import RuntimeAbi  # noqa: E402
 from rustyera_tui.presentation import PresentationModel  # noqa: E402
 from rustyera_tui.project import StorageBackend  # noqa: E402
-from rustyera_tui.runtime import RuntimeClient, RuntimeWorker  # noqa: E402
+from rustyera_tui.runtime import (  # noqa: E402
+    FrontendEvent,
+    PresentationBatch,
+    RuntimeClient,
+    RuntimeWorker,
+)
 
 _original_pump = RuntimeClient.pump
 _original_handle_runtime = RuntimeClient._handle_runtime
@@ -72,6 +77,34 @@ def _traced_handle_runtime(
 
 
 RuntimeClient._handle_runtime = _traced_handle_runtime
+
+
+def frontend_event_line(event: FrontendEvent) -> str | None:
+    if event.kind == "status":
+        return f"STATUS: {event.value}"
+    if event.kind == "log":
+        return f"LOG: {event.value}"
+    if event.kind == "worker_stopped":
+        return "WORKER_STOPPED before the day-one milestone"
+    return None
+
+
+def apply_presentation_event(
+    model: PresentationModel, event: FrontendEvent
+) -> tuple[dict[int, object] | None, int] | None:
+    if event.kind != "presentation_batch":
+        return None
+    batch = event.value
+    if not isinstance(batch, PresentationBatch):
+        raise TypeError("worker returned an invalid presentation batch")
+    updates = 0
+    if batch.snapshot is not None:
+        model.apply_snapshot(batch.snapshot)
+        updates += 1
+    if batch.delta is not None:
+        model.apply_delta(batch.delta)
+        updates += 1
+    return batch.active_wait, updates
 
 
 def plain_tail(model: PresentationModel, count: int = 20) -> str:
@@ -287,13 +320,10 @@ def main() -> int:
                     print("worker stopped without reaching the milestone")
                     return 1
                 continue
-            if event.kind == "presentation_snapshot":
-                model.apply_snapshot(event.value)
-                presentation_events += 1
-            elif event.kind == "presentation_delta":
-                model.apply_delta(event.value)
-                presentation_events += 1
-            if event.kind in ("presentation_snapshot", "presentation_delta"):
+            presentation = apply_presentation_event(model, event)
+            if presentation is not None:
+                wait, updates = presentation
+                presentation_events += updates
                 if time.monotonic() - last_progress >= 30:
                     last_progress = time.monotonic()
                     print(
@@ -301,69 +331,67 @@ def main() -> int:
                         f"revision={model.revision} lines={len(model.lines)} "
                         f"presentation_events={presentation_events}"
                     )
-                continue
-            if (
-                event.kind in ("error", "runtime_error")
-                and snapshot_every_wait
-                and snapshot_requested
-                and "当前状态不能生成快照" in str(event.value)
-            ):
-                print(
-                    f"SNAPSHOT_INELIGIBLE attempt={snapshot_attempts} "
-                    f"wait={snapshot_attempt_wait[0][0] if snapshot_attempt_wait else 'unknown'} "
-                    f"error={event.value}"
-                )
-                snapshot_requested = False
-                if snapshot_attempt_wait is not None:
-                    wait, tail = snapshot_attempt_wait
-                    snapshot_attempt_wait = None
-                    result = advance_wait(wait, tail, snapshot_attempted=True)
-                    if result is not None:
-                        return result
-                continue
-            if event.kind in ("error", "runtime_error", "runtime_fault"):
-                print(f"ERROR: {event.value}")
-                print(plain_tail(model))
-                return 1
-            if event.kind == "status" and snapshot_requested and snapshot_path:
-                if "VM 快照已导出" in str(event.value):
-                    size = Path(snapshot_path).stat().st_size
-                    elapsed = (
-                        time.monotonic() - snapshot_started
-                        if snapshot_started is not None
-                        else float("nan")
-                    )
-                    print(f"VM_SNAPSHOT_BYTES={size} elapsed={elapsed:.3f}s")
-                    if maximum_snapshot_seconds is not None and elapsed > float(
-                        maximum_snapshot_seconds
-                    ):
-                        print(
-                            "VM_SNAPSHOT_PERFORMANCE_ERROR "
-                            f"elapsed={elapsed:.3f}s "
-                            f"limit={float(maximum_snapshot_seconds):.3f}s"
-                        )
-                        return 5
-                    return 0
-            if event.kind == "status" and day_one_reached:
-                if event.value == "编译缓存保存失败。":
-                    print("COMPILED_CACHE_ERROR persistence failed")
+                if wait is None:
+                    continue
+            else:
+                if line := frontend_event_line(event):
+                    print(line)
+                if event.kind == "worker_stopped":
                     return 1
-                if event.value == "编译缓存已保存。":
-                    cache_path = StorageBackend(project).compiled_cache_path()
+                if (
+                    event.kind in ("error", "runtime_error")
+                    and snapshot_every_wait
+                    and snapshot_requested
+                    and "当前状态不能生成快照" in str(event.value)
+                ):
                     print(
-                        f"COMPILED_CACHE_BYTES={cache_path.stat().st_size} "
-                        f"elapsed={time.monotonic() - started:.2f}s"
+                        f"SNAPSHOT_INELIGIBLE attempt={snapshot_attempts} "
+                        f"wait={snapshot_attempt_wait[0][0] if snapshot_attempt_wait else 'unknown'} "
+                        f"error={event.value}"
                     )
-                    return 0
-            if event.kind == "log" and (
-                "Fault" in str(event.value)
-                or "unsupported" in str(event.value).lower()
-                or "runtime.compiled_cache_" in str(event.value)
-            ):
-                print(f"LOG: {event.value}")
-            if event.kind != "wait" or event.value is None:
+                    snapshot_requested = False
+                    if snapshot_attempt_wait is not None:
+                        retry_wait, tail = snapshot_attempt_wait
+                        snapshot_attempt_wait = None
+                        result = advance_wait(retry_wait, tail, snapshot_attempted=True)
+                        if result is not None:
+                            return result
+                    continue
+                if event.kind in ("error", "runtime_error", "runtime_fault"):
+                    print(f"ERROR: {event.value}")
+                    print(plain_tail(model))
+                    return 1
+                if event.kind == "status" and snapshot_requested and snapshot_path:
+                    if "VM 快照已导出" in str(event.value):
+                        size = Path(snapshot_path).stat().st_size
+                        elapsed = (
+                            time.monotonic() - snapshot_started
+                            if snapshot_started is not None
+                            else float("nan")
+                        )
+                        print(f"VM_SNAPSHOT_BYTES={size} elapsed={elapsed:.3f}s")
+                        if maximum_snapshot_seconds is not None and elapsed > float(
+                            maximum_snapshot_seconds
+                        ):
+                            print(
+                                "VM_SNAPSHOT_PERFORMANCE_ERROR "
+                                f"elapsed={elapsed:.3f}s "
+                                f"limit={float(maximum_snapshot_seconds):.3f}s"
+                            )
+                            return 5
+                        return 0
+                if event.kind == "status" and day_one_reached:
+                    if event.value == "编译缓存保存失败。":
+                        print("COMPILED_CACHE_ERROR persistence failed")
+                        return 1
+                    if event.value == "编译缓存已保存。":
+                        cache_path = StorageBackend(project).compiled_cache_path()
+                        print(
+                            f"COMPILED_CACHE_BYTES={cache_path.stat().st_size} "
+                            f"elapsed={time.monotonic() - started:.2f}s"
+                        )
+                        return 0
                 continue
-            wait = event.value
             token = wait[11]
             key = (wait[0], token[0], token[1])
             if key in handled_waits:
