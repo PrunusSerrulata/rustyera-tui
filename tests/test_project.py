@@ -319,9 +319,10 @@ def test_storage_defaults_to_the_project_directory(
     assert backend.data_root == tmp_path.resolve()
     assert backend._namespace_root(1) == tmp_path.resolve() / "save"
     assert backend.compiled_cache_path() == (
-        tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v7.bin.zst"
+        tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v8.bin.zst"
     )
     assert backend.obsolete_compiled_cache_paths() == (
+        tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v7.bin.zst",
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v6.bin.zst",
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v5.bin.zst",
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v4.bin.zst",
