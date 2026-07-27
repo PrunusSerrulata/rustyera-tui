@@ -93,6 +93,7 @@ class ProjectFile:
     payload: list[Any] | None
     content_hash: bytes | None
     content_size: int = 0
+    source_path: Path | None = None
 
     def submitted(self) -> dict[int, Any]:
         if self.payload is None:
@@ -173,7 +174,14 @@ class ProjectBundle:
                     normalized = _normalized_project_bytes(raw, category)
                     digest = blake3.blake3(normalized).digest()
                     content_size = len(normalized)
-                files[relative] = ProjectFile(relative, category, None, digest, content_size)
+                files[relative] = ProjectFile(
+                    relative,
+                    category,
+                    None,
+                    digest,
+                    content_size,
+                    source_path=path,
+                )
                 next_index[relative] = {
                     "category": category,
                     "signature": signature,
@@ -247,12 +255,21 @@ class ProjectBundle:
                 ),
                 None,
             )
-        if item is None or item.category != FILE_RESOURCE or item.payload is None:
+        if item is None or item.category != FILE_RESOURCE:
             raise ValueError(f"unknown image resource {resource_id}")
-        tag, fields = item.payload
-        if tag != 1 or len(fields) != 1 or not isinstance(fields[0], bytes):
-            raise ValueError(f"image resource {resource_id} has no binary payload")
-        data = fields[0]
+        if item.payload is None:
+            source_path = item.source_path
+            if source_path is None:
+                pure = PurePosixPath(item.relative_path)
+                source_path = self.root.joinpath(*pure.parts)
+            data = source_path.read_bytes()
+            if item.content_hash is None or blake3.blake3(data).digest() != item.content_hash:
+                raise ValueError(f"image resource {resource_id} changed after project scan")
+        else:
+            tag, fields = item.payload
+            if tag != 1 or len(fields) != 1 or not isinstance(fields[0], bytes):
+                raise ValueError(f"image resource {resource_id} has no binary payload")
+            data = fields[0]
         if blake3.blake3(data).digest() != content_digest:
             raise ValueError(f"image resource {resource_id} digest does not match the project")
         return data
@@ -301,7 +318,12 @@ def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
         raw = path.read_bytes()
         if category == FILE_RESOURCE:
             return ProjectFile(
-                relative, category, variant(1, raw), blake3.blake3(raw).digest(), len(raw)
+                relative,
+                category,
+                variant(1, raw),
+                blake3.blake3(raw).digest(),
+                len(raw),
+                path,
             )
         text = _decode_project_source(raw)
         if category == FILE_RESOURCE_MANIFEST:
@@ -313,6 +335,7 @@ def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
             variant(0, text),
             blake3.blake3(normalized).digest(),
             len(normalized),
+            path,
         )
     except (OSError, UnicodeError) as error:
         return ProjectFile(relative, category, variant(2, _frontend_error(error)), None)

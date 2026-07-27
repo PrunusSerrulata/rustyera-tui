@@ -145,6 +145,32 @@ def test_image_metadata_service_decodes_submitted_webp_resource(tmp_path: Path) 
     assert ready_payload(captured) == {0: 1000, 1: 1125, 2: "webp", 3: False}
 
 
+def test_image_metadata_service_lazily_reads_quick_scanned_resource(tmp_path: Path) -> None:
+    client, captured = client_with_capture()
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    image = b"RIFF\x16\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00\x00\x00\x00\x00\xe7\x03\x00\x64\x04\x00"
+    image_path = resources / "Rorona.webp"
+    image_path.write_bytes(image)
+    digest = blake3.blake3(image).digest()
+    client.pending_bundle = ProjectBundle.scan_quick(tmp_path)
+    assert client.pending_bundle.files["resources/Rorona.webp"].payload is None
+    client.bundle = None
+    client.reload_candidate = None
+
+    client._handle_service(
+        {
+            0: 11,
+            1: 1,
+            2: "image_metadata",
+            4: encode({0: "resources/Rorona.webp", 1: digest}),
+        },
+        None,
+    )
+
+    assert ready_payload(captured) == {0: 1000, 1: 1125, 2: "webp", 3: False}
+
+
 def test_client_hello_negotiates_the_pending_project_envelope_size(tmp_path: Path) -> None:
     client = object.__new__(RuntimeClient)
     client.pending_bundle = ProjectBundle(
