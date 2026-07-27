@@ -119,6 +119,7 @@ jobs:
         with:
           path: packages
           merge-multiple: true
+          skip-decompress: true
 
       - name: Create or update release
         uses: softprops/action-gh-release@v3
