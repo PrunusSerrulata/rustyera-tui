@@ -89,14 +89,16 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: rustyera-tui-${{ matrix.name }}
-          path: rustyera-tui-${{ matrix.name }}/**/*
+          path: rustyera-tui-${{ matrix.name }}.zip
+          archive: false
           if-no-files-found: error
 
       - name: Upload standalone package
         uses: actions/upload-artifact@v7
         with:
           name: rustyera-tui-${{ matrix.name }}-standalone
-          path: frontends/era-tui/dist/rustyera_tui/**/*
+          path: rustyera-tui-${{ matrix.name }}-standalone.zip
+          archive: false
           if-no-files-found: error
 
   publish:
