@@ -40,10 +40,10 @@ cargo run --manifest-path tools/runtime-tester/Cargo.toml -- COMMAND [PROJECT] [
   snapshot 资格和最终 phase。macOS 上 RSS 探针调用 `/bin/ps`，受 sandbox 限制时需要批准。
 - `restore-saved [PROJECT] [SAVE]`：默认项目为 `reference/eraTW`，默认存档为
   `artifacts/save99.sav`；stdout 输出导入、恢复和首个稳定等待的结果。
-- `source-extractor-all [EXTRACTOR] [REFERENCE_ROOT]`：动态发现 `reference/` 下全部
-  `era*` 游戏，分别通过正式 runtime 协议编译并导出项目缓存，再运行独立源码提取器，
-  对提交与恢复的路径集合及 UTF-8 内容逐字节比较。提取器默认使用
-  `target/debug/rustyera-source-extractor`。
+- `project-extractor-all [EXTRACTOR] [REFERENCE_ROOT]`：动态发现 `reference/` 下全部
+  `era*` 游戏，分别通过正式 runtime 协议编译并导出项目缓存，再运行独立项目解包器，
+  对提交与恢复的路径集合、UTF-8 内容和二进制资产逐字节比较。解包器默认使用
+  `target/debug/rustyera-project-extractor`。
 
 `minimal*` 在收到 runtime 生成的传统存档时会写入
 `$ERA_AUDIT_OUTPUT_DIR/save99.sav`；未设置时输出目录为本目录的 `artifacts/`。所有命令以
