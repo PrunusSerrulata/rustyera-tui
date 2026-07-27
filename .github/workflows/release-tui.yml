@@ -96,7 +96,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: rustyera-tui-${{ matrix.name }}-standalone
-          path: dist/rustyera_tui
+          path: frontends/era-tui/dist/rustyera_tui
           if-no-files-found: error
 
   publish:
