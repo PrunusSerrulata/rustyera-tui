@@ -3,7 +3,14 @@ from pathlib import Path
 import blake3
 import pytest
 
-from rustyera_tui.project import IO_CONFLICT, ProjectBundle, ProjectFile, StorageBackend
+from rustyera_tui.project import (
+    FILE_RESOURCE,
+    FILE_RESOURCE_MANIFEST,
+    IO_CONFLICT,
+    ProjectBundle,
+    ProjectFile,
+    StorageBackend,
+)
 from rustyera_tui.wire import unwrap_variant, variant
 
 
@@ -21,6 +28,28 @@ def test_project_scanner_is_utf8_and_deterministic(tmp_path: Path) -> None:
     csv = manifest[1][0]
     assert csv[2] == variant(0, "0,test\n")
     assert csv[3] == blake3.blake3(b"0,test\n").digest()
+
+
+def test_project_scanners_submit_nested_sprite_manifests_and_images(tmp_path: Path) -> None:
+    (tmp_path / "CSV").mkdir()
+    portraits = tmp_path / "resources" / "剧情肖像"
+    portraits.mkdir(parents=True)
+    (tmp_path / "CSV" / "GAMEBASE.CSV").write_text("コード,1\n", encoding="utf-8")
+    manifest = "\ufeff萝乐娜_泣,Rorona-portraits.webp,1040,1182,1000,1125\n"
+    image = b"RIFF\x16\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00\x00\x00\x00\x00\xe7\x03\x00\x64\x04\x00"
+    (portraits / "Portraits.csv").write_text(manifest, encoding="utf-8")
+    (portraits / "Rorona-portraits.webp").write_bytes(image)
+
+    scanned = ProjectBundle.scan(tmp_path)
+    quick = ProjectBundle.scan_quick(tmp_path)
+
+    resource_manifest = scanned.files["resources/剧情肖像/Portraits.csv"]
+    resource_image = scanned.files["resources/剧情肖像/Rorona-portraits.webp"]
+    assert resource_manifest.category == FILE_RESOURCE_MANIFEST
+    assert resource_manifest.payload == variant(0, manifest.removeprefix("\ufeff"))
+    assert resource_image.category == FILE_RESOURCE
+    assert resource_image.payload == variant(1, image)
+    assert quick.materialize().identity() == scanned.identity()
 
 
 def test_project_scanners_normalize_cp932_sources_to_utf8(tmp_path: Path) -> None:
@@ -100,7 +129,7 @@ def test_project_scanners_ignore_uninstalled_sources_outside_canonical_roots(
     (tmp_path / "CSV" / "GAMEBASE.CSV").write_text("コード,1\n", encoding="utf-8")
     (tmp_path / "ERB" / "GUIDE" / "main.erb").write_text("@SYSTEM_TITLE", encoding="utf-8")
     (tmp_path / "GUIDE" / "main.erb").write_text("@UNINSTALLED_GUIDE", encoding="utf-8")
-    (tmp_path / "resources" / "manifest.csv").write_text("image.png\n", encoding="utf-8")
+    (tmp_path / "resources" / "notes.txt").write_text("not a resource manifest\n", encoding="utf-8")
     (tmp_path / "patch" / "ERB" / "optional.erb").write_text("@UNINSTALLED_PATCH", encoding="utf-8")
     (tmp_path / "emuera.config").write_text("描画インターフェース:TEXTRENDERER", encoding="utf-8")
 

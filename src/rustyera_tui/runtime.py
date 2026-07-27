@@ -19,6 +19,7 @@ from rich.cells import cell_len
 
 from .abi import RuntimeAbi
 from .diagnosis import resource_name, write_diagnosis_archive
+from .image_metadata import decode_image_metadata
 from .log_model import LogLevel, LogMessage
 from .presentation import (
     ServicePresentationModel,
@@ -303,6 +304,7 @@ class RuntimeClient:
             {0: 9, 1: "random_seed", 2: version_range(1, 0)},
             {0: 8, 1: "local_date_time", 2: version_range(1, 0)},
             {0: 7, 1: "get_key_state", 2: version_range(1, 0)},
+            {0: 1, 1: "image_metadata", 2: version_range(1, 0)},
             {0: 10, 1: "get_display_line", 2: version_range(1, 0)},
             {0: 10, 1: "html_get_printed_str", 2: version_range(1, 0)},
             {0: 10, 1: "serialize_physical_history", 2: version_range(1, 0)},
@@ -860,6 +862,19 @@ class RuntimeClient:
                 }
             elif kind == 7 and operation == "get_key_state":
                 response = {0: True, 1: False, 2: False}
+            elif kind == 1 and operation == "image_metadata":
+                query = decode(request[4])
+                bundle = next(
+                    (
+                        candidate
+                        for candidate in (self.reload_candidate, self.pending_bundle, self.bundle)
+                        if candidate is not None
+                    ),
+                    None,
+                )
+                if bundle is None:
+                    raise RuntimeError("image metadata requested without a project")
+                response = decode_image_metadata(bundle.resource_bytes(query[0], query[1]))
             elif kind == 10 and operation == "get_display_line":
                 query = decode(request[4])
                 index = query[1]

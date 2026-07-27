@@ -30,6 +30,8 @@ IO_ALREADY_EXISTS = 5
 IO_OTHER = 6
 IO_CONFLICT = 7
 
+RESOURCE_IMAGE_SUFFIXES = frozenset({".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"})
+
 
 def _decode_project_source(raw: bytes) -> str:
     """Normalize a project source file to UTF-8 text at the frontend boundary."""
@@ -159,8 +161,12 @@ class ProjectBundle:
                     digest = bytes.fromhex(prior["hash"])
                 else:
                     raw = path.read_bytes()
-                    text = _decode_project_source(raw)
-                    digest = blake3.blake3(text.encode("utf-8")).digest()
+                    normalized = (
+                        raw
+                        if category == FILE_RESOURCE
+                        else _decode_project_source(raw).encode("utf-8")
+                    )
+                    digest = blake3.blake3(normalized).digest()
                 files[relative] = ProjectFile(relative, category, None, digest)
                 next_index[relative] = {
                     "category": category,
@@ -205,6 +211,27 @@ class ProjectBundle:
         ordered = sorted(self.files.values(), key=lambda item: item.relative_path.casefold())
         return {0: self.revision, 1: [item.submitted() for item in ordered]}
 
+    def resource_bytes(self, resource_id: str, content_digest: bytes) -> bytes:
+        item = self.files.get(resource_id)
+        if item is None:
+            item = next(
+                (
+                    candidate
+                    for path, candidate in self.files.items()
+                    if path.casefold() == resource_id.casefold()
+                ),
+                None,
+            )
+        if item is None or item.category != FILE_RESOURCE or item.payload is None:
+            raise ValueError(f"unknown image resource {resource_id}")
+        tag, fields = item.payload
+        if tag != 1 or len(fields) != 1 or not isinstance(fields[0], bytes):
+            raise ValueError(f"image resource {resource_id} has no binary payload")
+        data = fields[0]
+        if blake3.blake3(data).digest() != content_digest:
+            raise ValueError(f"image resource {resource_id} digest does not match the project")
+        return data
+
     def rescan(self) -> tuple[ProjectBundle, dict[int, Any]]:
         candidate = ProjectBundle.scan(self.root, self.revision + 1)
         changes: list[Any] = []
@@ -247,6 +274,8 @@ def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
     relative = path.relative_to(root).as_posix()
     try:
         raw = path.read_bytes()
+        if category == FILE_RESOURCE:
+            return ProjectFile(relative, category, variant(1, raw), blake3.blake3(raw).digest())
         text = _decode_project_source(raw)
         return ProjectFile(
             relative, category, variant(0, text), blake3.blake3(text.encode("utf-8")).digest()
@@ -280,11 +309,17 @@ def _canonical_source_roots(root: Path) -> frozenset[str]:
 
 
 def _classify_project_path(root: Path, path: Path, canonical_roots: frozenset[str]) -> int | None:
+    parts = path.relative_to(root).parts
+    first = parts[0].casefold()
+    if first == "resources":
+        if path.suffix.casefold() == ".csv":
+            return FILE_RESOURCE_MANIFEST
+        if path.suffix.casefold() in RESOURCE_IMAGE_SUFFIXES:
+            return FILE_RESOURCE
+        return None
     category = classify_path(path)
     if category is None:
         return None
-    parts = path.relative_to(root).parts
-    first = parts[0].casefold()
     if category in (FILE_ERH, FILE_ERB) and "erb" in canonical_roots and first != "erb":
         return None
     if category == FILE_CSV and "csv" in canonical_roots and first != "csv":

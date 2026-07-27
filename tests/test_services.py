@@ -5,6 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import blake3
+
+from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile
 from rustyera_tui.presentation import ServicePresentationModel
 from rustyera_tui.runtime import FrontendEvent, RuntimeClient, RuntimeFailure
 from rustyera_tui.wire import decode, encode, unwrap_variant, variant
@@ -108,6 +111,38 @@ def test_font_metrics_service_uses_terminal_cell_width() -> None:
         None,
     )
     assert ready_payload(captured) == {0: context, 1: 3, 2: 1}
+
+
+def test_image_metadata_service_decodes_submitted_webp_resource(tmp_path: Path) -> None:
+    client, captured = client_with_capture()
+    image = b"RIFF\x16\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00\x00\x00\x00\x00\xe7\x03\x00\x64\x04\x00"
+    digest = blake3.blake3(image).digest()
+    client.pending_bundle = ProjectBundle(
+        tmp_path,
+        1,
+        {
+            "resources/剧情肖像/Rorona.webp": ProjectFile(
+                "resources/剧情肖像/Rorona.webp",
+                FILE_RESOURCE,
+                variant(1, image),
+                digest,
+            )
+        },
+    )
+    client.bundle = None
+    client.reload_candidate = None
+
+    client._handle_service(
+        {
+            0: 11,
+            1: 1,
+            2: "image_metadata",
+            4: encode({0: "resources/剧情肖像/Rorona.webp", 1: digest}),
+        },
+        None,
+    )
+
+    assert ready_payload(captured) == {0: 1000, 1: 1125, 2: "webp", 3: False}
 
 
 def test_projection_is_bound_to_the_revision_the_tui_rendered() -> None:
