@@ -11,7 +11,7 @@ from pathlib import Path
 from audit_paths import REPOSITORY_ROOT, project_path, runtime_library
 
 ROOT = REPOSITORY_ROOT
-sys.path.insert(0, str(ROOT / "frontends" / "era-tui" / "src"))
+sys.path.insert(0, str(ROOT / "src"))
 
 from rustyera_tui.presentation import PresentationModel  # noqa: E402
 from rustyera_tui.runtime import RuntimeWorker  # noqa: E402
@@ -67,10 +67,7 @@ def main() -> int:
                 restored_phase = event.value
             elif event.kind == "wait" and import_completed and event.value is not None:
                 wait = event.value
-                rows = [
-                    "".join(segment.text for segment in line.segments)
-                    for line in model.lines
-                ]
+                rows = ["".join(segment.text for segment in line.segments) for line in model.lines]
                 if expect_home and not any("[Look]" in row for row in rows):
                     print(f"RESTORE_ERROR missing_home_menu tail={rows[-30:]!r}")
                     return 1

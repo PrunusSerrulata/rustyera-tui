@@ -12,7 +12,7 @@ from pathlib import Path
 from audit_paths import REPOSITORY_ROOT, project_path, runtime_library
 
 ROOT = REPOSITORY_ROOT
-sys.path.insert(0, str(ROOT / "frontends" / "era-tui" / "src"))
+sys.path.insert(0, str(ROOT / "src"))
 
 from rustyera_tui.abi import RuntimeAbi  # noqa: E402
 from rustyera_tui.presentation import PresentationModel  # noqa: E402
@@ -109,8 +109,7 @@ def apply_presentation_event(
 
 def plain_tail(model: PresentationModel, count: int = 20) -> str:
     return "\n".join(
-        "".join(segment.text for segment in line.segments)
-        for line in model.lines[-count:]
+        "".join(segment.text for segment in line.segments) for line in model.lines[-count:]
     )
 
 
@@ -126,8 +125,7 @@ def main() -> int:
     library = runtime_library()
     default_answers = "0,1,1,1,1,1,1,1,1,1,1,1,1,0,9999,0,2,1999,0,100,1"
     answers = [
-        int(value)
-        for value in os.environ.get("ERA_AUDIT_ANSWERS", default_answers).split(",")
+        int(value) for value in os.environ.get("ERA_AUDIT_ANSWERS", default_answers).split(",")
     ]
     fallback_answer = os.environ.get("ERA_AUDIT_FALLBACK_ANSWER")
     snapshot_path = os.environ.get("ERA_AUDIT_SNAPSHOT_PATH")
@@ -138,10 +136,7 @@ def main() -> int:
     maximum_day_one_seconds = os.environ.get("ERA_AUDIT_MAX_DAY1_SECONDS")
     maximum_wake_seconds = os.environ.get("ERA_AUDIT_MAX_WAKE_SECONDS")
     maximum_snapshot_seconds = os.environ.get("ERA_AUDIT_MAX_SNAPSHOT_SECONDS")
-    wake_check = (
-        os.environ.get("ERA_AUDIT_WAKE_CHECK") == "1"
-        or maximum_wake_seconds is not None
-    )
+    wake_check = os.environ.get("ERA_AUDIT_WAKE_CHECK") == "1" or maximum_wake_seconds is not None
     wait_for_cache = os.environ.get("ERA_AUDIT_WAIT_FOR_CACHE") == "1"
     item_stage: str | None = None
     day_one_reached = False
@@ -163,11 +158,7 @@ def main() -> int:
     def advance_wait(
         wait: dict[int, object], tail: str, *, snapshot_attempted: bool = False
     ) -> int | None:
-        nonlocal \
-            answer_index, \
-            snapshot_requested, \
-            snapshot_started, \
-            snapshot_attempt_wait
+        nonlocal answer_index, snapshot_requested, snapshot_started, snapshot_attempt_wait
         nonlocal layout_stage, item_stage
         nonlocal day_one_reached, wake_started
         global _wake_profile_active, _wake_profile_origin
@@ -184,9 +175,7 @@ def main() -> int:
                 f"WAKE_TO_HOME_MILESTONE wait={wait[0]} kind={wait[1]} "
                 f"system={wait[5]} elapsed={elapsed:.3f}s"
             )
-            if maximum_wake_seconds is not None and elapsed > float(
-                maximum_wake_seconds
-            ):
+            if maximum_wake_seconds is not None and elapsed > float(maximum_wake_seconds):
                 print(
                     "WAKE_TO_HOME_PERFORMANCE_ERROR "
                     f"elapsed={elapsed:.3f}s limit={float(maximum_wake_seconds):.3f}s"
@@ -208,9 +197,7 @@ def main() -> int:
             layout_stage = "map"
             worker.send("submit_text", "400")
         elif layout_check and layout_stage in ("map", "map_toggled"):
-            c_rows = [
-                row for row in display_rows(model) if "[C] - 移動先表示切替" in row
-            ]
+            c_rows = [row for row in display_rows(model) if "[C] - 移動先表示切替" in row]
             if not c_rows or not c_rows[-1].rstrip().endswith("[C] - 移動先表示切替"):
                 print(f"MAP_LAYOUT_ERROR rows={c_rows[-3:]!r}")
                 return 1
@@ -258,9 +245,7 @@ def main() -> int:
                 f"DAY1_MILESTONE wait={wait[0]} answers={answer_index} "
                 f"elapsed={elapsed:.2f}s lines={len(model.lines)}"
             )
-            if maximum_day_one_seconds is not None and elapsed > float(
-                maximum_day_one_seconds
-            ):
+            if maximum_day_one_seconds is not None and elapsed > float(maximum_day_one_seconds):
                 print(
                     "DAY1_PERFORMANCE_ERROR "
                     f"elapsed={elapsed:.2f}s limit={float(maximum_day_one_seconds):.2f}s"
@@ -403,12 +388,7 @@ def main() -> int:
                 f"answer_index={answer_index} elapsed={time.monotonic() - started:.2f}s"
             )
             print(tail[-2000:])
-            if (
-                snapshot_every_wait
-                and snapshot_path
-                and wait[2] == 0
-                and wait.get(8) is None
-            ):
+            if snapshot_every_wait and snapshot_path and wait[2] == 0 and wait.get(8) is None:
                 snapshot_attempts += 1
                 snapshot_requested = True
                 snapshot_started = time.monotonic()

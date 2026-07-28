@@ -7,7 +7,7 @@
 这一实现的主要目的，是把以下链路放在一个真实前端中持续验证：
 
 - Rust runtime 与固定 Emuera 参考实现的可观察行为；
-- `reference/eraTW` 等真实游戏脚本；
+- 本地兄弟目录 `../eraTW` 等真实游戏脚本；
 - `era-runtime-capi` 的加载、消息传输、生命周期和存储边界；
 - runtime 规范化展示模型能否由独立客户端消费。
 
@@ -16,17 +16,20 @@
 
 ## 运行
 
-先编译 release 动态库并安装 Python 依赖：
+独立安装 Python 依赖：
 
 ```sh
-cargo build -p era-runtime-capi --release
-uv sync --project frontends/era-tui
+uv sync --locked
 ```
+
+从 [rustyera-core](https://github.com/PrunusSerrulata/rustyera) 的对应 release 获取当前
+平台动态库，或按 `rustyera-core.rev` 中的 revision 检出 core 并执行
+`cargo build -p era-runtime-capi --release`。发布流水线会自动完成后者。
 
 启动：
 
 ```sh
-uv --project frontends/era-tui run rustyera-tui [RESOURCE_DIRECTORY]
+uv run rustyera-tui [RESOURCE_DIRECTORY]
 ```
 
 `RESOURCE_DIRECTORY` 可省略，默认使用当前工作目录。前端从该目录寻找：
@@ -37,8 +40,8 @@ uv --project frontends/era-tui run rustyera-tui [RESOURCE_DIRECTORY]
 - Windows 的 `era_runtime_capi.dll`。
 
 可以通过 `--runtime-library PATH` 或 `ERA_RUNTIME_LIBRARY=PATH` 覆盖动态库位置。
-开发工作区可在 `frontends/era-tui` 中建立指向 `../../reference/eraTW/{CSV,ERB}` 和
-`../../target/release` 对应动态库的相对符号链接；这些本地链接已加入 `.gitignore`，
+四仓开发工作区可在本仓根建立指向 `../eraTW/{CSV,ERB}` 和
+`../target/release` 对应动态库的相对符号链接；这些本地链接已加入 `.gitignore`，
 不会提交。
 
 前端会跟随资源目录中的源码目录链接，并扫描规范 `ERB/`、`CSV/` 树及项目配置；当
@@ -89,9 +92,8 @@ runtime 规范化游戏展示，因此 TUI 差分只把双方共同的脚本输�
 
 ```sh
 UV_CACHE_DIR=/tmp/rustyera-uv-cache \
-  uv --project frontends/era-tui run pytest
+  uv run pytest
 
 UV_CACHE_DIR=/tmp/rustyera-uv-cache \
-  uv --project frontends/era-tui run ruff check \
-  frontends/era-tui/src frontends/era-tui/tests
+  uv run ruff check src tests tools/runtime-tester
 ```

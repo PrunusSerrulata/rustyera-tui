@@ -8,12 +8,9 @@ on:
         required: true
         default: prerelease
         type: choice
-        options:
-          - release
-          - prerelease
-          - none
+        options: [release, prerelease, none]
       tag_name:
-        description: Tag to create or update when publishing (for example, v0.1.0-rc.1)
+        description: Tag to create when publishing (for example, v0.1.0)
         required: false
         type: string
 
@@ -28,73 +25,57 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: windows-x86_64
-            runner: windows-latest
-            library: era_runtime_capi.dll
-            library_path: target/release/era_runtime_capi.dll
-          - name: linux-x86_64
-            runner: ubuntu-latest
-            library: libera_runtime_capi.so
-            library_path: target/release/libera_runtime_capi.so
-          - name: linux-aarch64
-            runner: ubuntu-24.04-arm
-            library: libera_runtime_capi.so
-            library_path: target/release/libera_runtime_capi.so
-          - name: macos-x86_64
-            runner: macos-15-intel
-            library: libera_runtime_capi.dylib
-            library_path: target/release/libera_runtime_capi.dylib
-          - name: macos-arm64
-            runner: macos-latest
-            library: libera_runtime_capi.dylib
-            library_path: target/release/libera_runtime_capi.dylib
-
+          - { name: windows-x86_64, runner: windows-latest, library: era_runtime_capi.dll }
+          - { name: linux-x86_64, runner: ubuntu-latest, library: libera_runtime_capi.so }
+          - { name: linux-aarch64, runner: ubuntu-24.04-arm, library: libera_runtime_capi.so }
+          - { name: macos-x86_64, runner: macos-15-intel, library: libera_runtime_capi.dylib }
+          - { name: macos-arm64, runner: macos-latest, library: libera_runtime_capi.dylib }
     steps:
       - uses: actions/checkout@v7
-
+      - name: Read pinned core revision
+        id: core
+        shell: pwsh
+        run: |
+          $revision = (Get-Content rustyera-core.rev -Raw).Trim()
+          if ($revision -notmatch '^[0-9a-f]{40}$') { throw "invalid rustyera-core.rev" }
+          "revision=$revision" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@v7
+        with:
+          repository: PrunusSerrulata/rustyera
+          ref: ${{ steps.core.outputs.revision }}
+          path: _deps/rustyera-core
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: frontends/era-tui/uv.lock
-
-      - name: Build the release C API library
-        run: cargo build --package era-runtime-capi --release
-
-      - name: Install the runtime library in the TUI package
+          cache-dependency-glob: uv.lock
+      - name: Build pinned runtime library
+        run: cargo build --manifest-path _deps/rustyera-core/Cargo.toml --package era-runtime-capi --release --locked
+      - name: Install runtime library in Python package
         shell: pwsh
-        working-directory: frontends/era-tui
-        run: |
-          Copy-Item -Force "../../${{ matrix.library_path }}" "src/rustyera_tui/${{ matrix.library }}"
-
+        run: Copy-Item -Force "target/release/${{ matrix.library }}" "src/rustyera_tui/${{ matrix.library }}"
       - name: Assemble source distribution
         shell: pwsh
         run: |
           $package = "rustyera-tui-${{ matrix.name }}"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
-          Copy-Item -Recurse -Force frontends/era-tui/* $package
-          Copy-Item -Force "${{ matrix.library_path }}" $package
+          Copy-Item README.md,LICENSE,pyproject.toml,uv.lock,rustyera_tui.spec,entry.py,rustyera-core.rev $package
+          Copy-Item -Recurse src,tests $package
           Compress-Archive -Path $package -DestinationPath "$package.zip"
-
-      - name: Build the standalone TUI
+      - name: Build standalone TUI
         shell: pwsh
-        working-directory: frontends/era-tui
         run: |
           uv sync --locked
+          uv run pytest
           uv run pyinstaller --clean --noconfirm rustyera_tui.spec
-          Compress-Archive -Path dist/rustyera_tui -DestinationPath "../../rustyera-tui-${{ matrix.name }}-standalone.zip"
-
-      - name: Upload source package
-        uses: actions/upload-artifact@v7
+          Compress-Archive -Path dist/rustyera_tui -DestinationPath "rustyera-tui-${{ matrix.name }}-standalone.zip"
+      - uses: actions/upload-artifact@v7
         with:
           name: rustyera-tui-${{ matrix.name }}
           path: rustyera-tui-${{ matrix.name }}.zip
           archive: false
           if-no-files-found: error
-
-      - name: Upload standalone package
-        uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7
         with:
           name: rustyera-tui-${{ matrix.name }}-standalone
           path: rustyera-tui-${{ matrix.name }}-standalone.zip
@@ -102,58 +83,22 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish ${{ inputs.publish_type }}
     if: inputs.publish_type != 'none'
     needs: package
     runs-on: ubuntu-latest
-
     steps:
-      - name: Require a tag name
+      - name: Require tag
         if: inputs.tag_name == ''
-        run: |
-          echo "tag_name is required when publish_type is not none" >&2
-          exit 1
-
-      - name: Download packages
-        uses: actions/download-artifact@v8
+        run: exit 1
+      - uses: actions/download-artifact@v8
         with:
           path: packages
           merge-multiple: true
           skip-decompress: true
-
-      - name: Create or update release
-        uses: softprops/action-gh-release@v3
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
           target_commitish: ${{ github.sha }}
           prerelease: ${{ inputs.publish_type == 'prerelease' }}
           generate_release_notes: true
-          body: |
-            ## 使用方法
-
-            ### Standalone 版本
-
-            1. 下载与操作系统和 CPU 架构相符、文件名以 `-standalone.zip` 结尾的 ZIP，并解压。Standalone 压缩包已包含 TUI 及对应平台的 runtime 动态库，无需安装 Python 或 uv；不包含游戏资源。
-            2. 将游戏的 `CSV/` 和 `ERB/` 等资源目录放到解压后的 `rustyera_tui` 目录，在该目录运行 `rustyera_tui`（Windows 上为 `rustyera_tui.exe`）。也可以运行 `rustyera_tui GAME_DIRECTORY`，指定包含游戏资源的其他目录。
-            3. macOS 可能因下载文件的隔离属性阻止程序运行。可在包含解压所得 `rustyera_tui` 目录的上级目录执行 `xattr -dr com.apple.quarantine rustyera_tui`，再进入该目录运行 `./rustyera_tui`。
-
-            ### Python/uv 版本
-
-            1. 下载与操作系统和 CPU 架构相符的非 Standalone ZIP：`windows-x86_64`、`linux-x86_64`、`linux-aarch64`、`macos-x86_64` 或 `macos-arm64`。
-            2. 解压 ZIP。压缩包包含 Textual TUI 源码、`pyproject.toml`/`uv.lock` 和对应平台的 `era-runtime-capi` 动态库；不包含游戏资源。
-            3. 安装 Python 3.12 或更高版本及 [uv](https://docs.astral.sh/uv/)，然后在解压目录运行 `uv sync` 安装依赖。
-            4. 将游戏的 `CSV/` 和 `ERB/` 等资源目录放入解压目录后，可在该目录运行 `uv run rustyera-tui`。
-
-            如游戏资源和/或 runtime 动态库位于其他目录，请在解压目录运行以下命令，并作如下替换：
-
-            * `GAME_DIRECTORY` 替换为包含 `CSV/` 和 `ERB/` 的路径
-            * `LIBRARY_FILE` 替换为当前压缩包内的动态库文件名：
-              * Windows 为 `era_runtime_capi.dll`
-              * Linux 为 `libera_runtime_capi.so`
-              * macOS 为 `libera_runtime_capi.dylib`
-
-            ```sh
-            uv run rustyera-tui GAME_DIRECTORY --runtime-library ./LIBRARY_FILE
-            ```
-
           files: packages/*.zip

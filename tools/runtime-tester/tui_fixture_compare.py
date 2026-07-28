@@ -10,18 +10,16 @@ import tempfile
 import time
 from pathlib import Path
 
-from audit_paths import REPOSITORY_ROOT, runtime_library
+from audit_paths import REPOSITORY_ROOT, reference_root, runtime_library
 
 ROOT = REPOSITORY_ROOT
-sys.path.insert(0, str(ROOT / "frontends" / "era-tui" / "src"))
+sys.path.insert(0, str(ROOT / "src"))
 
 from rustyera_tui.presentation import PresentationModel  # noqa: E402
 from rustyera_tui.runtime import FrontendEvent, PresentationBatch, RuntimeWorker  # noqa: E402
 
 
-def presentation_result(
-    model: PresentationModel, event: FrontendEvent
-) -> dict[str, object] | None:
+def presentation_result(model: PresentationModel, event: FrontendEvent) -> dict[str, object] | None:
     if event.kind != "presentation_batch":
         return None
     batch = event.value
@@ -35,18 +33,14 @@ def presentation_result(
         return None
     return {
         "termination": "waitingInput",
-        "output": [
-            "".join(segment.text for segment in line.segments) for line in model.lines
-        ],
+        "output": ["".join(segment.text for segment in line.segments) for line in model.lines],
         "wait_kind": batch.active_wait[1],
         "system_input": batch.active_wait[5],
     }
 
 
 def main() -> int:
-    source = (
-        ROOT / "reference" / "emuera.em" / "emuera-reference-cli" / "tests" / "fixture"
-    )
+    source = reference_root() / "emuera-reference-cli" / "tests" / "fixture"
     with tempfile.TemporaryDirectory(prefix="rustyera-fixture-compare-") as directory:
         fixture = Path(directory) / "fixture"
         shutil.copytree(source, fixture)

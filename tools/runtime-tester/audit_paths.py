@@ -9,12 +9,13 @@ from pathlib import Path
 
 TOOL_ROOT = Path(__file__).resolve().parent
 REPOSITORY_ROOT = TOOL_ROOT.parents[1]
+WORKSPACE_ROOT = REPOSITORY_ROOT.parent
 
 
 def project_path() -> Path:
     """Return the submitted game tree without scanning it inside the Rust runtime."""
 
-    return Path(os.environ.get("ERA_AUDIT_PROJECT", REPOSITORY_ROOT / "reference" / "eraTW"))
+    return Path(os.environ.get("ERA_AUDIT_PROJECT", WORKSPACE_ROOT / "eraTW"))
 
 
 def runtime_library() -> Path:
@@ -29,4 +30,10 @@ def runtime_library() -> Path:
         filename = "era_runtime_capi.dll"
     else:
         filename = "libera_runtime_capi.so"
-    return REPOSITORY_ROOT / "target" / "release" / filename
+    return WORKSPACE_ROOT / "target" / "release" / filename
+
+
+def reference_root() -> Path:
+    """Return the sibling Emuera reference repository."""
+
+    return Path(os.environ.get("EMUERA_REFERENCE_ROOT", WORKSPACE_ROOT / "emuera.em"))

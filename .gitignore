@@ -3,6 +3,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.pyc
+.DS_Store
+.rustyera/
+build/
+dist/
 /CSV
 /ERB
 /src/rustyera_tui/era_runtime_capi.dll
@@ -13,4 +17,5 @@ __pycache__/
 /global/
 /data/
 /logs/
+tests/fixtures/minimal/.rustyera/
 /*.snapshot
