@@ -7,7 +7,6 @@
 这一实现的主要目的，是把以下链路放在一个真实前端中持续验证：
 
 - Rust runtime 与固定 Emuera 参考实现的可观察行为；
-- 本地兄弟目录 `../eraTW` 等真实游戏脚本；
 - `era-runtime-capi` 的加载、消息传输、生命周期和存储边界；
 - runtime 规范化展示模型能否由独立客户端消费。
 
@@ -40,9 +39,8 @@ uv run rustyera-tui [RESOURCE_DIRECTORY]
 - Windows 的 `era_runtime_capi.dll`。
 
 可以通过 `--runtime-library PATH` 或 `ERA_RUNTIME_LIBRARY=PATH` 覆盖动态库位置。
-四仓开发工作区可在本仓根建立指向 `../eraTW/{CSV,ERB}` 和
-`../target/release` 对应动态库的相对符号链接；这些本地链接已加入 `.gitignore`，
-不会提交。
+四仓开发工作区可在本仓根建立指向 `../target/release` 对应动态库的相对符号链接；
+这些本地链接已加入 `.gitignore`，不会提交。
 
 前端会跟随资源目录中的源码目录链接，并扫描规范 `ERB/`、`CSV/` 树及项目配置；当
 项目没有规范源码树时，也接受直接位于所选目录下的最小项目文件。源码首先按严格
