@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraTW",
+  "mode": "fixed",
+  "inputs": [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 9999, 0, 2, 1999, 0, 100, 1],
+  "goal": {
+    "output_contains": ["SAVE", "LOAD", "UPDATE"],
+    "status_contains": ["编译缓存已保存。"]
+  },
+  "limits": {
+    "max_steps": 100,
+    "timeout_seconds": 900
+  }
+}

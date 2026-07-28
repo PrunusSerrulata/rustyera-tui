@@ -1,10 +1,12 @@
-# TUI audit tools
+# TUI runtime test scenarios
 
-本目录通过真实 `rustyera_tui` worker 和 C ABI 动态库执行长流程、snapshot restore 与
-参考 fixture 比较。
+本目录只保存由 `rustyera-test` 消费的版本化测试场景。驱动实现属于
+`rustyera_tui.testing`，测试属于仓库顶层 `tests/`，不得在本目录重新加入独立 Python
+状态机。
 
-- `ERA_AUDIT_PROJECT` 默认 `../../eraTW`（即 workspace 外层 `eraTW`）。
-- `ERA_RUNTIME_CAPI` 默认外层共享 `target/release` 的当前平台动态库。
-- `EMUERA_REFERENCE_ROOT` 默认外层 `emuera.em`。
-- 工具只能读取游戏与参考仓库；输出写临时目录或被忽略的本地目录。
-- 单元测试为 `test_tui_day1.py` 与 `test_tui_fixture_compare.py`，随普通 pytest 一起运行。
+- 场景只能通过正式 `RuntimeWorker`、C ABI、展示投影、存储和 debug protocol 驱动游戏。
+- `project` 和状态文件路径相对场景文件解析；不得提交本机绝对路径。
+- eraTW、参考仓库、存档和 snapshot 均为只读输入，不得复制进本目录。
+- trace、缓存、存档、snapshot 和 oracle 输出写入 `.rustyera/` 或显式临时目录，不得提交。
+- 未设置 `seed` 时驱动生成随机 seed，并将有效值写入 trace；需要复现时在场景中显式填写。
+- 新增游戏专用分支应表达为输入条件、目标或 checkpoint 策略，不得修改通用驱动解释游戏数据。

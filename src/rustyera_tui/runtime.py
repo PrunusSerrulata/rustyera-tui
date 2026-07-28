@@ -188,9 +188,14 @@ class RuntimeClient:
         self,
         abi: RuntimeAbi,
         events: queue.Queue[FrontendEvent],
+        *,
+        new_game_seed: int | None = None,
+        metrics_threshold_ms: float | None = None,
     ) -> None:
         self.abi = abi
         self.events = events
+        self.new_game_seed = new_game_seed
+        self.metrics_threshold_ms = metrics_threshold_ms
         self.runtime_sequence = 0
         self.debug_sequence = 0
         self.next_message_id = 1
@@ -205,7 +210,7 @@ class RuntimeClient:
         self.storage: StorageBackend | None = None
         self.presentation = ServicePresentationModel()
         self.active_wait: dict[int, Any] | None = None
-        self.pending_restore: tuple[Path, bytes] | None = None
+        self.pending_restore: tuple[Path, bytes, str] | None = None
         self.pending_export: tuple[Path, bytearray, dict[int, Any] | None] | None = None
         self.pending_export_message: int | None = None
         self.pending_diagnosis: DiagnosisExport | None = None
@@ -286,7 +291,7 @@ class RuntimeClient:
     def recreate(
         self,
         bundle: ProjectBundle,
-        restore: tuple[Path, bytes] | None = None,
+        restore: tuple[Path, bytes, str] | None = None,
         *,
         allow_compiled_cache: bool = True,
     ) -> None:
@@ -390,10 +395,13 @@ class RuntimeClient:
         return message_id
 
     def pump(self) -> bool:
+        pump_started = time.perf_counter()
         self._pending_presentation_events.clear()
         self._wait_event_dirty = False
         self._presentation_boundary_dirty = False
+        drive_started = time.perf_counter()
         report = self.abi.drive()
+        drive_ms = (time.perf_counter() - drive_started) * 1000
         emitted = False
         acknowledge_through: int | None = None
         while data := self.abi.poll():
@@ -408,7 +416,30 @@ class RuntimeClient:
         if acknowledge_through is not None and self.session is not None:
             self.send_runtime(93, {0: acknowledge_through})
         self._advance_deadline()
+        pump_ms = (time.perf_counter() - pump_started) * 1000
+        if (
+            self.metrics_threshold_ms is not None
+            and max(drive_ms, pump_ms) >= self.metrics_threshold_ms
+        ):
+            self.events.put(
+                FrontendEvent(
+                    "runtime_metrics",
+                    {
+                        "drive_ms": drive_ms,
+                        "pump_ms": pump_ms,
+                        "vm_instructions": report.vm_instructions,
+                        "runtime_transitions": report.runtime_transitions,
+                        "queued_envelopes": report.queued_envelopes,
+                        "state": report.state,
+                    },
+                )
+            )
         return emitted or report.state in (1, 2)
+
+    def _new_game_start(self) -> dict[int, Any]:
+        """Build the normal start request, optionally using a deterministic test seed."""
+
+        return {0: variant(0, self.new_game_seed)}
 
     def _flush_presentation_events(self) -> None:
         snapshot: dict[int, Any] | None = None
@@ -423,8 +454,10 @@ class RuntimeClient:
                     deltas.append(value)
             if deltas:
                 delta = coalesce_presentation_deltas(deltas)
-        if snapshot is None and delta is None and not (
-            self._wait_event_dirty or self._presentation_boundary_dirty
+        if (
+            snapshot is None
+            and delta is None
+            and not (self._wait_event_dirty or self._presentation_boundary_dirty)
         ):
             return
         # A single queue item prevents Textual from observing presentation and wait halves
@@ -735,18 +768,23 @@ class RuntimeClient:
             self.pending_bundle = None
             self.storage = StorageBackend(self.bundle.root)
         self.events.put(FrontendEvent("project_loaded", self.bundle.root if self.bundle else None))
+        if self.pending_restore is not None:
+            _path, payload, purpose = self.pending_restore
+            kind = 0 if purpose == "traditional_save" else 1
+            self._begin_import(payload, kind, purpose)
+            return
         if cache_hit:
             self.cache_refresh_pending = False
             self.cache_ready = False
             self.cache_preparation_started = False
             self.events.put(FrontendEvent("status", "编译缓存命中，正在进入标题画面…"))
-            self.send_runtime(20, {0: variant(0, None)})
+            self.send_runtime(20, self._new_game_start())
         else:
             self.cache_refresh_pending = True
             self.cache_preparation_started = False
             self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
             self.events.put(FrontendEvent("status", "项目编译完成，正在进入标题画面…"))
-            self.send_runtime(20, {0: variant(0, None)})
+            self.send_runtime(20, self._new_game_start())
 
     def _submit_project(self, cache_transfer_id: int | None) -> None:
         if self.pending_bundle is None:
@@ -1175,7 +1213,7 @@ class RuntimeClient:
                     else "编译缓存保存失败，正在进入标题画面…",
                 )
             )
-            self.send_runtime(20, {0: variant(0, None)})
+            self.send_runtime(20, self._new_game_start())
         elif after == "reload":
             self.events.put(FrontendEvent("status", "脚本热重载完成。"))
         elif after == "background":
@@ -1201,6 +1239,9 @@ class RuntimeClient:
         purpose = self.import_purpose
         if purpose == "project_cache":
             self._submit_project(ready[0])
+        elif purpose == "traditional_save":
+            self.events.put(FrontendEvent("status", "传统存档传输完成，正在读档…"))
+            self.send_runtime(20, {0: variant(1, ready[0])})
         else:
             self.events.put(FrontendEvent("status", "快照传输完成，正在恢复 VM…"))
             self.send_runtime(20, {0: variant(2, ready[0])})
@@ -1211,8 +1252,13 @@ class RuntimeClient:
 
     def restore_snapshot(self, path: Path) -> None:
         payload = path.expanduser().resolve(strict=True).read_bytes()
-        self.pending_restore = (path, payload)
+        self.pending_restore = (path, payload, "snapshot")
         self._begin_import(payload, 1, "snapshot")
+
+    def restore_save(self, path: Path) -> None:
+        payload = path.expanduser().resolve(strict=True).read_bytes()
+        self.pending_restore = (path, payload, "traditional_save")
+        self._begin_import(payload, 0, "traditional_save")
 
     def enable_debug(self) -> None:
         if self.debug_grant is not None:
@@ -1300,7 +1346,7 @@ class RuntimeClient:
         if action == "variables":
             self._debug_request(variant(10, self.stop_token, None, 500), "variables")
         elif action == "read_variable":
-            descriptor = value
+            descriptor, indices = value if isinstance(value, tuple) else (value, None)
             storage = descriptor[2]
             if storage == 3:
                 self.events.put(
@@ -1311,7 +1357,7 @@ class RuntimeClient:
                 0: descriptor[0],
                 1: storage,
                 4: self.stop_token[2],
-                6: [0 for _ in descriptor.get(4, [])],
+                6: list(indices) if indices is not None else [0 for _ in descriptor.get(4, [])],
             }
             if storage == 2:
                 reference[5] = 0
@@ -1422,10 +1468,21 @@ def _atomic_write(path: Path, data: bytes | bytearray) -> None:
 class RuntimeWorker(threading.Thread):
     """Serialize all C ABI calls while exposing queue-only communication to Textual."""
 
-    def __init__(self, runtime_library: Path | None, initial_project: Path | None):
+    def __init__(
+        self,
+        runtime_library: Path | None,
+        initial_project: Path | None,
+        *,
+        new_game_seed: int | None = None,
+        metrics_threshold_ms: float | None = None,
+        initial_state: tuple[Path, str] | None = None,
+    ):
         super().__init__(name="rustyera-runtime", daemon=True)
         self.runtime_library = runtime_library
         self.initial_project = initial_project
+        self.new_game_seed = new_game_seed
+        self.metrics_threshold_ms = metrics_threshold_ms
+        self.initial_state = initial_state
         self.commands: queue.Queue[FrontendCommand] = queue.Queue()
         # Backpressure is preferable to retaining an unbounded number of presentation
         # revisions when Runtime can produce output faster than Textual lays it out.
@@ -1440,7 +1497,12 @@ class RuntimeWorker(threading.Thread):
         abi: RuntimeAbi | None = None
         try:
             abi = RuntimeAbi(self.runtime_library, resource_directory=self.initial_project)
-            self.client = RuntimeClient(abi, self.events)
+            self.client = RuntimeClient(
+                abi,
+                self.events,
+                new_game_seed=self.new_game_seed,
+                metrics_threshold_ms=self.metrics_threshold_ms,
+            )
             if self.initial_project is not None:
                 self._load_project(self.initial_project)
             else:
@@ -1525,6 +1587,11 @@ class RuntimeWorker(threading.Thread):
                         raise RuntimeError("load the matching project before restoring a snapshot")
                     path = Path(command.value).expanduser().resolve(strict=True)
                     client.restore_snapshot(path)
+                case "restore_save":
+                    if client.bundle is None:
+                        raise RuntimeError("load the matching project before restoring a save")
+                    path = Path(command.value).expanduser().resolve(strict=True)
+                    client.restore_save(path)
                 case "debug_enable":
                     client.enable_debug()
                 case "debug_disable":
@@ -1559,7 +1626,13 @@ class RuntimeWorker(threading.Thread):
             return
         self.events.put(FrontendEvent("status", f"正在扫描 {root}…"))
         bundle = ProjectBundle.scan_quick(root, 1)
-        self.client.recreate(bundle)
+        restore = None
+        if self.initial_state is not None:
+            path, purpose = self.initial_state
+            resolved = path.expanduser().resolve(strict=True)
+            restore = (resolved, resolved.read_bytes(), purpose)
+            self.initial_state = None
+        self.client.recreate(bundle, restore)
 
     def stop(self) -> None:
         self.send("force_stop")

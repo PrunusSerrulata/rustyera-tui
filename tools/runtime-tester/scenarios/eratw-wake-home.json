@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraTW",
+  "mode": "fixed",
+  "inputs": [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 9999, 0, 2, 1999, 0, 100, 1, 100],
+  "goal": {
+    "output_contains": ["[Look]"]
+  },
+  "limits": {
+    "max_steps": 120,
+    "timeout_seconds": 900
+  }
+}

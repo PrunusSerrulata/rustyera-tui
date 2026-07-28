@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraTW",
+  "mode": "fixed",
+  "inputs": [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 9999, 0, 2, 1999, 0, 100, 1, 100, 805],
+  "goal": {
+    "output_contains": ["所持道具一覧", "[999] 返回"],
+    "line_count_lte": 1000
+  },
+  "limits": {
+    "max_steps": 120,
+    "timeout_seconds": 900
+  }
+}

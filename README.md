@@ -95,3 +95,25 @@ UV_CACHE_DIR=/tmp/rustyera-uv-cache \
 UV_CACHE_DIR=/tmp/rustyera-uv-cache \
   uv run ruff check src tests tools/runtime-tester
 ```
+
+真实 C ABI 的固定序列和 agent 驱动测试使用统一入口：
+
+```sh
+uv run rustyera-test run \
+  --scenario tools/runtime-tester/scenarios/reference-fixture.json \
+  --runtime-library ../target/release/libera_runtime_capi.dylib
+
+uv run rustyera-test serve \
+  --scenario tools/runtime-tester/scenarios/eratw-day1.json \
+  --runtime-library ../target/release/libera_runtime_capi.dylib
+```
+
+参考实现命令按单个 shell 参数传入，例如 `--reference-command 'wine Emuera.ReferenceCli.exe'`
+和 `--reference-path-command 'winepath -w'`。
+
+`run` 消费场景中的固定输入；`serve` 在固定前缀耗尽后通过 stdin 接收 NDJSON agent
+命令。未提供 `seed` 时会为新游戏生成随机 seed，并把有效值写入
+`.rustyera/test-runs/<run-id>/trace.ndjson`；把该值写回场景即可复现。传统存档和 VM
+snapshot 使用各自保存的随机状态，不会重新播种。可提交场景及约束位于
+`tools/runtime-tester/scenarios/`。trace 保留完整输入输出；stdout observation 只发送
+最多 30 行增量和尾部输出，避免长游戏历史阻塞 agent 的下一步决策。

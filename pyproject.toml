@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 rustyera-tui = "rustyera_tui.__main__:main"
+rustyera-test = "rustyera_tui.test_cli:main"
 
 [dependency-groups]
 dev = [

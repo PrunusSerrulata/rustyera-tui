@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test RustyEra TUI"
+  short_description: "Run deterministic and agent-driven RustyEra TUI tests"
+  default_prompt: "Use $test-rustyera-tui to run and analyze the relevant TUI test scenario."

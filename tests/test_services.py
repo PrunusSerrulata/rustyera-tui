@@ -68,6 +68,19 @@ def debug_client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any, str
     return client, captured
 
 
+def test_debug_variable_read_uses_requested_indices() -> None:
+    client, captured = debug_client_with_capture()
+    client.stop_token = {2: 11}
+    descriptor = {0: b"key", 1: "FLAG", 2: 0, 3: 0, 4: [100], 5: True}
+
+    client.request_debug_action("read_variable", (descriptor, (17,)))
+
+    command_tag, fields = unwrap_variant(captured[0][1][1])
+    assert captured[0][2] == "variable_value"
+    assert command_tag == 11
+    assert fields[1][6] == [17]
+
+
 def test_display_line_service_returns_the_tui_projection() -> None:
     client, captured = client_with_capture()
     context = {0: 7, 1: 2, 2: 3}
