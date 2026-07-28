@@ -1,5 +1,7 @@
 name: Build and publish TUI
 
+run-name: TUI standalone ${{ inputs.tag_name || github.sha }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -17,10 +19,16 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-tui-${{ inputs.tag_name || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   package:
-    name: Package (${{ matrix.name }})
+    name: Standalone (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     strategy:
       fail-fast: false
       matrix:
@@ -54,14 +62,6 @@ jobs:
       - name: Install runtime library in Python package
         shell: pwsh
         run: Copy-Item -Force "target/release/${{ matrix.library }}" "src/rustyera_tui/${{ matrix.library }}"
-      - name: Assemble source distribution
-        shell: pwsh
-        run: |
-          $package = "rustyera-tui-${{ matrix.name }}"
-          New-Item -ItemType Directory -Force -Path $package | Out-Null
-          Copy-Item README.md,LICENSE,pyproject.toml,uv.lock,rustyera_tui.spec,entry.py,rustyera-core.rev $package
-          Copy-Item -Recurse src,tests $package
-          Compress-Archive -Path $package -DestinationPath "$package.zip"
       - name: Build standalone TUI
         shell: pwsh
         run: |
@@ -71,16 +71,10 @@ jobs:
           Compress-Archive -Path dist/rustyera_tui -DestinationPath "rustyera-tui-${{ matrix.name }}-standalone.zip"
       - uses: actions/upload-artifact@v7
         with:
-          name: rustyera-tui-${{ matrix.name }}
-          path: rustyera-tui-${{ matrix.name }}.zip
-          archive: false
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v7
-        with:
           name: rustyera-tui-${{ matrix.name }}-standalone
           path: rustyera-tui-${{ matrix.name }}-standalone.zip
-          archive: false
           if-no-files-found: error
+          retention-days: 7
 
   publish:
     if: inputs.publish_type != 'none'
@@ -94,7 +88,6 @@ jobs:
         with:
           path: packages
           merge-multiple: true
-          skip-decompress: true
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name }}
