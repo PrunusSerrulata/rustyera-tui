@@ -94,4 +94,15 @@ jobs:
           target_commitish: ${{ github.sha }}
           prerelease: ${{ inputs.publish_type == 'prerelease' }}
           generate_release_notes: true
+          body: |
+            ## 使用说明
+
+            1. 按操作系统和 CPU 架构下载对应的 `standalone.zip`，并完整解压。
+            2. 运行解压目录中的 `rustyera_tui`（Windows 为 `rustyera_tui.exe`），将包含 `CSV/` 和 `ERB/` 的 Era 游戏目录作为参数传入。例如：
+
+               ```text
+               rustyera_tui /path/to/game
+               ```
+
+            Linux 或 macOS 首次运行前如有需要，请执行 `chmod +x rustyera_tui`。如果 macOS 提示应用来自身份不明的开发者，请确认文件下载自本发布页，然后在终端进入解压目录并执行 `xattr -dr com.apple.quarantine rustyera_tui` 解除隔离。压缩包已包含 runtime 动态库和 Python 依赖，无需另行安装。
           files: packages/*.zip
