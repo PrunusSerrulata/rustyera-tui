@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Input, Rule, Static
 
 from .dialogs import (
+    AboutDialog,
     ConfirmDialog,
     DebugConsoleDialog,
     FatalErrorDialog,
@@ -28,6 +30,15 @@ from .log_model import LogEntry, LogLevel, LogMessage, format_log_entries, make_
 from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
+
+CORE_VERSION = "0.1.0 (75f5db87)"
+
+
+def frontend_version() -> str:
+    try:
+        return version("rustyera-tui")
+    except PackageNotFoundError:
+        return "0.1.0"
 
 
 class RustyEraTui(App[None]):
@@ -101,6 +112,7 @@ class RustyEraTui(App[None]):
             with Horizontal(id="menu-bar"):
                 yield Button("文件", id="menu-file", classes="menu-button")
                 yield Button("调试", id="menu-debug", classes="menu-button")
+                yield Button("帮助", id="menu-help", classes="menu-button")
             yield GameViewport()
             yield Rule(id="separator-line")
             with Horizontal(id="prompt-row"):
@@ -116,6 +128,10 @@ class RustyEraTui(App[None]):
             yield Button("栈查看...", id="debug-stack", classes="menu-item", disabled=True)
             yield Button("开启单步运行", id="debug-step-toggle", classes="menu-item", disabled=True)
             yield Button("查看日志...", id="debug-logs", classes="menu-item")
+        with Vertical(id="help-menu", classes="dropdown"):
+            yield Button("导出诊断信息…", id="help-export-diagnosis", classes="menu-item")
+            yield Rule(classes="menu-separator")
+            yield Button("关于…", id="help-about", classes="menu-item")
 
     def on_mount(self) -> None:
         self.worker.start()
@@ -207,9 +223,15 @@ class RustyEraTui(App[None]):
             self._refresh_interaction_lock()
         elif kind == "diagnosis_export_finished":
             self.diagnosis_exporting = False
+            self._update_prompt()
+            self._refresh_interaction_lock()
             success, message = value
             if self.fatal_dialog is not None and self.fatal_dialog.is_mounted:
                 self.fatal_dialog.finish_export(bool(success), str(message))
+            elif success:
+                self.notify(f"诊断信息已导出：{message}")
+            else:
+                self.notify(f"诊断信息导出失败：{message}", severity="error")
         elif kind == "project_loaded":
             self.project = Path(value) if value else self.project
             self._set_status(f"项目已加载：{self.project}")
@@ -270,6 +292,8 @@ class RustyEraTui(App[None]):
                 self.diagnosis_exporting = False
                 if self.fatal_dialog is not None and self.fatal_dialog.is_mounted:
                     self.fatal_dialog.finish_export(False, "Runtime worker 已停止")
+                self._update_prompt()
+                self._refresh_interaction_lock()
             if self.exit_pending:
                 self.exit()
         return False
@@ -313,6 +337,11 @@ class RustyEraTui(App[None]):
             self._set_prompt_state("prompt-running")
             prompt.disabled = True
             prompt.placeholder = "VM 快照导出中……"
+            return
+        if self.diagnosis_exporting:
+            self._set_prompt_state("prompt-running")
+            prompt.disabled = True
+            prompt.placeholder = "诊断信息导出中……"
             return
         if self.presentation_rendering:
             self._set_prompt_state("prompt-running")
@@ -369,6 +398,7 @@ class RustyEraTui(App[None]):
     def _game_interactions_blocked(self) -> bool:
         return (
             self.snapshot_exporting
+            or self.diagnosis_exporting
             or self.presentation_rendering
             or self.blocking_error is not None
             or self.debug_paused
@@ -379,7 +409,12 @@ class RustyEraTui(App[None]):
         )
 
     def _debug_interactions_blocked(self) -> bool:
-        return not self.debug_enabled or self.snapshot_exporting or self.blocking_error is not None
+        return (
+            not self.debug_enabled
+            or self.snapshot_exporting
+            or self.diagnosis_exporting
+            or self.blocking_error is not None
+        )
 
     def _refresh_interaction_lock(self) -> None:
         if not self.is_mounted:
@@ -425,22 +460,30 @@ class RustyEraTui(App[None]):
         if item_id == "menu-debug":
             self._toggle_menu("debug")
             return
+        if item_id == "menu-help":
+            self._toggle_menu("help")
+            return
         if item_id.startswith("file-"):
             self.action_close_menus()
             self._file_action(item_id)
         elif item_id.startswith("debug-"):
             self.action_close_menus()
             self._debug_action(item_id)
+        elif item_id.startswith("help-"):
+            self.action_close_menus()
+            self._help_action(item_id)
 
     def _toggle_menu(self, name: str) -> None:
         selected = self.query_one(f"#{name}-menu")
-        other = self.query_one("#debug-menu" if name == "file" else "#file-menu")
-        other.remove_class("visible")
+        for candidate in ("file", "debug", "help"):
+            if candidate != name:
+                self.query_one(f"#{candidate}-menu").remove_class("visible")
         selected.toggle_class("visible")
 
     def action_close_menus(self) -> None:
         self.query_one("#file-menu").remove_class("visible")
         self.query_one("#debug-menu").remove_class("visible")
+        self.query_one("#help-menu").remove_class("visible")
 
     def _file_action(self, item_id: str) -> None:
         if self.snapshot_exporting and item_id != "file-exit":
@@ -502,12 +545,28 @@ class RustyEraTui(App[None]):
         self.worker.send("export_snapshot", (path, purpose))
 
     def _start_diagnosis_export(self, path: Path | None) -> None:
-        if path is None or self.diagnosis_exporting or self.fatal_dialog is None:
+        if path is None or self.diagnosis_exporting:
             return
         self.diagnosis_exporting = True
-        self.fatal_dialog.set_exporting()
+        self._update_prompt()
+        self._refresh_interaction_lock()
+        if self.fatal_dialog is not None and self.fatal_dialog.is_mounted:
+            self.fatal_dialog.set_exporting()
         self.fault_logs = format_log_entries(self.logs)
         self.worker.send("export_diagnosis", (path, self.fault_logs))
+
+    def _open_diagnosis_export_dialog(self) -> None:
+        initial = diagnosis_default_path(self.project or Path.cwd())
+        self.push_screen(
+            PathDialog("导出诊断信息", "save", initial),
+            self._start_diagnosis_export,
+        )
+
+    def _help_action(self, item_id: str) -> None:
+        if item_id == "help-export-diagnosis":
+            self._open_diagnosis_export_dialog()
+        elif item_id == "help-about":
+            self.push_screen(AboutDialog(frontend_version(), CORE_VERSION))
 
     def _debug_action(self, item_id: str) -> None:
         if self.snapshot_exporting and item_id != "debug-logs":
@@ -670,15 +729,7 @@ class RustyEraTui(App[None]):
         if self.diagnosis_exporting:
             return
         if event.action == "export":
-            initial = diagnosis_default_path(self.project or Path.cwd())
-            self.push_screen(
-                PathDialog("导出诊断信息", "save", initial),
-                lambda path: self._start_diagnosis_export(
-                    None
-                    if path is None
-                    else (path if path.is_dir() else path.parent) / initial.name
-                ),
-            )
+            self._open_diagnosis_export_dialog()
             return
         dialog = self.fatal_dialog
         self.fatal_dialog = None

@@ -59,6 +59,16 @@ Screen {
     offset: 8 1;
 }
 
+#help-menu {
+    offset: 16 1;
+}
+
+.menu-separator {
+    height: 1;
+    color: #64748b;
+    margin: 0 1;
+}
+
 .menu-item {
     height: 1;
     min-width: 0;
@@ -177,6 +187,11 @@ ModalScreen {
     background: #111827;
     border: round #38bdf8;
     padding: 1;
+}
+
+.dialog.about-dialog {
+    width: 56;
+    height: 12;
 }
 
 .wide-dialog {

@@ -10,7 +10,7 @@ from rich.cells import cell_len
 from textual.widgets import Button, DataTable, Input, RichLog, Select, Static
 
 from rustyera_tui.app import RustyEraTui
-from rustyera_tui.dialogs import FatalErrorDialog
+from rustyera_tui.dialogs import AboutDialog, FatalErrorDialog, PathDialog
 from rustyera_tui.log_model import LogLevel, LogMessage
 from rustyera_tui.presentation import (
     ColumnCellLayout,
@@ -68,6 +68,52 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         assert separator.region.bottom == prompt_row.region.y
         assert app.query_one("#file-restart").styles.content_align[0] == "left"
         assert app.query_one("#menu-file").styles.content_align[0] == "left"
+
+
+async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.click("#menu-help")
+        assert app.query_one("#help-menu").has_class("visible")
+        assert [str(button.label) for button in app.query("#help-menu Button")] == [
+            "导出诊断信息…",
+            "关于…",
+        ]
+
+        await pilot.click("#help-export-diagnosis")
+        assert isinstance(app.screen, PathDialog)
+        assert app.screen.initial_value.parent == tmp_path
+        assert app.screen.initial_value.name.startswith(f"{tmp_path.name}-diagnosis_")
+        assert app.screen.initial_value.name.endswith(".tar.zst")
+        await pilot.click("#path-cancel")
+
+        await pilot.click("#menu-help")
+        await pilot.click("#help-about")
+        assert isinstance(app.screen, AboutDialog)
+        contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
+        assert "作者：PrunusSerrulata" in contents
+        assert "前端版本：0.1.0" in contents
+        assert "core 版本：0.1.0 (75f5db87)" in contents
+        assert "许可证：GPL-3.0-only" in contents
+
+
+async def test_manual_diagnosis_export_reuses_fatal_export_payload(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)):
+        app._log("manual diagnosis detail", LogLevel.WARNING)
+        target = tmp_path / "manual.tar.zst"
+
+        app._start_diagnosis_export(target)
+
+        assert app.diagnosis_exporting
+        assert app.query_one("#prompt", Input).disabled
+        assert not app.query_one(GameViewport).interactions_enabled
+        assert "manual diagnosis detail" in app.fault_logs
+        assert ("export_diagnosis", (target, app.fault_logs)) in worker.commands
 
 
 async def test_prompt_submits_through_worker(tmp_path: Path) -> None:

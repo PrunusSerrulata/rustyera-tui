@@ -45,6 +45,29 @@ class ConfirmDialog(ModalScreen[bool]):
         self.dismiss(event.button.id == "confirm-accept")
 
 
+class AboutDialog(ModalScreen[None]):
+    """Display build and licensing information for the frontend and bound core."""
+
+    def __init__(self, frontend_version: str, core_version: str) -> None:
+        super().__init__()
+        self.frontend_version = frontend_version
+        self.core_version = core_version
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog about-dialog"):
+            yield Label("关于 RustyEra TUI", classes="dialog-title")
+            yield Static("作者：PrunusSerrulata", markup=False)
+            yield Static(f"前端版本：{self.frontend_version}", markup=False)
+            yield Static(f"core 版本：{self.core_version}", markup=False)
+            yield Static("许可证：GPL-3.0-only", markup=False)
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("确定", id="about-close", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "about-close":
+            self.dismiss()
+
+
 class FatalErrorDialog(ModalScreen[None]):
     """Keep recovery and diagnosis actions available after an unrecoverable runtime fault."""
 
