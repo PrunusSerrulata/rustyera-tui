@@ -49,7 +49,7 @@ jobs:
           "revision=$revision" >> $env:GITHUB_OUTPUT
       - uses: actions/checkout@v7
         with:
-          repository: PrunusSerrulata/rustyera
+          repository: PrunusSerrulata/rustyera-core
           ref: ${{ steps.core.outputs.revision }}
           path: _deps/rustyera-core
       - uses: dtolnay/rust-toolchain@stable
