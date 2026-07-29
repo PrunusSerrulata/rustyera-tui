@@ -38,7 +38,7 @@ def frontend_version() -> str:
     try:
         return version("rustyera-tui")
     except PackageNotFoundError:
-        return "0.1.0"
+        return "0.0.3-alpha.1"
 
 
 class RustyEraTui(App[None]):
