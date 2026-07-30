@@ -154,6 +154,34 @@ async def test_prompt_submits_through_worker(tmp_path: Path) -> None:
         assert ("submit_text", "12") in worker.commands
 
 
+async def test_project_progress_shows_stage_and_elapsed_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [100.0]
+    monkeypatch.setattr("rustyera_tui.app.monotonic", lambda: clock[0])
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        progress = app.query_one("#project-progress")
+        message = app.query_one("#project-progress-message", Static)
+        assert not progress.display
+
+        worker.events.put(FrontendEvent("status", "正在扫描 /game…"))
+        await pilot.pause(0.1)
+        assert progress.display
+        assert "正在扫描 /game… · 已用 0.0 秒" == str(message.render())
+
+        clock[0] = 103.4
+        worker.events.put(FrontendEvent("status", "正在提交项目并编译脚本…"))
+        await pilot.pause(0.1)
+        assert "正在提交项目并编译脚本… · 已用 3.4 秒" == str(message.render())
+
+        worker.events.put(FrontendEvent("phase", 5))
+        await pilot.pause(0.1)
+        assert not progress.display
+
+
 async def test_viewport_click_submits_only_a_plain_enter_wait(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()

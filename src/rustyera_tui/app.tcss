@@ -17,6 +17,26 @@ Screen {
     color: #f8fafc;
 }
 
+#project-progress {
+    display: none;
+    height: 1;
+    width: 100%;
+    padding: 0 1;
+    background: #172033;
+    color: #dbeafe;
+}
+
+#project-progress-spinner {
+    width: 2;
+    color: #38bdf8;
+    text-style: bold;
+}
+
+#project-progress-message {
+    width: 1fr;
+    text-overflow: ellipsis;
+}
+
 .menu-button {
     height: 1;
     min-width: 0;
