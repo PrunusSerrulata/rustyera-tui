@@ -161,26 +161,25 @@ async def test_project_progress_shows_real_completed_work(tmp_path: Path) -> Non
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)) as pilot:
-        progress = app.query_one("#project-progress")
-        message = app.query_one("#project-progress-message", Static)
-        assert not progress.display
+        prompt = app.query_one("#prompt", Input)
+        assert not app.query("#project-progress")
 
         worker.events.put(FrontendEvent("status", "正在扫描 /game…"))
         await pilot.pause(0.1)
-        assert progress.display
-        assert "正在扫描 /game…" == str(message.render())
+        assert prompt.disabled
+        assert prompt.placeholder == "正在扫描 /game…"
 
         worker.events.put(FrontendEvent("project_progress", (0, 37, 80)))
         await pilot.pause(0.1)
-        assert "正在读取项目文件：37/80 [█████████░░░░░░░░░░░] 46%" == str(message.render())
+        assert prompt.placeholder == "正在读取项目文件：37/80 [█████████░░░░░░░░░░░] 46%"
 
         worker.events.put(FrontendEvent("project_progress", (5, 64, 100)))
         await pilot.pause(0.1)
-        assert "正在编译脚本函数：64/100 [████████████░░░░░░░░] 64%" == str(message.render())
+        assert prompt.placeholder == "正在编译脚本函数：64/100 [████████████░░░░░░░░] 64%"
 
         worker.events.put(FrontendEvent("phase", 5))
         await pilot.pause(0.1)
-        assert not progress.display
+        assert prompt.placeholder == "Runtime 正在运行…"
 
 
 async def test_viewport_click_submits_only_a_plain_enter_wait(tmp_path: Path) -> None:

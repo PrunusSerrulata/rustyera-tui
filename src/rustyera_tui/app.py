@@ -153,8 +153,6 @@ class RustyEraTui(App[None]):
                 yield Button("文件", id="menu-file", classes="menu-button")
                 yield Button("调试", id="menu-debug", classes="menu-button")
                 yield Button("帮助", id="menu-help", classes="menu-button")
-            with Horizontal(id="project-progress"):
-                yield Static("", id="project-progress-message")
             yield GameViewport()
             yield Rule(id="separator-line")
             with Horizontal(id="prompt-row"):
@@ -179,7 +177,6 @@ class RustyEraTui(App[None]):
         self.worker.start()
         self.set_interval(0.03, self._drain_worker_events)
         self.set_interval(0.5, self._toggle_prompt_blink)
-        self.query_one("#project-progress").display = False
         self._update_prompt()
         self._refresh_menu_availability()
         self.query_one("#prompt", Input).focus()
@@ -369,7 +366,7 @@ class RustyEraTui(App[None]):
             self._begin_project_progress(message)
         elif message.startswith("脚本热重载完成"):
             self._finish_project_progress()
-        if self.snapshot_exporting or self.presentation_rendering:
+        if self.project_progress_active or self.snapshot_exporting or self.presentation_rendering:
             self._update_prompt()
         else:
             self.query_one("#prompt", Input).placeholder = message
@@ -377,8 +374,8 @@ class RustyEraTui(App[None]):
     def _begin_project_progress(self, message: str) -> None:
         self.project_progress_active = True
         self.project_progress_message = message
-        self.query_one("#project-progress").display = True
-        self.query_one("#project-progress-message", Static).update(message)
+        if self.is_mounted:
+            self._update_prompt()
 
     def _update_project_progress(self, stage: int, completed: int, total: int) -> None:
         if not 0 <= stage < len(self.PROJECT_PROGRESS_LABELS):
@@ -398,7 +395,7 @@ class RustyEraTui(App[None]):
         self.project_progress_active = False
         self.project_progress_message = ""
         if self.is_mounted:
-            self.query_one("#project-progress").display = False
+            self._update_prompt()
 
     def _log(
         self,
@@ -434,6 +431,11 @@ class RustyEraTui(App[None]):
             self._set_prompt_state("prompt-running")
             prompt.disabled = True
             prompt.placeholder = "页面渲染中……"
+            return
+        if self.project_progress_active:
+            self._set_prompt_state("prompt-running")
+            prompt.disabled = True
+            prompt.placeholder = self.project_progress_message
             return
         if self.debug_paused:
             self._set_prompt_state("prompt-running")
