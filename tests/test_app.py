@@ -50,6 +50,21 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(120, 40)) as pilot:
+        controlled_items = (
+            *app.GAME_FILE_ITEMS,
+            *app.GAME_DEBUG_ITEMS,
+            "help-export-diagnosis",
+        )
+        assert all(app.query_one(f"#{item_id}", Button).disabled for item_id in controlled_items)
+        assert not app.query_one("#file-exit", Button).disabled
+        assert not app.query_one("#debug-logs", Button).disabled
+
+        worker.events.put(FrontendEvent("phase", 4))
+        await pilot.pause(0.1)
+        assert all(
+            not app.query_one(f"#{item_id}", Button).disabled
+            for item_id in (*app.GAME_FILE_ITEMS, "debug-toggle", "help-export-diagnosis")
+        )
         await pilot.click("#menu-file")
         assert app.query_one("#file-menu").has_class("visible")
         await pilot.click("#file-reload-all")
@@ -59,6 +74,15 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         assert app.query_one("#debug-console").disabled
         await pilot.click("#debug-toggle")
         assert ("debug_enable", None) in worker.commands
+
+        worker.events.put(FrontendEvent("phase", 8))
+        await pilot.pause(0.1)
+        assert all(app.query_one(f"#{item_id}", Button).disabled for item_id in controlled_items)
+
+        worker.events.put(FrontendEvent("phase", 5))
+        worker.events.put(FrontendEvent("debug_enabled", True))
+        await pilot.pause(0.1)
+        assert all(not app.query_one(f"#{item_id}", Button).disabled for item_id in controlled_items)
 
         assert not app.query("#menu-line-number")
         assert str(app.query_one("#prompt-label").render()) == "> "
@@ -75,6 +99,8 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)) as pilot:
+        worker.events.put(FrontendEvent("phase", 4))
+        await pilot.pause()
         await pilot.click("#menu-help")
         assert app.query_one("#help-menu").has_class("visible")
         assert [str(button.label) for button in app.query("#help-menu Button")] == [
@@ -667,6 +693,7 @@ async def test_single_step_prompt_shows_source_and_f10_advances(tmp_path: Path) 
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)) as pilot:
+        app._handle_worker_event(FrontendEvent("phase", 5))
         app._set_debug_enabled(True)
         app._debug_action("debug-step-toggle")
         worker.commands.clear()
@@ -725,6 +752,7 @@ async def test_debug_console_commands_remain_available_while_paused(tmp_path: Pa
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)):
+        app._handle_worker_event(FrontendEvent("phase", 5))
         app._set_debug_enabled(True)
         app._debug_action("debug-console")
         assert app.console_dialog is not None
@@ -743,6 +771,7 @@ async def test_variable_viewer_renders_selected_variable_value(tmp_path: Path) -
     app.worker = worker  # type: ignore[assignment]
     descriptor = {0: b"key", 1: "RESULT", 2: 0, 3: 0, 4: [10], 5: True}
     async with app.run_test(size=(100, 30)) as pilot:
+        app._handle_worker_event(FrontendEvent("phase", 5))
         app._set_debug_enabled(True)
         app._debug_action("debug-variables")
         await pilot.pause()
@@ -767,6 +796,7 @@ async def test_stack_viewer_mounts_before_requesting_and_pages_to_the_live_fiber
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)) as pilot:
+        app._handle_worker_event(FrontendEvent("phase", 5))
         app._set_debug_enabled(True)
         app._debug_action("debug-stack")
         await pilot.pause()

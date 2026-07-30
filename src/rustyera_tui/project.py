@@ -492,8 +492,8 @@ class StorageBackend:
     def _namespace_root(self, namespace: int) -> Path:
         roots = {
             0: self.data_root / "project",
-            1: self.data_root / "save",
-            2: self.data_root / "global",
+            1: self.data_root / "sav",
+            2: self.data_root / "sav",
             3: self.data_root / "data",
             4: self.data_root / "logs",
             5: self.project_root,

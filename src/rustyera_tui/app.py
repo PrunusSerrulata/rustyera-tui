@@ -72,6 +72,23 @@ class RustyEraTui(App[None]):
         ("file-restore-snapshot", "恢复VM快照..."),
         ("file-exit", "退出"),
     )
+    GAME_READY_PHASES = {4, 5, 6, 7, 10, 11}
+    GAME_FILE_ITEMS = (
+        "file-restart",
+        "file-title",
+        "file-reload-all",
+        "file-reload-folder",
+        "file-reload-file",
+        "file-export-snapshot",
+        "file-restore-snapshot",
+    )
+    GAME_DEBUG_ITEMS = (
+        "debug-toggle",
+        "debug-console",
+        "debug-variables",
+        "debug-stack",
+        "debug-step-toggle",
+    )
 
     def __init__(
         self,
@@ -138,6 +155,7 @@ class RustyEraTui(App[None]):
         self.set_interval(0.03, self._drain_worker_events)
         self.set_interval(0.5, self._toggle_prompt_blink)
         self._update_prompt()
+        self._refresh_menu_availability()
         self.query_one("#prompt", Input).focus()
 
     def on_unmount(self) -> None:
@@ -214,6 +232,7 @@ class RustyEraTui(App[None]):
             if value != 11 and self.blocking_error is not None:
                 self.blocking_error = None
             self._update_prompt()
+            self._refresh_menu_availability()
             self._refresh_interaction_lock()
         elif kind == "status":
             self._set_status(str(value))
@@ -411,6 +430,7 @@ class RustyEraTui(App[None]):
     def _debug_interactions_blocked(self) -> bool:
         return (
             not self.debug_enabled
+            or not self._runtime_menu_actions_available()
             or self.snapshot_exporting
             or self.diagnosis_exporting
             or self.blocking_error is not None
@@ -442,8 +462,7 @@ class RustyEraTui(App[None]):
         self.query_one("#debug-toggle", Button).label = (
             "关闭调试模式" if enabled else "开启调试模式"
         )
-        for item_id in ("debug-console", "debug-variables", "debug-stack", "debug-step-toggle"):
-            self.query_one(f"#{item_id}", Button).disabled = not enabled
+        self._refresh_menu_availability()
         if not enabled:
             self.single_step = False
             self.debug_paused = False
@@ -451,6 +470,20 @@ class RustyEraTui(App[None]):
             self.query_one("#debug-step-toggle", Button).label = "开启单步运行"
             self._update_prompt()
             self._refresh_interaction_lock()
+
+    def _runtime_menu_actions_available(self) -> bool:
+        return self.runtime_phase in self.GAME_READY_PHASES
+
+    def _refresh_menu_availability(self) -> None:
+        if not self.is_mounted:
+            return
+        available = self._runtime_menu_actions_available()
+        for item_id in self.GAME_FILE_ITEMS:
+            self.query_one(f"#{item_id}", Button).disabled = not available
+        self.query_one("#debug-toggle", Button).disabled = not available
+        for item_id in self.GAME_DEBUG_ITEMS[1:]:
+            self.query_one(f"#{item_id}", Button).disabled = not available or not self.debug_enabled
+        self.query_one("#help-export-diagnosis", Button).disabled = not available
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         item_id = event.button.id or ""
@@ -785,7 +818,12 @@ class RustyEraTui(App[None]):
             self.worker.send("input_undo", self.input_undo_token)
 
     def action_debug_step(self) -> None:
-        if self.debug_enabled and self.single_step and self.debug_paused:
+        if (
+            self._runtime_menu_actions_available()
+            and self.debug_enabled
+            and self.single_step
+            and self.debug_paused
+        ):
             self.debug_paused = False
             self.debug_location = None
             self._update_prompt()
