@@ -26,12 +26,6 @@ Screen {
     color: #dbeafe;
 }
 
-#project-progress-spinner {
-    width: 2;
-    color: #38bdf8;
-    text-style: bold;
-}
-
 #project-progress-message {
     width: 1fr;
     text-overflow: ellipsis;

@@ -82,7 +82,9 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         worker.events.put(FrontendEvent("phase", 5))
         worker.events.put(FrontendEvent("debug_enabled", True))
         await pilot.pause(0.1)
-        assert all(not app.query_one(f"#{item_id}", Button).disabled for item_id in controlled_items)
+        assert all(
+            not app.query_one(f"#{item_id}", Button).disabled for item_id in controlled_items
+        )
 
         assert not app.query("#menu-line-number")
         assert str(app.query_one("#prompt-label").render()) == "> "
@@ -154,11 +156,7 @@ async def test_prompt_submits_through_worker(tmp_path: Path) -> None:
         assert ("submit_text", "12") in worker.commands
 
 
-async def test_project_progress_shows_stage_and_elapsed_time(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    clock = [100.0]
-    monkeypatch.setattr("rustyera_tui.app.monotonic", lambda: clock[0])
+async def test_project_progress_shows_real_completed_work(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
@@ -170,12 +168,15 @@ async def test_project_progress_shows_stage_and_elapsed_time(
         worker.events.put(FrontendEvent("status", "正在扫描 /game…"))
         await pilot.pause(0.1)
         assert progress.display
-        assert "正在扫描 /game… · 已用 0.0 秒" == str(message.render())
+        assert "正在扫描 /game…" == str(message.render())
 
-        clock[0] = 103.4
-        worker.events.put(FrontendEvent("status", "正在提交项目并编译脚本…"))
+        worker.events.put(FrontendEvent("project_progress", (0, 37, 80)))
         await pilot.pause(0.1)
-        assert "正在提交项目并编译脚本… · 已用 3.4 秒" == str(message.render())
+        assert "正在读取项目文件：37/80 [█████████░░░░░░░░░░░] 46%" == str(message.render())
+
+        worker.events.put(FrontendEvent("project_progress", (5, 64, 100)))
+        await pilot.pause(0.1)
+        assert "正在编译脚本函数：64/100 [████████████░░░░░░░░] 64%" == str(message.render())
 
         worker.events.put(FrontendEvent("phase", 5))
         await pilot.pause(0.1)

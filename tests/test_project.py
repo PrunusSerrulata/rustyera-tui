@@ -31,6 +31,21 @@ def test_project_scanner_is_utf8_and_deterministic(tmp_path: Path) -> None:
     assert csv[3] == blake3.blake3(b"0,test\n").digest()
 
 
+def test_project_scan_reports_completed_file_counts(tmp_path: Path) -> None:
+    (tmp_path / "main.erb").write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
+    (tmp_path / "variables.csv").write_text("FLAG,1\n", encoding="utf-8")
+    observed: list[tuple[int, int]] = []
+
+    ProjectBundle.scan(
+        tmp_path,
+        progress=lambda completed, total: observed.append((completed, total)),
+    )
+
+    assert observed[:2] == [(0, 0), (0, 2)]
+    assert observed[-1] == (2, 2)
+    assert all(left[0] <= right[0] for left, right in zip(observed, observed[1:], strict=False))
+
+
 def test_project_scanners_submit_nested_sprite_manifests_and_images(tmp_path: Path) -> None:
     (tmp_path / "CSV").mkdir()
     portraits = tmp_path / "resources" / "剧情肖像"

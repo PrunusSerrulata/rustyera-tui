@@ -9,7 +9,7 @@ import tempfile
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import blake3
 
@@ -37,6 +37,18 @@ DEFAULT_MAXIMUM_PAYLOAD_BYTES = 127 * 1024 * 1024
 MAXIMUM_PROJECT_ENVELOPE_BYTES = 1024 * 1024 * 1024
 PROJECT_ENVELOPE_HEADROOM_BYTES = 1024 * 1024
 PROJECT_FILE_WIRE_OVERHEAD_BYTES = 256
+ProjectScanProgress = Callable[[int, int], None]
+
+
+def _report_scan_progress(progress: ProjectScanProgress | None, completed: int, total: int) -> None:
+    if progress is None:
+        return
+    if (
+        total == 0
+        or completed == total
+        or completed * 100 // total > (completed - 1) * 100 // total
+    ):
+        progress(completed, total)
 
 
 def _decode_project_source(raw: bytes) -> str:
@@ -115,28 +127,47 @@ class ProjectBundle:
     files: dict[str, ProjectFile]
 
     @classmethod
-    def scan(cls, root: Path, revision: int = 1) -> ProjectBundle:
+    def scan(
+        cls,
+        root: Path,
+        revision: int = 1,
+        progress: ProjectScanProgress | None = None,
+    ) -> ProjectBundle:
         root = root.expanduser().resolve(strict=True)
         if not root.is_dir():
             raise NotADirectoryError(root)
+        if progress is not None:
+            progress(0, 0)
         files: dict[str, ProjectFile] = {}
         paths = _project_paths(root)
         canonical_roots = _canonical_source_roots(root)
-        for path in paths:
-            category = _classify_project_path(root, path, canonical_roots)
-            if category is None:
-                continue
+        candidates = [
+            (path, category)
+            for path in paths
+            if (category := _classify_project_path(root, path, canonical_roots)) is not None
+        ]
+        if progress is not None:
+            progress(0, len(candidates))
+        for index, (path, category) in enumerate(candidates, 1):
             item = read_project_file(root, path, category)
             files[item.relative_path] = item
+            _report_scan_progress(progress, index, len(candidates))
         return cls(root=root, revision=revision, files=files)
 
     @classmethod
-    def scan_quick(cls, root: Path, revision: int = 1) -> ProjectBundle:
+    def scan_quick(
+        cls,
+        root: Path,
+        revision: int = 1,
+        progress: ProjectScanProgress | None = None,
+    ) -> ProjectBundle:
         """Build a content identity using a persistent stat index without retaining source text."""
 
         root = root.expanduser().resolve(strict=True)
         if not root.is_dir():
             raise NotADirectoryError(root)
+        if progress is not None:
+            progress(0, 0)
         index_path = root / ".rustyera" / "cache" / "source-index-v1.json"
         try:
             stored = json.loads(index_path.read_text(encoding="utf-8"))
@@ -146,10 +177,14 @@ class ProjectBundle:
         files: dict[str, ProjectFile] = {}
         next_index: dict[str, Any] = {}
         canonical_roots = _canonical_source_roots(root)
-        for path in _project_paths(root):
-            category = _classify_project_path(root, path, canonical_roots)
-            if category is None:
-                continue
+        candidates = [
+            (path, category)
+            for path in _project_paths(root)
+            if (category := _classify_project_path(root, path, canonical_roots)) is not None
+        ]
+        if progress is not None:
+            progress(0, len(candidates))
+        for index, (path, category) in enumerate(candidates, 1):
             relative = _normalize_relative_path(path.relative_to(root).as_posix())
             try:
                 stat = path.stat()
@@ -188,10 +223,11 @@ class ProjectBundle:
                     "hash": digest.hex(),
                     "size": content_size,
                 }
+                _report_scan_progress(progress, index, len(candidates))
             except (OSError, UnicodeError, ValueError):
                 # Error payloads and malformed index entries need the normal scanner's
                 # precise diagnostic, so do not attempt a cache-only project load.
-                return cls.scan(root, revision)
+                return cls.scan(root, revision, progress)
         _write_source_index(index_path, {"version": 1, "files": next_index})
         return cls(root=root, revision=revision, files=files)
 
@@ -199,8 +235,10 @@ class ProjectBundle:
     def is_materialized(self) -> bool:
         return all(item.payload is not None for item in self.files.values())
 
-    def materialize(self) -> ProjectBundle:
-        return self if self.is_materialized else ProjectBundle.scan(self.root, self.revision)
+    def materialize(self, progress: ProjectScanProgress | None = None) -> ProjectBundle:
+        return (
+            self if self.is_materialized else ProjectBundle.scan(self.root, self.revision, progress)
+        )
 
     def identity(self) -> dict[int, Any]:
         hasher = blake3.blake3(derive_key_context="rustyera.project-source-identity.v1")
@@ -274,8 +312,10 @@ class ProjectBundle:
             raise ValueError(f"image resource {resource_id} digest does not match the project")
         return data
 
-    def rescan(self) -> tuple[ProjectBundle, dict[int, Any]]:
-        candidate = ProjectBundle.scan(self.root, self.revision + 1)
+    def rescan(
+        self, progress: ProjectScanProgress | None = None
+    ) -> tuple[ProjectBundle, dict[int, Any]]:
+        candidate = ProjectBundle.scan(self.root, self.revision + 1, progress)
         changes: list[Any] = []
         for relative_path in sorted(set(self.files) | set(candidate.files), key=str.casefold):
             old = self.files.get(relative_path)

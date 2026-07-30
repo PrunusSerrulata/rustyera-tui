@@ -6,11 +6,12 @@ import ctypes
 import os
 import sys
 from pathlib import Path
+from typing import Callable
 
 from .protocol_text import ERA_STATUSES, enum_text
 
 ABI_MAJOR = 3
-ABI_MINOR = 0
+ABI_MINOR = 1
 
 STATUS_OK = 0
 STATUS_EMPTY = 1
@@ -76,6 +77,15 @@ class EraDriveResult(ctypes.Structure):
     ]
 
 
+class EraProjectProgress(ctypes.Structure):
+    _fields_ = [
+        ("header", EraCallHeader),
+        ("stage", ctypes.c_uint32),
+        ("completed", ctypes.c_uint64),
+        ("total", ctypes.c_uint64),
+    ]
+
+
 SessionCreate = ctypes.CFUNCTYPE(
     ctypes.c_uint32,
     EraCallHeader,
@@ -97,6 +107,14 @@ SessionDestroy = ctypes.CFUNCTYPE(ctypes.c_uint32, EraCallHeader, EraSessionHand
 ReleaseBuffer = ctypes.CFUNCTYPE(ctypes.c_uint32, EraCallHeader, EraOwnedBuffer)
 LastError = ctypes.CFUNCTYPE(
     ctypes.c_uint32, EraCallHeader, EraSessionHandle, ctypes.POINTER(EraOwnedBuffer)
+)
+ProjectProgressCallback = ctypes.CFUNCTYPE(None, ctypes.c_void_p, EraProjectProgress)
+SessionSetProjectProgress = ctypes.CFUNCTYPE(
+    ctypes.c_uint32,
+    EraCallHeader,
+    EraSessionHandle,
+    ProjectProgressCallback,
+    ctypes.c_void_p,
 )
 
 
@@ -154,6 +172,7 @@ class RuntimeAbi:
         library_path: Path | None = None,
         debug_scope_mask: int = (1 << 10) - 1,
         resource_directory: Path | None = None,
+        project_progress: Callable[[int, int, int], None] | None = None,
     ):
         self.path = discover_library(library_path, resource_directory)
         self.library = ctypes.CDLL(str(self.path))
@@ -174,6 +193,13 @@ class RuntimeAbi:
         self._destroy = SessionDestroy(api.session_destroy)
         self._release = ReleaseBuffer(api.release_buffer)
         self._last_error = LastError(api.last_error)
+        self._project_progress_handler = project_progress
+        self._project_progress_callback = ProjectProgressCallback(self._on_project_progress)
+        self._set_project_progress = (
+            SessionSetProjectProgress(api.reserved[0])
+            if api.abi_version.minor >= 1 and api.reserved[0]
+            else None
+        )
         self.debug_scope_mask = debug_scope_mask
         self.handle = EraSessionHandle()
         self.create_session()
@@ -190,6 +216,18 @@ class RuntimeAbi:
         status = self._create(options.header, ctypes.byref(options), ctypes.byref(handle))
         self._check(status, "session_create", handle=False)
         self.handle = handle
+        if self._set_project_progress is not None and self._project_progress_handler is not None:
+            status = self._set_project_progress(
+                _header(ctypes.sizeof(EraCallHeader)),
+                self.handle,
+                self._project_progress_callback,
+                None,
+            )
+            self._check(status, "session_set_project_progress")
+
+    def _on_project_progress(self, _context: ctypes.c_void_p, progress: EraProjectProgress) -> None:
+        if self._project_progress_handler is not None:
+            self._project_progress_handler(progress.stage, progress.completed, progress.total)
 
     def recreate_session(self) -> None:
         self.destroy_session()
@@ -228,9 +266,7 @@ class RuntimeAbi:
         finally:
             release_status = self._release(header, output)
             if release_status != STATUS_OK:
-                raise AbiError(
-                    f"release_buffer failed with status {_status_text(release_status)}"
-                )
+                raise AbiError(f"release_buffer failed with status {_status_text(release_status)}")
 
     def last_error(self) -> str:
         if not self.handle.value:

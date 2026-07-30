@@ -6,7 +6,6 @@ import queue
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from time import monotonic
 from typing import Any
 
 from textual import events
@@ -102,7 +101,15 @@ class RustyEraTui(App[None]):
         "编译缓存保存失败，正在进入标题画面",
         "正在热重载",
     )
-    PROJECT_PROGRESS_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    PROJECT_PROGRESS_LABELS = (
+        "正在读取项目文件",
+        "正在整理项目文件",
+        "正在加载项目数据",
+        "正在解析脚本文件",
+        "正在分析脚本函数",
+        "正在编译脚本函数",
+        "正在验证编译结果",
+    )
 
     def __init__(
         self,
@@ -137,9 +144,8 @@ class RustyEraTui(App[None]):
         self.console_dialog: DebugConsoleDialog | None = None
         self.fatal_dialog: FatalErrorDialog | None = None
         self.fault_logs = ""
-        self.project_progress_started_at: float | None = None
+        self.project_progress_active = False
         self.project_progress_message = ""
-        self.project_progress_frame = 0
 
     def compose(self) -> ComposeResult:
         with Vertical(id="app-root"):
@@ -148,7 +154,6 @@ class RustyEraTui(App[None]):
                 yield Button("调试", id="menu-debug", classes="menu-button")
                 yield Button("帮助", id="menu-help", classes="menu-button")
             with Horizontal(id="project-progress"):
-                yield Static(self.PROJECT_PROGRESS_FRAMES[0], id="project-progress-spinner")
                 yield Static("", id="project-progress-message")
             yield GameViewport()
             yield Rule(id="separator-line")
@@ -174,7 +179,6 @@ class RustyEraTui(App[None]):
         self.worker.start()
         self.set_interval(0.03, self._drain_worker_events)
         self.set_interval(0.5, self._toggle_prompt_blink)
-        self.set_interval(0.1, self._refresh_project_progress)
         self.query_one("#project-progress").display = False
         self._update_prompt()
         self._refresh_menu_availability()
@@ -256,7 +260,7 @@ class RustyEraTui(App[None]):
             self._update_prompt()
             self._refresh_menu_availability()
             self._refresh_interaction_lock()
-            if self.project_progress_started_at is not None and self.runtime_phase in {
+            if self.project_progress_active and self.runtime_phase in {
                 4,
                 5,
                 10,
@@ -265,6 +269,8 @@ class RustyEraTui(App[None]):
                 self._finish_project_progress()
         elif kind == "status":
             self._set_status(str(value))
+        elif kind == "project_progress":
+            self._update_project_progress(*value)
         elif kind == "snapshot_export_finished":
             self.snapshot_exporting = False
             self._update_prompt()
@@ -369,29 +375,27 @@ class RustyEraTui(App[None]):
             self.query_one("#prompt", Input).placeholder = message
 
     def _begin_project_progress(self, message: str) -> None:
-        if self.project_progress_started_at is None:
-            self.project_progress_started_at = monotonic()
-            self.project_progress_frame = 0
+        self.project_progress_active = True
         self.project_progress_message = message
         self.query_one("#project-progress").display = True
-        self._refresh_project_progress()
+        self.query_one("#project-progress-message", Static).update(message)
 
-    def _refresh_project_progress(self) -> None:
-        started_at = self.project_progress_started_at
-        if started_at is None:
+    def _update_project_progress(self, stage: int, completed: int, total: int) -> None:
+        if not 0 <= stage < len(self.PROJECT_PROGRESS_LABELS):
             return
-        elapsed = max(0.0, monotonic() - started_at)
-        frame = self.PROJECT_PROGRESS_FRAMES[
-            self.project_progress_frame % len(self.PROJECT_PROGRESS_FRAMES)
-        ]
-        self.project_progress_frame += 1
-        self.query_one("#project-progress-spinner", Static).update(frame)
-        self.query_one("#project-progress-message", Static).update(
-            f"{self.project_progress_message} · 已用 {elapsed:.1f} 秒"
+        if stage == 0 and total <= 0:
+            self._begin_project_progress("正在枚举项目文件…")
+            return
+        completed = max(0, min(completed, total)) if total > 0 else 0
+        percent = min(100, completed * 100 // total) if total > 0 else 100
+        filled = percent * 20 // 100
+        bar = f"[{'█' * filled}{'░' * (20 - filled)}]"
+        self._begin_project_progress(
+            f"{self.PROJECT_PROGRESS_LABELS[stage]}：{completed}/{total} {bar} {percent}%"
         )
 
     def _finish_project_progress(self) -> None:
-        self.project_progress_started_at = None
+        self.project_progress_active = False
         self.project_progress_message = ""
         if self.is_mounted:
             self.query_one("#project-progress").display = False

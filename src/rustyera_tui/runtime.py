@@ -247,6 +247,9 @@ class RuntimeClient:
         self._message_skip_wait_id: int | None = None
         self._send_hello()
 
+    def _project_scan_progress(self, completed: int, total: int) -> None:
+        self.events.put(FrontendEvent("project_progress", (0, completed, total)))
+
     def _reset_wire_state(self) -> None:
         self.runtime_sequence = 0
         self.debug_sequence = 0
@@ -527,7 +530,9 @@ class RuntimeClient:
                     self.events.put(FrontendEvent("status", "正在载入编译缓存…"))
                     self._begin_import(cache, 2, "project_cache")
                 else:
-                    self.pending_bundle = self.pending_bundle.materialize()
+                    self.pending_bundle = self.pending_bundle.materialize(
+                        self._project_scan_progress
+                    )
                     self._submit_project(None)
             return
         if tag == 2:
@@ -747,7 +752,7 @@ class RuntimeClient:
                 self.events.put(FrontendEvent("error", "Runtime 请求源码，但没有待载入项目。"))
                 return
             self.events.put(FrontendEvent("status", "编译缓存未命中，正在读取项目源码…"))
-            self.pending_bundle = self.pending_bundle.materialize()
+            self.pending_bundle = self.pending_bundle.materialize(self._project_scan_progress)
             self._submit_project(None)
             return
         if not report[1]:
@@ -1062,7 +1067,7 @@ class RuntimeClient:
     def reload_all(self) -> None:
         if self.bundle is None:
             raise RuntimeError("no project is active")
-        candidate, request = self.bundle.rescan()
+        candidate, request = self.bundle.rescan(self._project_scan_progress)
         self.reload_candidate = candidate
         self.events.put(FrontendEvent("status", f"正在热重载 {len(request[2])} 个文件变更…"))
         self.send_runtime(12, request)
@@ -1496,7 +1501,11 @@ class RuntimeWorker(threading.Thread):
     def run(self) -> None:
         abi: RuntimeAbi | None = None
         try:
-            abi = RuntimeAbi(self.runtime_library, resource_directory=self.initial_project)
+            abi = RuntimeAbi(
+                self.runtime_library,
+                resource_directory=self.initial_project,
+                project_progress=self._emit_project_progress,
+            )
             self.client = RuntimeClient(
                 abi,
                 self.events,
@@ -1550,12 +1559,16 @@ class RuntimeWorker(threading.Thread):
                 case "restart":
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
-                    client.recreate(ProjectBundle.scan_quick(client.bundle.root, 1))
+                    client.recreate(
+                        ProjectBundle.scan_quick(
+                            client.bundle.root, 1, client._project_scan_progress
+                        )
+                    )
                 case "restart_recompile":
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
                     client.recreate(
-                        ProjectBundle.scan(client.bundle.root, 1),
+                        ProjectBundle.scan(client.bundle.root, 1, client._project_scan_progress),
                         allow_compiled_cache=False,
                     )
                 case "return_title":
@@ -1625,7 +1638,7 @@ class RuntimeWorker(threading.Thread):
         if self.client is None:
             return
         self.events.put(FrontendEvent("status", f"正在扫描 {root}…"))
-        bundle = ProjectBundle.scan_quick(root, 1)
+        bundle = ProjectBundle.scan_quick(root, 1, self._emit_scan_progress)
         restore = None
         if self.initial_state is not None:
             path, purpose = self.initial_state
@@ -1633,6 +1646,12 @@ class RuntimeWorker(threading.Thread):
             restore = (resolved, resolved.read_bytes(), purpose)
             self.initial_state = None
         self.client.recreate(bundle, restore)
+
+    def _emit_scan_progress(self, completed: int, total: int) -> None:
+        self.events.put(FrontendEvent("project_progress", (0, completed, total)))
+
+    def _emit_project_progress(self, stage: int, completed: int, total: int) -> None:
+        self.events.put(FrontendEvent("project_progress", (stage, completed, total)))
 
     def stop(self) -> None:
         self.send("force_stop")
