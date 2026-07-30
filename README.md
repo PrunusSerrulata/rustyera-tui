@@ -23,7 +23,9 @@ uv sync --locked
 
 从 [rustyera-core](https://github.com/PrunusSerrulata/rustyera) 的对应 release 获取当前
 平台动态库，或按 `rustyera-core.rev` 中的 revision 检出 core 并执行
-`cargo build -p era-runtime-capi --release`。发布流水线会自动完成后者。
+`cargo build -p era-runtime-capi --release`。发布流水线会自动完成后者。在四仓开发工作区
+中使用 `just runtime` 构建兄弟 `rustyera-core`；该命令会在本地构建结束后恢复 core 的
+已提交 `Cargo.lock`，而在线 CI 继续从云端检出 `rustyera-core.rev` 并使用 `--locked`。
 
 启动：
 
