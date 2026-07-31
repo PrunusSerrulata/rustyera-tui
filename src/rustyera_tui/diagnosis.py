@@ -12,16 +12,25 @@ from pathlib import Path
 import zstandard
 
 
-def resource_name(project: Path) -> str:
-    """Return the resource folder component used to identify diagnosis files."""
+def diagnosis_project_name(project_name: str) -> str:
+    """Return a portable filename component for the project-defined title."""
 
-    resolved = project.expanduser().resolve()
-    return resolved.name or resolved.parent.name or "project"
+    invalid = frozenset('<>:"/\\|?*')
+    sanitized = "".join(
+        "_" if character in invalid or ord(character) < 32 else character
+        for character in project_name.strip()
+    ).rstrip(". ")
+    return sanitized or "project"
 
 
-def diagnosis_default_path(project: Path, now: datetime | None = None) -> Path:
+def diagnosis_default_path(
+    project: Path,
+    now: datetime | None = None,
+    *,
+    project_name: str = "",
+) -> Path:
     timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
-    name = resource_name(project)
+    name = diagnosis_project_name(project_name)
     return project / f"{name}-diagnosis_{timestamp}.tar.zst"
 
 
@@ -40,6 +49,7 @@ def write_diagnosis_archive(
     target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     timestamp = int((exported_at or datetime.now()).timestamp())
+    project_name = diagnosis_project_name(project_name)
     members = (
         ("runtime.snapshot", snapshot),
         ("runtime.log", logs.encode("utf-8")),

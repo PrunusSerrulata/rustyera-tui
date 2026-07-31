@@ -118,6 +118,7 @@ class RustyEraTui(App[None]):
     ) -> None:
         super().__init__()
         self.project = resource_directory.expanduser() if resource_directory else Path.cwd()
+        self.project_name = ""
         self.runtime_library = runtime_library
         self.worker = RuntimeWorker(runtime_library, self.project)
         self.presentation = PresentationModel()
@@ -228,6 +229,7 @@ class RustyEraTui(App[None]):
             dirty = False
             if value.snapshot is not None:
                 self.presentation.apply_snapshot(value.snapshot)
+                self._capture_project_name()
                 dirty = True
             if value.delta is not None:
                 try:
@@ -235,6 +237,7 @@ class RustyEraTui(App[None]):
                 except ValueError as error:
                     self._log(str(error), LogLevel.WARNING)
                 else:
+                    self._capture_project_name()
                     dirty = True
             self._set_active_wait(value.active_wait)
             self._presentation_commit_ready = value.render
@@ -285,6 +288,7 @@ class RustyEraTui(App[None]):
                 self.notify(f"诊断信息导出失败：{message}", severity="error")
         elif kind == "project_loaded":
             self.project = Path(value) if value else self.project
+            self.project_name = ""
             self._set_status(f"项目已加载：{self.project}")
         elif kind == "log":
             if isinstance(value, LogMessage):
@@ -656,14 +660,30 @@ class RustyEraTui(App[None]):
         if self.fatal_dialog is not None and self.fatal_dialog.is_mounted:
             self.fatal_dialog.set_exporting()
         self.fault_logs = format_log_entries(self.logs)
-        self.worker.send("export_diagnosis", (path, self.fault_logs))
+        self.worker.send(
+            "export_diagnosis",
+            (path, self.fault_logs, self._diagnosis_project_name()),
+        )
 
     def _open_diagnosis_export_dialog(self) -> None:
-        initial = diagnosis_default_path(self.project or Path.cwd())
+        initial = diagnosis_default_path(
+            self.project or Path.cwd(),
+            project_name=self._diagnosis_project_name(),
+        )
         self.push_screen(
             PathDialog("导出诊断信息", "save", initial),
             self._start_diagnosis_export,
         )
+
+    def _capture_project_name(self) -> None:
+        title = self.presentation.title.strip()
+        if not self.project_name and title and title != self.TITLE:
+            self.project_name = title
+
+    def _diagnosis_project_name(self) -> str:
+        if self.project_name:
+            return self.project_name
+        return "" if self.presentation.title == self.TITLE else self.presentation.title
 
     def _help_action(self, item_id: str) -> None:
         if item_id == "help-export-diagnosis":

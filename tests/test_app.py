@@ -101,6 +101,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)) as pilot:
+        app.presentation.title = "eraThe World"
         worker.events.put(FrontendEvent("phase", 4))
         await pilot.pause()
         await pilot.click("#menu-help")
@@ -113,7 +114,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         await pilot.click("#help-export-diagnosis")
         assert isinstance(app.screen, PathDialog)
         assert app.screen.initial_value.parent == tmp_path
-        assert app.screen.initial_value.name.startswith(f"{tmp_path.name}-diagnosis_")
+        assert app.screen.initial_value.name.startswith("eraThe World-diagnosis_")
         assert app.screen.initial_value.name.endswith(".tar.zst")
         await pilot.click("#path-cancel")
 
@@ -132,6 +133,7 @@ async def test_manual_diagnosis_export_reuses_fatal_export_payload(tmp_path: Pat
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)):
+        app.presentation.title = "eraThe World"
         app._log("manual diagnosis detail", LogLevel.WARNING)
         target = tmp_path / "manual.tar.zst"
 
@@ -141,7 +143,10 @@ async def test_manual_diagnosis_export_reuses_fatal_export_payload(tmp_path: Pat
         assert app.query_one("#prompt", Input).disabled
         assert not app.query_one(GameViewport).interactions_enabled
         assert "manual diagnosis detail" in app.fault_logs
-        assert ("export_diagnosis", (target, app.fault_logs)) in worker.commands
+        assert (
+            "export_diagnosis",
+            (target, app.fault_logs, "eraThe World"),
+        ) in worker.commands
 
 
 async def test_prompt_submits_through_worker(tmp_path: Path) -> None:
@@ -1143,6 +1148,7 @@ async def test_fatal_fault_dialog_exports_diagnosis_and_gates_recovery_actions(
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)) as pilot:
+        app.presentation.title = "eraThe World"
         app._log("DEBUG: before fault", LogLevel.DEBUG)
         failure = RuntimeFailure(code=3, message="place storage is unavailable")
         app._handle_worker_event(
@@ -1187,11 +1193,14 @@ async def test_fatal_fault_dialog_exports_diagnosis_and_gates_recovery_actions(
         assert not app.diagnosis_exporting
 
         app._log("post-fault detail", LogLevel.DEBUG)
-        target = tmp_path / "eraTW-diagnosis_20260726-140506.tar.zst"
+        target = tmp_path / "eraThe World-diagnosis_20260726-140506.tar.zst"
         app._start_diagnosis_export(target)
         assert app.diagnosis_exporting
         assert "DEBUG post-fault detail" in app.fault_logs
-        assert ("export_diagnosis", (target, app.fault_logs)) in worker.commands
+        assert (
+            "export_diagnosis",
+            (target, app.fault_logs, "eraThe World"),
+        ) in worker.commands
         assert all(button.disabled for button in dialog.query(".fatal-buttons Button"))
         assert "正在导出" in str(dialog.query_one("#fatal-export-status", Static).render())
 

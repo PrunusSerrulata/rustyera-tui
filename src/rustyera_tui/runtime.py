@@ -18,7 +18,7 @@ import blake3
 from rich.cells import cell_len
 
 from .abi import RuntimeAbi
-from .diagnosis import resource_name, write_diagnosis_archive
+from .diagnosis import diagnosis_project_name, write_diagnosis_archive
 from .image_metadata import decode_image_metadata
 from .log_model import LogLevel, LogMessage
 from .presentation import (
@@ -1088,14 +1088,14 @@ class RuntimeClient:
         self.pending_export_kind = 1
         self.pending_export_message = self.send_runtime(60, {0: 1, 1: purpose_id})
 
-    def export_diagnosis(self, path: Path, logs: str) -> None:
+    def export_diagnosis(self, path: Path, logs: str, project_name: str) -> None:
         if self.bundle is None:
             raise RuntimeError("no project is active")
         if self.pending_diagnosis is not None:
             raise RuntimeError("another diagnosis export is already active")
         self.pending_diagnosis = DiagnosisExport(
             target=path,
-            project_name=resource_name(self.bundle.root),
+            project_name=diagnosis_project_name(project_name),
             logs=logs,
             stage="export_wait",
         )
@@ -1593,8 +1593,8 @@ class RuntimeWorker(threading.Thread):
                     path, purpose = command.value
                     client.export_snapshot(Path(path), str(purpose))
                 case "export_diagnosis":
-                    path, logs = command.value
-                    client.export_diagnosis(Path(path), str(logs))
+                    path, logs, project_name = command.value
+                    client.export_diagnosis(Path(path), str(logs), str(project_name))
                 case "restore_snapshot":
                     if client.bundle is None:
                         raise RuntimeError("load the matching project before restoring a snapshot")

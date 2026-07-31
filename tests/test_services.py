@@ -286,7 +286,11 @@ def test_snapshot_export_purposes_and_restore_warnings_are_frontend_visible(
     client.pending_export = None
     client.pending_export_kind = None
     client.pending_export_message = None
-    client.export_diagnosis(tmp_path / "diagnosis.tar.zst", "complete log\n")
+    client.export_diagnosis(
+        tmp_path / "diagnosis.tar.zst",
+        "complete log\n",
+        "eraThe World",
+    )
     assert captured.pop() == (60, {0: 1, 1: 2})
 
     client._handle_runtime(
@@ -310,7 +314,11 @@ def test_diagnosis_export_waits_for_an_existing_state_transfer(tmp_path: Path) -
     client.pending_export = (tmp_path / "compiled.bin", bytearray(), None)
     client.pending_export_kind = 2
 
-    client.export_diagnosis(tmp_path / "diagnosis.tar.zst", "fault log\n")
+    client.export_diagnosis(
+        tmp_path / "diagnosis.tar.zst",
+        "fault log\n",
+        "eraThe World",
+    )
 
     assert captured == []
     assert client.pending_diagnosis is not None
