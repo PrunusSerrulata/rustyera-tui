@@ -131,7 +131,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.1.0a1" in contents
-        assert "core 版本：0.1.0-alpha.1 (122db5ae)" in contents
+        assert "core 版本：0.1.0-alpha.1 (bdd668fd)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 
