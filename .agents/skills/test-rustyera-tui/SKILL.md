@@ -5,20 +5,6 @@ description: Run deterministic fixed-sequence, agent-driven, save/snapshot resto
 
 # Test RustyEra TUI
 
-## Assign testing
-
-Delegate every test command to a sub-agent running **gpt-5.6-terra low**. Instruct it to run
-tests only and return each command, exit code, and relevant output. Do not allow it to edit,
-format, or commit code, fixtures, documentation, or configuration. Permit test-generated files
-only in temporary or ignored directories.
-
-Keep implementation, formatting, test authoring, failure diagnosis, and fixes with the main
-agent. Never substitute a main-agent test run for the testing sub-agent.
-
-If any implementation, test, fixture, dependency, or build input changes after a relevant test
-starts, immediately tell the testing sub-agent what changed. Require it to rebuild as needed and
-rerun every affected check; discard stale results.
-
 Drive `rustyera-test`; do not recreate a Python input state machine or call Rust runtime internals.
 Read [test-cli.md](references/test-cli.md) before authoring or changing a scenario.
 
