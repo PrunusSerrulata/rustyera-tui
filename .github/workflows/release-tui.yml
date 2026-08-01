@@ -16,7 +16,7 @@ on:
         required: false
         type: string
       core_commit:
-        description: Full rustyera-core commit SHA (leave empty for the latest main commit)
+        description: Full rustyera-core commit SHA (leave empty for the default branch HEAD)
         required: false
         type: string
 
@@ -40,7 +40,7 @@ jobs:
         run: |
           revision="$CORE_COMMIT"
           if [[ -z "$revision" ]]; then
-            revision="$(git ls-remote https://github.com/PrunusSerrulata/rustyera-core.git refs/heads/main | cut -f1)"
+            revision="$(git ls-remote https://github.com/PrunusSerrulata/rustyera-core.git HEAD | awk '$2 == "HEAD" { print $1; exit }')"
           fi
           if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
             echo "core_commit must be a full 40-character lowercase commit SHA" >&2
