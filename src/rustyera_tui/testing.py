@@ -8,29 +8,27 @@ import queue
 import re
 import secrets
 import shutil
-import subprocess
-import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 
 from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
+from .testing_reference import ReferenceProcess as ReferenceProcess
+from .testing_support import (
+    OutputDelta as OutputDelta,
+    TestDriverError as TestDriverError,
+    normalized_lines as normalized_lines,
+    output_delta as output_delta,
+)
+from .testing_trace import TraceWriter as TraceWriter
 from .wire import unwrap_variant
 
 SCENARIO_VERSION = 1
-REFERENCE_SCHEMA_VERSION = 2
 DEFAULT_LIMITS = {"max_steps": 100, "timeout_seconds": 300}
-STREAM_OUTPUT_LINES = 30
 TERMINAL_EVENTS = {"error", "runtime_error", "runtime_fault", "worker_stopped"}
 INDEXED_WATCH = re.compile(r"^([^:@]+):(-?\d+(?:,-?\d+)*)$")
-
-
-class TestDriverError(RuntimeError):
-    """A scenario, runtime, or reference process could not be driven safely."""
-
-    __test__ = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,37 +105,6 @@ class Scenario:
             dict(raw.get("comparison", {})),
             dict(raw.get("checkpoint", {})),
         )
-
-
-@dataclass(frozen=True, slots=True)
-class OutputDelta:
-    reset: bool
-    removed: int
-    added: tuple[str, ...]
-
-    def as_dict(self) -> dict[str, Any]:
-        return {"reset": self.reset, "removed": self.removed, "added": list(self.added)}
-
-
-def normalized_lines(lines: list[str], ignore: list[str] | None = None) -> list[str]:
-    patterns = [re.compile(pattern) for pattern in (ignore or [])]
-    result: list[str] = []
-    for line in lines:
-        value = line.replace("\r", "").rstrip()
-        if any(pattern.search(value) for pattern in patterns):
-            continue
-        result.append(value)
-    return result
-
-
-def output_delta(previous: list[str], current: list[str]) -> OutputDelta:
-    common = 0
-    for left, right in zip(previous, current, strict=False):
-        if left != right:
-            break
-        common += 1
-    removed = len(previous) - common
-    return OutputDelta(common == 0 and bool(previous), removed, tuple(current[common:]))
 
 
 def plain_output(model: PresentationModel) -> list[str]:
@@ -332,173 +299,6 @@ class RustTestSession:
             else:
                 raise TestDriverError("timed out resuming after state inspection")
         return values
-
-
-class ReferenceProcess:
-    def __init__(
-        self,
-        command: list[str],
-        path_converter: list[str] | None = None,
-        timeout_seconds: float = 30,
-    ):
-        self.path_converter = path_converter
-        self.timeout_seconds = timeout_seconds
-        self.process = subprocess.Popen(  # noqa: S603 - explicit scenario-owned command
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-        )
-        self.next_id = 1
-        self.schema_version: int | None = None
-        self.reference_commit: str | None = None
-        self.previous_output: list[str] = []
-        self.responses: queue.Queue[str | None] = queue.Queue()
-        self.reader = threading.Thread(target=self._read_responses, daemon=True)
-        self.reader.start()
-
-    def _read_responses(self) -> None:
-        if not self.process.stdout:
-            self.responses.put(None)
-            return
-        for line in self.process.stdout:
-            self.responses.put(line)
-        self.responses.put(None)
-
-    def close(self) -> None:
-        if self.process.stdin:
-            self.process.stdin.close()
-        try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.process.terminate()
-
-    def convert_path(self, path: Path) -> str:
-        if not self.path_converter:
-            return str(path)
-        completed = subprocess.run(  # noqa: S603 - explicit scenario-owned command
-            [*self.path_converter, str(path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return completed.stdout.strip()
-
-    def request(self, operation: str, **fields: Any) -> dict[str, Any]:
-        if not self.process.stdin:
-            raise TestDriverError("reference process pipes are unavailable")
-        request = {"id": self.next_id, "op": operation, **fields}
-        self.next_id += 1
-        self.process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
-        self.process.stdin.flush()
-        try:
-            line = self.responses.get(timeout=self.timeout_seconds)
-        except queue.Empty as error:
-            raise TestDriverError("reference process timed out") from error
-        if not line:
-            detail = self.process.stderr.read() if self.process.stderr else ""
-            raise TestDriverError(f"reference process stopped without a response: {detail}")
-        response = json.loads(line)
-        if not response.get("ok"):
-            raise TestDriverError(f"reference request failed: {response.get('error')}")
-        schema_version = response.get("schemaVersion")
-        if schema_version != REFERENCE_SCHEMA_VERSION:
-            raise TestDriverError(
-                f"reference schema {schema_version!r} is not {REFERENCE_SCHEMA_VERSION}"
-            )
-        if response.get("id") != request["id"]:
-            raise TestDriverError("reference response id does not match its request")
-        self.schema_version = schema_version
-        self.reference_commit = response.get("referenceCommit")
-        return response["result"]
-
-    def start(self, scenario: Scenario, project_override: Path | None = None) -> dict[str, Any]:
-        capabilities = self.request("capabilities")
-        operations = set(capabilities.get("operations", []))
-        required = {"load", "run"}
-        if scenario.start.type == "traditional_save":
-            required.add("loadSave")
-        missing = sorted(required - operations)
-        if missing:
-            raise TestDriverError(f"reference CLI is missing operations: {', '.join(missing)}")
-        result = self.request(
-            "load",
-            gameDir=self.convert_path(project_override or scenario.project),
-            seed=scenario.seed,
-            watch=list(scenario.watches),
-        )
-        if scenario.start.type == "traditional_save" and scenario.start.path is not None:
-            result = self.request(
-                "loadSave",
-                savePath=self.convert_path(scenario.start.path),
-                watch=list(scenario.watches),
-            )
-        return self.observe(result)
-
-    def step(self, value: str, watches: tuple[str, ...]) -> dict[str, Any]:
-        return self.observe(self.request("run", inputs=[value], watch=list(watches)))
-
-    def observe(self, result: dict[str, Any]) -> dict[str, Any]:
-        current = [str(item) for item in result.get("output", [])]
-        delta = output_delta(self.previous_output, current)
-        self.previous_output = current
-        request = result.get("inputRequest") or {}
-        return {
-            "termination": result.get("termination"),
-            "wait": {
-                "kind": request.get("InputType"),
-                "system_input": request.get("IsSystemInput", False),
-            },
-            "output": current,
-            "output_delta": delta.as_dict(),
-            "output_tail": current[-30:],
-            "watches": result.get("watches", {}),
-            "random_seed": result.get("randomSeed"),
-            "random_algorithm": result.get("randomAlgorithm"),
-            "schema_version": self.schema_version,
-            "reference_commit": self.reference_commit,
-        }
-
-
-class TraceWriter:
-    def __init__(self, path: Path, stream: TextIO):
-        self.path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = path.open("w", encoding="utf-8")
-        self.stream = stream
-
-    def emit(self, event: dict[str, Any]) -> None:
-        line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-        self.file.write(line + "\n")
-        self.file.flush()
-        stream_event = dict(event)
-        if event.get("type") == "observation":
-            for implementation in ("rust", "reference"):
-                observation = event.get(implementation)
-                if isinstance(observation, dict):
-                    streamed_observation = {
-                        key: value for key, value in observation.items() if key != "output"
-                    }
-                    delta = observation.get("output_delta")
-                    if isinstance(delta, dict) and isinstance(delta.get("added"), list):
-                        added = delta["added"]
-                        if len(added) > STREAM_OUTPUT_LINES:
-                            streamed_observation["output_delta"] = {
-                                **delta,
-                                "added": added[-STREAM_OUTPUT_LINES:],
-                                "added_omitted": len(added) - STREAM_OUTPUT_LINES,
-                            }
-                    stream_event[implementation] = streamed_observation
-        self.stream.write(
-            json.dumps(stream_event, ensure_ascii=False, separators=(",", ":")) + "\n"
-        )
-        self.stream.flush()
-
-    def close(self) -> None:
-        self.file.close()
 
 
 def compare_observations(
