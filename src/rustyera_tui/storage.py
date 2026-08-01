@@ -21,15 +21,19 @@ class StorageBackend:
     by the frontend because it is the component that owns filesystem race semantics.
     """
 
-    def __init__(self, project_root: Path, data_root: Path | None = None):
+    def __init__(
+        self,
+        project_root: Path,
+        data_root: Path | None = None,
+        identity_path: Path | None = None,
+    ):
         self.project_root = project_root.resolve()
         configured = os.environ.get("ERA_TUI_DATA_DIR")
         if configured or data_root is not None:
             base = Path(configured).expanduser() if configured else data_root
             assert base is not None
-            project_key = blake3.blake3(self.project_root.as_posix().encode("utf-8")).hexdigest()[
-                :16
-            ]
+            identity = (identity_path or self.project_root).resolve().as_posix()
+            project_key = blake3.blake3(identity.encode("utf-8")).hexdigest()[:16]
             self.data_root = base.resolve() / "games" / project_key
         else:
             self.data_root = self.project_root
@@ -38,11 +42,12 @@ class StorageBackend:
     def compiled_cache_path(self) -> Path:
         """Return the frontend-private opaque compiler cache path for this project."""
 
-        return self.data_root / ".rustyera" / "cache" / "compiled-project-v8.bin.zst"
+        return self.data_root / ".rustyera" / "cache" / "compiled-project.reraproj"
 
     def obsolete_compiled_cache_paths(self) -> tuple[Path, ...]:
         root = self.data_root / ".rustyera" / "cache"
         return (
+            root / "compiled-project-v8.bin.zst",
             root / "compiled-project-v7.bin.zst",
             root / "compiled-project-v6.bin.zst",
             root / "compiled-project-v5.bin.zst",

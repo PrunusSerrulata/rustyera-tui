@@ -106,6 +106,42 @@ class ProjectBundle:
     root: Path
     revision: int
     files: dict[str, ProjectFile]
+    project_file: Path | None = None
+
+    @classmethod
+    def from_project_file_manifest(
+        cls, project_file: Path, manifest: dict[int, Any]
+    ) -> ProjectBundle:
+        resolved = project_file.expanduser().resolve(strict=True)
+        if resolved.suffix.casefold() != ".reraproj":
+            raise ValueError("project file must use the .reraproj extension")
+        revision = manifest.get(0)
+        submitted = manifest.get(1)
+        if not isinstance(revision, int) or not isinstance(submitted, list):
+            raise ValueError("project file contains an invalid manifest")
+        files: dict[str, ProjectFile] = {}
+        for value in submitted:
+            if not isinstance(value, dict):
+                raise ValueError("project file contains an invalid file entry")
+            relative = value.get(0)
+            category = value.get(1)
+            payload = value.get(2)
+            content_hash = value.get(3)
+            if (
+                not isinstance(relative, str)
+                or not isinstance(category, int)
+                or not isinstance(payload, list)
+                or (content_hash is not None and not isinstance(content_hash, bytes))
+            ):
+                raise ValueError("project file contains an invalid file entry")
+            files[relative] = ProjectFile(
+                relative_path=relative,
+                category=category,
+                payload=payload,
+                content_hash=content_hash,
+                content_size=_payload_size(payload),
+            )
+        return cls(resolved.parent, revision, files, resolved)
 
     @classmethod
     def scan(
@@ -296,6 +332,8 @@ class ProjectBundle:
     def rescan(
         self, progress: ProjectScanProgress | None = None
     ) -> tuple[ProjectBundle, dict[int, Any]]:
+        if self.project_file is not None:
+            raise RuntimeError("a packaged project cannot reload source files")
         candidate = ProjectBundle.scan(self.root, self.revision + 1, progress)
         changes: list[Any] = []
         for relative_path in sorted(set(self.files) | set(candidate.files), key=str.casefold):
@@ -311,6 +349,8 @@ class ProjectBundle:
         return candidate, reload_request
 
     def reload_file(self, path: Path) -> tuple[ProjectBundle, dict[int, Any]]:
+        if self.project_file is not None:
+            raise RuntimeError("a packaged project cannot reload source files")
         expanded = path.expanduser()
         absolute = expanded if expanded.is_absolute() else Path.cwd() / expanded
         lexical = Path(os.path.abspath(absolute))
@@ -331,6 +371,17 @@ class ProjectBundle:
             1: candidate.revision,
             2: [variant(0, item.submitted())],
         }
+
+
+def _payload_size(payload: list[Any]) -> int:
+    if len(payload) != 2 or not isinstance(payload[1], list) or len(payload[1]) != 1:
+        return 0
+    value = payload[1][0]
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    if isinstance(value, bytes):
+        return len(value)
+    return 0
 
 
 def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:

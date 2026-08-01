@@ -25,13 +25,13 @@ from .dialogs import (
     VariableDialog,
     VariableRefresh,
 )
-from .diagnosis import diagnosis_default_path
+from .diagnosis import diagnosis_default_path, diagnosis_project_name
 from .log_model import LogEntry, LogLevel, LogMessage, format_log_entries, make_log_entry
 from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.1.0-alpha.1 (de25e80d)"
+CORE_VERSION = "0.1.0-alpha.1 (122db5ae)"
 
 
 def frontend_version() -> str:
@@ -68,6 +68,7 @@ class RustyEraTui(App[None]):
         ("file-reload-all", "重新载入所有脚本"),
         ("file-reload-folder", "重新载入文件夹..."),
         ("file-reload-file", "重新载入脚本文件..."),
+        ("file-export-project", "导出项目文件..."),
         ("file-export-snapshot", "导出当前VM快照..."),
         ("file-restore-snapshot", "恢复VM快照..."),
         ("file-exit", "退出"),
@@ -79,6 +80,7 @@ class RustyEraTui(App[None]):
         "file-reload-all",
         "file-reload-folder",
         "file-reload-file",
+        "file-export-project",
         "file-export-snapshot",
         "file-restore-snapshot",
     )
@@ -92,13 +94,13 @@ class RustyEraTui(App[None]):
     PROJECT_PROGRESS_PREFIXES = (
         "正在创建新的 Runtime session",
         "正在扫描 ",
-        "正在载入编译缓存",
-        "编译缓存未命中",
+        "正在载入项目文件缓存",
+        "项目文件缓存未命中",
         "正在提交项目并编译脚本",
         "项目编译完成，正在进入标题画面",
-        "编译缓存命中，正在进入标题画面",
-        "编译缓存已保存，正在进入标题画面",
-        "编译缓存保存失败，正在进入标题画面",
+        "项目文件缓存命中，正在进入标题画面",
+        "项目文件缓存已保存，正在进入标题画面",
+        "项目文件缓存保存失败，正在进入标题画面",
         "正在热重载",
     )
     PROJECT_PROGRESS_LABELS = (
@@ -115,12 +117,23 @@ class RustyEraTui(App[None]):
         self,
         resource_directory: Path | None,
         runtime_library: Path | None,
+        project_file: Path | None = None,
     ) -> None:
         super().__init__()
-        self.project = resource_directory.expanduser() if resource_directory else Path.cwd()
+        self.project = (
+            resource_directory.expanduser()
+            if resource_directory
+            else project_file.expanduser().parent
+            if project_file
+            else Path.cwd()
+        )
         self.project_name = ""
         self.runtime_library = runtime_library
-        self.worker = RuntimeWorker(runtime_library, self.project)
+        self.worker = RuntimeWorker(
+            runtime_library,
+            resource_directory,
+            initial_project_file=project_file,
+        )
         self.presentation = PresentationModel()
         self.active_wait: dict[int, Any] | None = None
         self._activated_wait: tuple[int, Any] | None = None
@@ -135,6 +148,7 @@ class RustyEraTui(App[None]):
         self.environment_revision = 0
         self.exit_pending = False
         self.snapshot_exporting = False
+        self.project_file_exporting = False
         self.diagnosis_exporting = False
         self.presentation_rendering = False
         self._presentation_dirty = False
@@ -275,6 +289,12 @@ class RustyEraTui(App[None]):
             self.snapshot_exporting = False
             self._update_prompt()
             self._refresh_interaction_lock()
+        elif kind == "project_file_export_finished":
+            self.project_file_exporting = False
+            self._update_prompt()
+            self._refresh_interaction_lock()
+            if not value:
+                self.notify("项目文件导出失败", severity="error")
         elif kind == "diagnosis_export_finished":
             self.diagnosis_exporting = False
             self._update_prompt()
@@ -370,7 +390,12 @@ class RustyEraTui(App[None]):
             self._begin_project_progress(message)
         elif message.startswith("脚本热重载完成"):
             self._finish_project_progress()
-        if self.project_progress_active or self.snapshot_exporting or self.presentation_rendering:
+        if (
+            self.project_progress_active
+            or self.snapshot_exporting
+            or self.project_file_exporting
+            or self.presentation_rendering
+        ):
             self._update_prompt()
         else:
             self.query_one("#prompt", Input).placeholder = message
@@ -425,6 +450,11 @@ class RustyEraTui(App[None]):
             self._set_prompt_state("prompt-running")
             prompt.disabled = True
             prompt.placeholder = "VM 快照导出中……"
+            return
+        if self.project_file_exporting:
+            self._set_prompt_state("prompt-running")
+            prompt.disabled = True
+            prompt.placeholder = "项目文件导出中……"
             return
         if self.diagnosis_exporting:
             self._set_prompt_state("prompt-running")
@@ -491,6 +521,7 @@ class RustyEraTui(App[None]):
     def _game_interactions_blocked(self) -> bool:
         return (
             self.snapshot_exporting
+            or self.project_file_exporting
             or self.diagnosis_exporting
             or self.presentation_rendering
             or self.blocking_error is not None
@@ -506,6 +537,7 @@ class RustyEraTui(App[None]):
             not self.debug_enabled
             or not self._runtime_menu_actions_available()
             or self.snapshot_exporting
+            or self.project_file_exporting
             or self.diagnosis_exporting
             or self.blocking_error is not None
         )
@@ -593,8 +625,8 @@ class RustyEraTui(App[None]):
         self.query_one("#help-menu").remove_class("visible")
 
     def _file_action(self, item_id: str) -> None:
-        if self.snapshot_exporting and item_id != "file-exit":
-            self.notify("VM 快照导出完成前不能执行此操作", severity="warning")
+        if (self.snapshot_exporting or self.project_file_exporting) and item_id != "file-exit":
+            self.notify("文件导出完成前不能执行此操作", severity="warning")
             return
         if item_id == "file-restart":
             self.worker.send("restart")
@@ -606,6 +638,11 @@ class RustyEraTui(App[None]):
             self._choose_path("重新载入 Era 项目文件夹", "directory", "load_project")
         elif item_id == "file-reload-file":
             self._choose_path("重新载入脚本文件", "file", "reload_file")
+        elif item_id == "file-export-project":
+            self.push_screen(
+                PathDialog("导出项目文件", "save", self._project_file_default_path()),
+                self._start_project_file_export,
+            )
         elif item_id == "file-export-snapshot":
             initial = self._snapshot_default_path()
             self.push_screen(
@@ -627,6 +664,11 @@ class RustyEraTui(App[None]):
     def _snapshot_default_path(self, now: datetime | None = None) -> Path:
         timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
         return (self.project or Path.cwd()) / f"runtime_{timestamp}.snapshot"
+
+    def _project_file_default_path(self) -> Path:
+        title = self.project_name.strip() or self.project.name or "RustyEra项目"
+        safe_title = diagnosis_project_name(title)
+        return (self.project or Path.cwd()) / f"{safe_title}.reraproj"
 
     def _log_default_path(self, now: datetime | None = None) -> Path:
         timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
@@ -650,6 +692,14 @@ class RustyEraTui(App[None]):
         self._refresh_interaction_lock()
         purpose = "debug" if self.debug_enabled else "normal"
         self.worker.send("export_snapshot", (path, purpose))
+
+    def _start_project_file_export(self, path: Path | None) -> None:
+        if path is None or self.project_file_exporting:
+            return
+        self.project_file_exporting = True
+        self._update_prompt()
+        self._refresh_interaction_lock()
+        self.worker.send("export_project_file", path)
 
     def _start_diagnosis_export(self, path: Path | None) -> None:
         if path is None or self.diagnosis_exporting:

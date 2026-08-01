@@ -70,6 +70,13 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         await pilot.click("#file-reload-all")
         assert ("reload_all", None) in worker.commands
 
+        app.project_name = "测试项目"
+        await pilot.click("#menu-file")
+        await pilot.click("#file-export-project")
+        assert isinstance(app.screen, PathDialog)
+        assert app.screen.initial_value == tmp_path / "测试项目.reraproj"
+        await pilot.click("#path-cancel")
+
         await pilot.click("#menu-debug")
         assert app.query_one("#debug-console").disabled
         await pilot.click("#debug-toggle")
@@ -124,8 +131,15 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.1.0a1" in contents
-        assert "core 版本：0.1.0-alpha.1 (de25e80d)" in contents
+        assert "core 版本：0.1.0-alpha.1 (122db5ae)" in contents
         assert "许可证：GPL-3.0-only" in contents
+
+
+def test_project_file_default_path_sanitizes_the_project_title(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.project_name = 'bad<>:"/\\|?* name. '
+
+    assert app._project_file_default_path() == tmp_path / "bad_________ name.reraproj"
 
 
 def test_displayed_core_revision_matches_the_build_pin() -> None:

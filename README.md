@@ -31,9 +31,11 @@ uv sync --locked
 
 ```sh
 uv run rustyera-tui [RESOURCE_DIRECTORY]
+uv run rustyera-tui --project-file PROJECT.reraproj
 ```
 
-`RESOURCE_DIRECTORY` 可省略，默认使用当前工作目录。前端从该目录寻找：
+`RESOURCE_DIRECTORY` 可省略，默认使用当前工作目录；若同时指定目录与
+`--project-file`，优先使用目录。前端从资源目录寻找：
 
 - `CSV/` 和 `ERB/` 源码树；
 - macOS 的 `libera_runtime_capi.dylib`；
@@ -48,23 +50,23 @@ uv run rustyera-tui [RESOURCE_DIRECTORY]
 项目没有规范源码树时，也接受直接位于所选目录下的最小项目文件。源码首先按严格
 UTF-8（含 BOM）解码；无效时按参考实现的规则回退到 CP932，再统一向 runtime 提交
 UTF-8。规范源码树之外的指南、模板和未安装补丁不会被误作游戏源码。Save、
-GlobalSave、Data、Log、snapshot、编译缓存和可写 Project overlay 默认都位于资源
+GlobalSave、Data、Log、snapshot、项目文件缓存和可写 Project overlay 默认都位于资源
 目录。设置 `ERA_TUI_DATA_DIR` 可以把 runtime storage namespace 移动到指定目录下按
 项目隔离的位置；资源读取仍使用当前资源目录。
 
-## 缓存与重新加载
+## 项目文件与重新加载
 
-成功编译的项目缓存为：
+成功编译的项目会缓存为可独立启动、导出的项目文件：
 
 ```text
-.rustyera/cache/compiled-project-v8.bin.zst
+.rustyera/cache/compiled-project.reraproj
 ```
 
 冷启动和“重启”使用持久化 stat/hash 源文件索引，因此不会重新读取未修改文件；精确
-命中编译缓存时，也不必重新把源码 payload 传入 runtime。“重新载入文件夹”执行完整
+命中项目文件缓存时，也不必重新把源码 payload 传入 runtime。“重新载入文件夹”执行完整
 内容扫描；“返回标题画面”和 VM snapshot restore 复用已经加载的项目。
 
-缓存编码在短暂延迟后于后台启动，避免阻塞标题和第一天启动路径；完成后由前端原子
+项目文件编码在短暂延迟后于后台启动，避免阻塞标题和第一天启动路径；完成后由前端原子
 写入。
 
 ## 展示范围

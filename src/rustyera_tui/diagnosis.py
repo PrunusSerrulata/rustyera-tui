@@ -53,7 +53,7 @@ def write_diagnosis_archive(
     members = (
         ("runtime.snapshot", snapshot),
         ("runtime.log", logs.encode("utf-8")),
-        (f"{project_name}-compiled-project.bin.zst", compiled_artifact),
+        (f"{project_name}.reraproj", compiled_artifact),
     )
     try:
         with os.fdopen(descriptor, "wb") as output:

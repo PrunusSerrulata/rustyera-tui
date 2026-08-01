@@ -31,6 +31,38 @@ def test_project_scanner_is_utf8_and_deterministic(tmp_path: Path) -> None:
     assert csv[3] == blake3.blake3(b"0,test\n").digest()
 
 
+def test_project_bundle_uses_embedded_project_file_resources(tmp_path: Path) -> None:
+    project_file = tmp_path / "game.reraproj"
+    project_file.write_bytes(b"container")
+    source = "@SYSTEM_TITLE\nRETURN\n"
+    resource = b"image"
+    manifest = {
+        0: 7,
+        1: [
+            {
+                0: "main.erb",
+                1: 2,
+                2: variant(0, source),
+                3: blake3.blake3(source.encode()).digest(),
+            },
+            {
+                0: "resources/a.png",
+                1: 4,
+                2: variant(1, resource),
+                3: blake3.blake3(resource).digest(),
+            },
+        ],
+    }
+
+    bundle = ProjectBundle.from_project_file_manifest(project_file, manifest)
+
+    assert bundle.project_file == project_file
+    assert bundle.identity()[0] == 7
+    assert bundle.resource_bytes("resources/a.png", blake3.blake3(resource).digest()) == resource
+    with pytest.raises(RuntimeError, match="packaged project"):
+        bundle.rescan()
+
+
 def test_project_scan_reports_completed_file_counts(tmp_path: Path) -> None:
     (tmp_path / "main.erb").write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
     (tmp_path / "variables.csv").write_text("FLAG,1\n", encoding="utf-8")
@@ -351,9 +383,10 @@ def test_storage_defaults_to_the_project_directory(
     assert backend._namespace_root(1) == tmp_path.resolve() / "sav"
     assert backend._namespace_root(2) == tmp_path.resolve() / "sav"
     assert backend.compiled_cache_path() == (
-        tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v8.bin.zst"
+        tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project.reraproj"
     )
     assert backend.obsolete_compiled_cache_paths() == (
+        tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v8.bin.zst",
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v7.bin.zst",
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v6.bin.zst",
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v5.bin.zst",

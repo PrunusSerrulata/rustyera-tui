@@ -12,8 +12,12 @@ def build_parser() -> argparse.ArgumentParser:
         "resource_directory",
         nargs="?",
         type=Path,
-        default=Path.cwd(),
-        help="resource directory containing CSV, ERB, and the runtime library (default: cwd)",
+        help="resource directory containing CSV and ERB files (takes priority over --project-file)",
+    )
+    parser.add_argument(
+        "--project-file",
+        type=Path,
+        help="path to a self-contained .reraproj file",
     )
     parser.add_argument(
         "--runtime-library",
@@ -25,9 +29,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    resource_directory = args.resource_directory
+    project_file = None if resource_directory is not None else args.project_file
+    if resource_directory is None and project_file is None:
+        resource_directory = Path.cwd()
     RustyEraTui(
-        resource_directory=args.resource_directory,
+        resource_directory=resource_directory,
         runtime_library=args.runtime_library,
+        project_file=project_file,
     ).run()
 
 

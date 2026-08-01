@@ -39,7 +39,7 @@ def test_diagnosis_archive_has_the_required_named_payloads(tmp_path: Path) -> No
     assert members == {
         "runtime.snapshot": b"snapshot",
         "runtime.log": b"first\nlast\n",
-        "eraThe World-compiled-project.bin.zst": b"artifact",
+        "eraThe World.reraproj": b"artifact",
     }
 
 

@@ -27,6 +27,7 @@ class RuntimeWorker(threading.Thread):
         new_game_seed: int | None = None,
         metrics_threshold_ms: float | None = None,
         initial_state: tuple[Path, str] | None = None,
+        initial_project_file: Path | None = None,
     ):
         super().__init__(name="rustyera-runtime", daemon=True)
         self.runtime_library = runtime_library
@@ -34,6 +35,7 @@ class RuntimeWorker(threading.Thread):
         self.new_game_seed = new_game_seed
         self.metrics_threshold_ms = metrics_threshold_ms
         self.initial_state = initial_state
+        self.initial_project_file = initial_project_file
         self.commands: queue.Queue[FrontendCommand] = queue.Queue()
         # Backpressure is preferable to retaining an unbounded number of presentation
         # revisions when Runtime can produce output faster than Textual lays it out.
@@ -62,6 +64,8 @@ class RuntimeWorker(threading.Thread):
             )
             if self.initial_project is not None:
                 self._load_project(self.initial_project)
+            elif self.initial_project_file is not None:
+                self._load_project_file(self.initial_project_file)
             else:
                 self.events.put(FrontendEvent("status", "请选择 Era 项目文件夹。"))
             while not self._stop_requested.is_set():
@@ -107,17 +111,26 @@ class RuntimeWorker(threading.Thread):
             match command.kind:
                 case "load_project":
                     self._load_project(Path(command.value))
+                case "load_project_file":
+                    self._load_project_file(Path(command.value))
                 case "restart":
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
-                    client.recreate(
-                        ProjectBundle.scan_quick(
-                            client.bundle.root, 1, client._project_scan_progress
+                    if client.bundle.project_file is not None:
+                        self._load_project_file(client.bundle.project_file)
+                    else:
+                        client.recreate(
+                            ProjectBundle.scan_quick(
+                                client.bundle.root, 1, client._project_scan_progress
+                            )
                         )
-                    )
                 case "restart_recompile":
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
+                    if client.bundle.project_file is not None:
+                        raise RuntimeError(
+                            "a packaged project cannot be recompiled without sources"
+                        )
                     client.recreate(
                         ProjectBundle.scan(client.bundle.root, 1, client._project_scan_progress),
                         allow_compiled_cache=False,
@@ -143,6 +156,8 @@ class RuntimeWorker(threading.Thread):
                 case "export_snapshot":
                     path, purpose = command.value
                     client.export_snapshot(Path(path), str(purpose))
+                case "export_project_file":
+                    client.export_project_file(Path(command.value))
                 case "export_diagnosis":
                     path, logs, project_name = command.value
                     client.export_diagnosis(Path(path), str(logs), str(project_name))
@@ -181,6 +196,12 @@ class RuntimeWorker(threading.Thread):
                 client.pending_export_kind = None
                 client.pending_export_message = None
                 self.events.put(FrontendEvent("snapshot_export_finished", False))
+            elif command.kind == "export_project_file":
+                client.pending_export = None
+                client.pending_export_kind = None
+                client.pending_export_message = None
+                client.pending_project_file_export_path = None
+                self.events.put(FrontendEvent("project_file_export_finished", False))
             elif command.kind == "export_diagnosis":
                 client._finish_diagnosis_export(False, str(error))
             self.events.put(FrontendEvent("error", str(error)))
@@ -197,6 +218,16 @@ class RuntimeWorker(threading.Thread):
             restore = (resolved, resolved.read_bytes(), purpose)
             self.initial_state = None
         self.client.recreate(bundle, restore)
+
+    def _load_project_file(self, path: Path) -> None:
+        if self.client is None:
+            return
+        resolved = path.expanduser().resolve(strict=True)
+        payload = resolved.read_bytes()
+        manifest = self.client.abi.project_file_manifest(payload)
+        bundle = ProjectBundle.from_project_file_manifest(resolved, manifest)
+        self.events.put(FrontendEvent("status", f"正在载入项目文件 {resolved}…"))
+        self.client.recreate(bundle, project_file_bytes=payload)
 
     def _emit_scan_progress(self, completed: int, total: int) -> None:
         self.events.put(FrontendEvent("project_progress", (0, completed, total)))

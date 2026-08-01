@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Callable
 
 from .protocol_text import ERA_STATUSES, enum_text
+from .wire import decode
 
 ABI_MAJOR = 3
-ABI_MINOR = 1
+ABI_MINOR = 2
 
 STATUS_OK = 0
 STATUS_EMPTY = 1
@@ -116,6 +117,13 @@ SessionSetProjectProgress = ctypes.CFUNCTYPE(
     ProjectProgressCallback,
     ctypes.c_void_p,
 )
+SessionDecodeProjectFile = ctypes.CFUNCTYPE(
+    ctypes.c_uint32,
+    EraCallHeader,
+    EraSessionHandle,
+    EraByteSlice,
+    ctypes.POINTER(EraOwnedBuffer),
+)
 
 
 class EraRuntimeApi(ctypes.Structure):
@@ -200,6 +208,11 @@ class RuntimeAbi:
             if api.abi_version.minor >= 1 and api.reserved[0]
             else None
         )
+        self._decode_project_file = (
+            SessionDecodeProjectFile(api.reserved[1])
+            if api.abi_version.minor >= 2 and api.reserved[1]
+            else None
+        )
         self.debug_scope_mask = debug_scope_mask
         self.handle = EraSessionHandle()
         self.create_session()
@@ -267,6 +280,31 @@ class RuntimeAbi:
             release_status = self._release(header, output)
             if release_status != STATUS_OK:
                 raise AbiError(f"release_buffer failed with status {_status_text(release_status)}")
+
+    def project_file_manifest(self, data: bytes) -> dict[int, object]:
+        """Decode a validated project-file manifest through the core ABI."""
+
+        if self._decode_project_file is None:
+            raise AbiError("runtime ABI does not support RustyEra project files")
+        buffer = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
+        output = EraOwnedBuffer()
+        header = _header(ctypes.sizeof(EraOwnedBuffer))
+        status = self._decode_project_file(
+            header,
+            self.handle,
+            EraByteSlice(ctypes.cast(buffer, ctypes.POINTER(ctypes.c_uint8)), len(data)),
+            ctypes.byref(output),
+        )
+        self._check(status, "session_decode_project_file")
+        try:
+            decoded = decode(ctypes.string_at(output.data, output.len))
+        finally:
+            release_status = self._release(header, output)
+            if release_status != STATUS_OK:
+                raise AbiError(f"release_buffer failed with status {_status_text(release_status)}")
+        if not isinstance(decoded, dict):
+            raise AbiError("runtime returned an invalid project-file manifest")
+        return decoded
 
     def last_error(self) -> str:
         if not self.handle.value:
