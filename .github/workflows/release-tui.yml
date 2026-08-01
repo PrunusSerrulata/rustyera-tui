@@ -15,6 +15,10 @@ on:
         description: Tag to create when publishing (for example, v0.1.0)
         required: false
         type: string
+      core_commit:
+        description: Full rustyera-core commit SHA (leave empty for the latest main commit)
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -24,8 +28,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve-core:
+    runs-on: ubuntu-latest
+    outputs:
+      revision: ${{ steps.core.outputs.revision }}
+    steps:
+      - name: Resolve core revision
+        id: core
+        env:
+          CORE_COMMIT: ${{ inputs.core_commit }}
+        run: |
+          revision="$CORE_COMMIT"
+          if [[ -z "$revision" ]]; then
+            revision="$(git ls-remote https://github.com/PrunusSerrulata/rustyera-core.git refs/heads/main | cut -f1)"
+          fi
+          if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "core_commit must be a full 40-character lowercase commit SHA" >&2
+            exit 1
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
   package:
     name: Standalone (${{ matrix.name }})
+    needs: resolve-core
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -40,17 +65,14 @@ jobs:
           - { name: macos-arm64, runner: macos-latest, library: libera_runtime_capi.dylib }
     steps:
       - uses: actions/checkout@v7
-      - name: Read pinned core revision
-        id: core
+      - name: Record selected core revision
         shell: pwsh
         run: |
-          $revision = (Get-Content rustyera-core.rev -Raw).Trim()
-          if ($revision -notmatch '^[0-9a-f]{40}$') { throw "invalid rustyera-core.rev" }
-          "revision=$revision" >> $env:GITHUB_OUTPUT
+          Set-Content -NoNewline rustyera-core.rev '${{ needs.resolve-core.outputs.revision }}'
       - uses: actions/checkout@v7
         with:
           repository: PrunusSerrulata/rustyera-core
-          ref: ${{ steps.core.outputs.revision }}
+          ref: ${{ needs.resolve-core.outputs.revision }}
           path: _deps/rustyera-core
       - uses: dtolnay/rust-toolchain@stable
       - uses: astral-sh/setup-uv@v7
