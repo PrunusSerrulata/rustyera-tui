@@ -9,7 +9,7 @@ import pytest
 from rich.cells import cell_len
 from textual.widgets import Button, DataTable, Input, RichLog, Select, Static
 
-from rustyera_tui.app import RustyEraTui
+from rustyera_tui.app import CORE_VERSION, RustyEraTui
 from rustyera_tui.dialogs import AboutDialog, FatalErrorDialog, PathDialog
 from rustyera_tui.log_model import LogLevel, LogMessage
 from rustyera_tui.presentation import (
@@ -124,8 +124,14 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.0.3a1" in contents
-        assert "core 版本：0.0.3-alpha.1 (e62ad0f5)" in contents
+        assert "core 版本：0.0.3-alpha.1 (322aa1e4)" in contents
         assert "许可证：GPL-3.0-only" in contents
+
+
+def test_displayed_core_revision_matches_the_build_pin() -> None:
+    pinned_revision = (Path(__file__).parent.parent / "rustyera-core.rev").read_text().strip()
+
+    assert CORE_VERSION.endswith(f"({pinned_revision[:8]})")
 
 
 async def test_manual_diagnosis_export_reuses_fatal_export_payload(tmp_path: Path) -> None:
