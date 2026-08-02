@@ -395,3 +395,26 @@ def test_storage_defaults_to_the_project_directory(
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v2.bin.zst",
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v1.bin.gz",
     )
+
+
+def test_configuration_write_is_atomic_and_detects_external_changes(tmp_path: Path) -> None:
+    config = tmp_path / "emuera.config"
+    config.write_text("FontSize:18\n", encoding="utf-8")
+    bundle = ProjectBundle.scan(tmp_path)
+    digest = bundle.files["emuera.config"].content_hash
+    assert digest is not None
+
+    bundle.write_configuration(digest, "FontSize:20\n")
+    assert config.read_text(encoding="utf-8") == "FontSize:20\n"
+
+    with pytest.raises(RuntimeError, match="其他程序修改"):
+        bundle.write_configuration(digest, "FontSize:22\n")
+
+
+def test_packaged_project_configuration_is_read_only(tmp_path: Path) -> None:
+    project_file = tmp_path / "game.reraproj"
+    project_file.write_bytes(b"placeholder")
+    bundle = ProjectBundle(tmp_path, 1, {}, project_file)
+
+    with pytest.raises(PermissionError, match="只读"):
+        bundle.write_configuration(b"", "FontSize:20\n")

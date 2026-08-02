@@ -139,6 +139,8 @@ class RuntimeWorker(threading.Thread):
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
                     client.send_runtime(23, {})
+                case "save_configuration":
+                    client.prepare_configuration_update(command.value)
                 case "reload_all":
                     client.reload_all()
                 case "reload_file":

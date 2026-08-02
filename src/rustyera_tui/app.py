@@ -14,6 +14,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Input, Rule, Static
 
+from .configuration import ConfigurationSnapshot
 from .dialogs import (
     AboutDialog,
     ConfirmDialog,
@@ -21,6 +22,7 @@ from .dialogs import (
     FatalErrorDialog,
     LogDialog,
     PathDialog,
+    PreferencesDialog,
     StackDialog,
     VariableDialog,
     VariableRefresh,
@@ -31,7 +33,7 @@ from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.1.0-alpha.1 (bdd668fd)"
+CORE_VERSION = "0.1.0-alpha.1 (eb5cabd3)"
 
 
 def frontend_version() -> str:
@@ -58,6 +60,7 @@ class RustyEraTui(App[None]):
     BINDINGS = [
         Binding("ctrl+q", "request_quit", "退出", priority=True),
         Binding("ctrl+z", "input_undo", "撤销输入"),
+        Binding("ctrl+comma", "preferences", "偏好选项"),
         Binding("f10", "debug_step", "单步"),
         Binding("escape", "close_menus", "关闭菜单", show=False),
     ]
@@ -65,6 +68,7 @@ class RustyEraTui(App[None]):
     FILE_ITEMS = (
         ("file-restart", "重启"),
         ("file-title", "返回标题画面"),
+        ("file-preferences", "偏好选项..."),
         ("file-reload-all", "重新载入所有脚本"),
         ("file-reload-folder", "重新载入文件夹..."),
         ("file-reload-file", "重新载入脚本文件..."),
@@ -161,6 +165,8 @@ class RustyEraTui(App[None]):
         self.fault_logs = ""
         self.project_progress_active = False
         self.project_progress_message = ""
+        self.configuration_snapshot: ConfigurationSnapshot | None = None
+        self.configuration_read_only = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="app-root"):
@@ -310,6 +316,19 @@ class RustyEraTui(App[None]):
             self.project = Path(value) if value else self.project
             self.project_name = ""
             self._set_status(f"项目已加载：{self.project}")
+        elif kind == "configuration":
+            self.configuration_snapshot, self.configuration_read_only = value
+            self._apply_client_preferences()
+            self._refresh_menu_availability()
+        elif kind == "configuration_cleared":
+            self.configuration_snapshot = None
+            self.configuration_read_only = False
+            self._reset_client_preferences()
+            self._refresh_menu_availability()
+        elif kind == "configuration_saved":
+            self.notify("偏好选项已保存，正在重启游戏")
+        elif kind == "open_configuration":
+            self.action_preferences()
         elif kind == "log":
             if isinstance(value, LogMessage):
                 self._log(value.message, value.level, authoritative=value.authoritative)
@@ -583,13 +602,19 @@ class RustyEraTui(App[None]):
     def _refresh_menu_availability(self) -> None:
         if not self.is_mounted:
             return
+        screen = self.screen_stack[0]
         available = self._runtime_menu_actions_available()
         for item_id in self.GAME_FILE_ITEMS:
-            self.query_one(f"#{item_id}", Button).disabled = not available
-        self.query_one("#debug-toggle", Button).disabled = not available
+            screen.query_one(f"#{item_id}", Button).disabled = not available
+        screen.query_one("#file-preferences", Button).disabled = (
+            not available or self.configuration_snapshot is None
+        )
+        screen.query_one("#debug-toggle", Button).disabled = not available
         for item_id in self.GAME_DEBUG_ITEMS[1:]:
-            self.query_one(f"#{item_id}", Button).disabled = not available or not self.debug_enabled
-        self.query_one("#help-export-diagnosis", Button).disabled = not available
+            screen.query_one(f"#{item_id}", Button).disabled = (
+                not available or not self.debug_enabled
+            )
+        screen.query_one("#help-export-diagnosis", Button).disabled = not available
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         item_id = event.button.id or ""
@@ -632,6 +657,8 @@ class RustyEraTui(App[None]):
             self.worker.send("restart")
         elif item_id == "file-title":
             self.worker.send("return_title")
+        elif item_id == "file-preferences":
+            self.action_preferences()
         elif item_id == "file-reload-all":
             self.worker.send("reload_all")
         elif item_id == "file-reload-folder":
@@ -653,6 +680,42 @@ class RustyEraTui(App[None]):
             self._choose_path("恢复 VM 快照", "file", "restore_snapshot")
         elif item_id == "file-exit":
             self.action_request_quit()
+
+    def action_preferences(self) -> None:
+        if self.configuration_snapshot is None:
+            self.notify("Runtime 尚未提供项目配置", severity="warning")
+            return
+        self.push_screen(
+            PreferencesDialog(self.configuration_snapshot, self.configuration_read_only),
+            lambda changes: (
+                changes is not None
+                and bool(changes)
+                and self.worker.send("save_configuration", changes)
+            ),
+        )
+
+    def _apply_client_preferences(self) -> None:
+        if self.configuration_snapshot is None or not self.is_mounted:
+            return
+        snapshot = self.configuration_snapshot
+        screen = self.screen_stack[0]
+        screen.query_one("#menu-bar").display = snapshot.value("UseMenu", "YES") == "YES"
+        viewport = screen.query_one(GameViewport)
+        viewport.set_mouse_enabled(snapshot.value("UseMouse", "YES") == "YES")
+        try:
+            scroll_height = int(snapshot.value("ScrollHeight", "1"))
+        except ValueError:
+            scroll_height = 1
+        viewport.set_scroll_height(scroll_height)
+
+    def _reset_client_preferences(self) -> None:
+        if not self.is_mounted:
+            return
+        screen = self.screen_stack[0]
+        screen.query_one("#menu-bar").display = True
+        viewport = screen.query_one(GameViewport)
+        viewport.set_mouse_enabled(True)
+        viewport.set_scroll_height(1)
 
     def _choose_path(self, title: str, mode: str, command: str) -> None:
         initial = self.project or Path.cwd()

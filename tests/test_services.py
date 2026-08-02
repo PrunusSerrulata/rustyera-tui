@@ -7,9 +7,15 @@ from typing import Any
 
 import blake3
 
+from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
 from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile
 from rustyera_tui.presentation import ServicePresentationModel
-from rustyera_tui.runtime import FrontendEvent, RuntimeClient, RuntimeFailure
+from rustyera_tui.runtime import (
+    FrontendEvent,
+    PendingConfigurationUpdate,
+    RuntimeClient,
+    RuntimeFailure,
+)
 from rustyera_tui.wire import decode, encode, unwrap_variant, variant
 
 
@@ -475,3 +481,79 @@ def test_message_skip_submits_each_enter_wait_once_and_stops_at_forcewait() -> N
     assert all(submission[3] == [0, []] for submission in submissions)
     assert all(submission[4] for submission in submissions)
     assert not client._message_skip_active
+
+
+def test_configuration_update_uses_authoritative_snapshot_and_open_effect_is_supported() -> None:
+    client, captured = client_with_capture()
+    client.bundle = SimpleNamespace(project_file=None)
+    client.pending_configuration = None
+    client.configuration_snapshot = ConfigurationSnapshot.from_wire({0: 7, 1: b"digest", 2: []})
+
+    client.prepare_configuration_update([ConfigurationChange("FontSize", "20")])
+    assert captured.pop() == (
+        24,
+        {0: 7, 1: b"digest", 2: [{0: "FontSize", 1: "20"}]},
+    )
+    assert client.pending_configuration is not None
+    assert client.pending_configuration.message_id == 1
+
+    client._acknowledge_effects({0: [{0: 41, 1: variant(4)}]})
+    assert client.events.get_nowait() == FrontendEvent("open_configuration")
+    assert captured.pop() == (43, {0: [{0: 41, 1: 0}]})
+
+
+def test_prepared_configuration_writes_and_restarts_without_exposing_wire_maps(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "emuera.config"
+    config.write_text("FontSize:18\n", encoding="utf-8")
+    bundle = ProjectBundle.scan(tmp_path)
+    digest = bundle.files["emuera.config"].content_hash
+    assert digest is not None
+    client, _captured = client_with_capture()
+    client.bundle = bundle
+    client.pending_configuration = PendingConfigurationUpdate(7, 1, digest)
+    recreated: list[ProjectBundle] = []
+    client.recreate = recreated.append  # type: ignore[method-assign]
+
+    client._handle_configuration_prepared(
+        {0: 1, 1: digest, 2: "FontSize:20\n", 3: True},
+        7,
+    )
+
+    assert config.read_text(encoding="utf-8") == "FontSize:20\n"
+    assert len(recreated) == 1
+    events = []
+    while not client.events.empty():
+        events.append(client.events.get_nowait())
+    assert FrontendEvent("configuration_saved") in events
+
+
+def test_invalid_or_conflicting_prepared_configuration_keeps_session_alive(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "emuera.config"
+    config.write_text("FontSize:18\n", encoding="utf-8")
+    bundle = ProjectBundle.scan(tmp_path)
+    digest = bundle.files["emuera.config"].content_hash
+    assert digest is not None
+    client, _captured = client_with_capture()
+    client.bundle = bundle
+    client.pending_configuration = PendingConfigurationUpdate(7, 1, digest)
+
+    client._handle_configuration_prepared({0: "bad"}, 7)
+    failure = client.events.get_nowait()
+    assert failure.kind == "error"
+    assert "保存偏好选项失败" in failure.value
+    assert config.read_text(encoding="utf-8") == "FontSize:18\n"
+
+    config.write_text("FontSize:19\n", encoding="utf-8")
+    client.pending_configuration = PendingConfigurationUpdate(8, 1, digest)
+    client._handle_configuration_prepared(
+        {0: 1, 1: digest, 2: "FontSize:20\n", 3: True},
+        8,
+    )
+    conflict = client.events.get_nowait()
+    assert conflict.kind == "error"
+    assert "其他程序修改" in conflict.value
+    assert config.read_text(encoding="utf-8") == "FontSize:19\n"

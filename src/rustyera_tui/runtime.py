@@ -17,6 +17,11 @@ import blake3
 from rich.cells import cell_len
 
 from .abi import RuntimeAbi
+from .configuration import (
+    ConfigurationChange,
+    ConfigurationSnapshot,
+    PreparedConfiguration,
+)
 from .diagnosis import diagnosis_project_name, write_diagnosis_archive
 from .image_metadata import decode_image_metadata
 from .log_model import LogLevel
@@ -89,6 +94,13 @@ class DiagnosisExport:
     retry_after_ns: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class PendingConfigurationUpdate:
+    message_id: int
+    project_revision: int
+    source_digest: bytes
+
+
 class RuntimeClient:
     """Translate frontend intent to the public runtime and debug wire protocols."""
 
@@ -135,6 +147,8 @@ class RuntimeClient:
         self.allow_compiled_cache_load = True
         self.pending_project_file_bytes: bytes | None = None
         self.pending_project_file_export_path: Path | None = None
+        self.pending_configuration: PendingConfigurationUpdate | None = None
+        self.configuration_snapshot: ConfigurationSnapshot | None = None
         self.project_file_export_retry_after_ns = 0
         self.debug_requested = False
         self.debug_grant: dict[int, Any] | None = None
@@ -201,6 +215,8 @@ class RuntimeClient:
         self.cache_ready = False
         self.cache_refresh_after_ns = 0
         self.cache_preparation_started = False
+        self.pending_configuration = None
+        self.configuration_snapshot = None
 
     def recreate(
         self,
@@ -210,6 +226,7 @@ class RuntimeClient:
         allow_compiled_cache: bool = True,
         project_file_bytes: bytes | None = None,
     ) -> None:
+        self.events.put(FrontendEvent("configuration_cleared"))
         self.events.put(FrontendEvent("status", "正在创建新的 Runtime session…"))
         self.abi.recreate_session()
         self._reset_wire_state()
@@ -468,6 +485,8 @@ class RuntimeClient:
             self.events.put(FrontendEvent("runtime_error", f"协议版本被拒绝：{value.get(1, '')}"))
         elif tag == 11:  # ProjectLoadReport
             self._handle_project_report(value)
+        elif tag == 25:  # ConfigurationUpdatePrepared
+            self._handle_configuration_prepared(value, correlation_id)
         elif tag == 21:
             self.phase = value[0]
             self.epoch = value[2]
@@ -559,6 +578,13 @@ class RuntimeClient:
             project_file_export_rejection = (
                 correlation_id == self.pending_export_message and self.pending_export_kind == 5
             )
+            pending_configuration = getattr(self, "pending_configuration", None)
+            configuration_rejection = (
+                pending_configuration is not None
+                and correlation_id == pending_configuration.message_id
+            )
+            if configuration_rejection:
+                self.pending_configuration = None
             if cache_export_rejection:
                 self.pending_export = None
                 self.pending_cache_export_message = None
@@ -615,6 +641,7 @@ class RuntimeClient:
             self._set_active_wait(self.presentation.input_wait)
             self._pending_presentation_events = [("snapshot", value[3])]
             self._wait_event_dirty = True
+            self._publish_configuration(value.get(8))
         elif tag == 97:
             source = value.get(3)
             location = f" ({source.get(0)}:{source.get(3, '?')})" if source else ""
@@ -712,12 +739,14 @@ class RuntimeClient:
             self.cache_preparation_started = False
             self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
             self.events.put(FrontendEvent("status", "脚本热重载完成。"))
+            self._publish_configuration(report.get(4))
             return
         if self.pending_bundle is not None:
             self.bundle = self.pending_bundle
             self.pending_bundle = None
             self.storage = self._storage_for_bundle(self.bundle)
         self.events.put(FrontendEvent("project_loaded", self.bundle.root if self.bundle else None))
+        self._publish_configuration(report.get(4))
         if self.pending_restore is not None:
             _path, payload, purpose = self.pending_restore
             kind = 0 if purpose == "traditional_save" else 1
@@ -735,6 +764,65 @@ class RuntimeClient:
             self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
             self.events.put(FrontendEvent("status", "项目编译完成，正在进入标题画面…"))
             self.send_runtime(20, self._new_game_start())
+
+    def _publish_configuration(self, value: Any) -> None:
+        if value is None:
+            return
+        try:
+            snapshot = ConfigurationSnapshot.from_wire(value)
+        except ValueError as error:
+            self.events.put(FrontendEvent("error", f"Runtime 返回了无效的项目配置：{error}"))
+            return
+        self.configuration_snapshot = snapshot
+        read_only = self.bundle is not None and self.bundle.project_file is not None
+        self.events.put(FrontendEvent("configuration", (snapshot, read_only)))
+
+    def prepare_configuration_update(self, changes: list[ConfigurationChange]) -> None:
+        if self.bundle is None:
+            raise RuntimeError("没有已载入的项目")
+        if self.bundle.project_file is not None:
+            raise PermissionError("打包项目中的 emuera.config 为只读")
+        if self.pending_configuration is not None:
+            raise RuntimeError("偏好选项正在保存")
+        snapshot = self.configuration_snapshot
+        if snapshot is None:
+            raise RuntimeError("Runtime 尚未提供项目配置")
+        message_id = self.send_runtime(24, snapshot.prepare_wire(changes))
+        self.pending_configuration = PendingConfigurationUpdate(
+            message_id,
+            snapshot.project_revision,
+            snapshot.source_digest,
+        )
+
+    def _handle_configuration_prepared(
+        self, prepared: dict[int, Any], correlation_id: int | None
+    ) -> None:
+        pending = self.pending_configuration
+        if pending is None or correlation_id != pending.message_id:
+            self.events.put(log_event("忽略了非预期的配置保存响应", LogLevel.WARNING))
+            return
+        self.pending_configuration = None
+        try:
+            value = PreparedConfiguration.from_wire(prepared)
+            if (
+                value.project_revision != pending.project_revision
+                or value.expected_source_digest != pending.source_digest
+            ):
+                raise ValueError("prepared configuration identity does not match the request")
+            if self.bundle is None:
+                raise RuntimeError("配置保存完成时项目已关闭")
+            self.bundle.write_configuration(value.expected_source_digest, value.contents)
+            candidate = ProjectBundle.scan_quick(self.bundle.root, 1, self._project_scan_progress)
+        except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+            self.events.put(FrontendEvent("error", f"保存偏好选项失败：{error}"))
+            return
+        self.events.put(FrontendEvent("configuration_saved"))
+        if not value.restart_required:
+            return
+        try:
+            self.recreate(candidate)
+        except Exception as error:  # noqa: BLE001 - preserve the worker after a restart failure
+            self.events.put(FrontendEvent("error", f"偏好选项已保存，但重启游戏失败：{error}"))
 
     def _submit_project(self, cache_transfer_id: int | None) -> None:
         if self.pending_bundle is None:
@@ -832,7 +920,12 @@ class RuntimeClient:
         # from silently claiming playback succeeded and lets scripts observe honest outcomes.
         outcomes = []
         for effect in batch.get(0, []):
-            outcomes.append({0: effect[0], 1: 1, 2: "TUI does not provide this device effect"})
+            kind, _fields = unwrap_variant(effect[1])
+            if kind == 4:
+                self.events.put(FrontendEvent("open_configuration"))
+                outcomes.append({0: effect[0], 1: 0})
+            else:
+                outcomes.append({0: effect[0], 1: 1, 2: "TUI does not provide this device effect"})
         self.send_runtime(43, {0: outcomes})
 
     def _handle_storage(self, request: dict[int, Any], correlation_id: int | None) -> None:

@@ -64,6 +64,7 @@ class GameLine(Static):
         self.regions: list[ClickRegion] = []
         self.hovered_region: int | None = None
         self.interactions_enabled = True
+        self.mouse_enabled = True
         self.layout_width: int | None = None
         self._projected_width: int | None = None
         self._projected_segments: tuple[DisplaySegment, ...] = ()
@@ -224,6 +225,9 @@ class GameLine(Static):
         return None
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self.mouse_enabled:
+            self.tooltip = None
+            return
         index = self._region_at(event.offset.x, event.offset.y)
         if index is not None and (
             not self.interactions_enabled or not self.regions[index].enabled
@@ -244,7 +248,7 @@ class GameLine(Static):
         self.tooltip = None
 
     def on_click(self, event: events.Click) -> None:
-        if event.button != 1:
+        if not self.mouse_enabled or event.button != 1:
             return
         index = self._region_at(event.offset.x, event.offset.y)
         if index is None:
@@ -404,6 +408,8 @@ class GameViewport(ScrollableContainer):
         super().__init__(id="game-viewport")
         self.models: list[DisplayLineModel] = []
         self.interactions_enabled = True
+        self.mouse_enabled = True
+        self.scroll_height = 1
         self.presentation_background = "#000000"
         self._horizontal_overflow = False
 
@@ -428,6 +434,8 @@ class GameViewport(ScrollableContainer):
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
+        if not self.mouse_enabled:
+            return
         if event.button == 1:
             self.post_message(self.ContinueRequested())
         elif event.button == 3:
@@ -445,10 +453,32 @@ class GameViewport(ScrollableContainer):
             if isinstance(child, GameLine):
                 child.enable_interactions()
 
+    def set_mouse_enabled(self, enabled: bool) -> None:
+        self.mouse_enabled = enabled
+        for child in self.children:
+            if isinstance(child, GameLine):
+                child.mouse_enabled = enabled
+
+    def set_scroll_height(self, height: int) -> None:
+        self.scroll_height = max(1, height)
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        event.stop()
+        if not self.mouse_enabled:
+            return
+        self.scroll_relative(y=self.scroll_height, animate=False)
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        event.stop()
+        if not self.mouse_enabled:
+            return
+        self.scroll_relative(y=-self.scroll_height, animate=False)
+
     def _line_widget(self, line: DisplayLineModel) -> GameLine:
         widget = GameLine(line)
         widget.layout_width = self.content_width
         widget.interactions_enabled = self.interactions_enabled
+        widget.mouse_enabled = self.mouse_enabled
         widget.styles.background = self.presentation_background
         return widget
 

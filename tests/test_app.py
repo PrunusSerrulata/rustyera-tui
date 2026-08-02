@@ -10,7 +10,8 @@ from rich.cells import cell_len
 from textual.widgets import Button, DataTable, Input, RichLog, Select, Static
 
 from rustyera_tui.app import CORE_VERSION, RustyEraTui
-from rustyera_tui.dialogs import AboutDialog, FatalErrorDialog, PathDialog
+from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
+from rustyera_tui.dialogs import AboutDialog, FatalErrorDialog, PathDialog, PreferencesDialog
 from rustyera_tui.log_model import LogLevel, LogMessage
 from rustyera_tui.presentation import (
     ColumnCellLayout,
@@ -131,7 +132,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.1.0a1" in contents
-        assert "core 版本：0.1.0-alpha.1 (bdd668fd)" in contents
+        assert "core 版本：0.1.0-alpha.1 (eb5cabd3)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 
@@ -1355,3 +1356,129 @@ async def test_save_delete_action_is_merged_at_the_slot_row_right_edge(tmp_path:
         assert game_line.regions[1].token == delete_token
         assert game_line.regions[1].end == game_line.size.width
         assert str(game_line.render()).endswith("[X]")
+
+
+async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_values(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    snapshot = ConfigurationSnapshot.from_wire(
+        {
+            0: 9,
+            1: b"digest",
+            2: [
+                {
+                    0: "UseMenu",
+                    1: "メニューを使用する",
+                    2: "Show menu",
+                    3: "YES",
+                    4: 0,
+                    5: [],
+                    6: False,
+                    7: 2,
+                },
+                {
+                    0: "FontSize",
+                    1: "フォントサイズ",
+                    2: "Font size",
+                    3: "18",
+                    4: 1,
+                    5: [],
+                    6: False,
+                    7: 2,
+                },
+                {
+                    0: "BackColor",
+                    1: "背景色",
+                    2: "Background",
+                    3: "0,0,0",
+                    4: 4,
+                    5: [],
+                    6: True,
+                    7: 2,
+                },
+            ],
+        }
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        worker.events.put(FrontendEvent("phase", 4))
+        worker.events.put(FrontendEvent("configuration", (snapshot, False)))
+        await pilot.pause()
+        assert app.query_one("#menu-bar").display
+        assert not app.query_one("#file-preferences", Button).disabled
+
+        await pilot.click("#menu-file")
+        await pilot.click("#file-preferences")
+        assert isinstance(app.screen, PreferencesDialog)
+        font = app.screen.query_one("#preference-1", Input)
+        fixed = app.screen.query_one("#preference-2", Input)
+        assert fixed.disabled
+        font.value = "20"
+        await pilot.click("#preferences-save")
+        await pilot.pause()
+        assert (
+            "save_configuration",
+            [ConfigurationChange("FontSize", "20")],
+        ) in worker.commands
+
+        hidden = ConfigurationSnapshot.from_wire(
+            {
+                0: 10,
+                1: b"next",
+                2: [
+                    {
+                        0: "UseMenu",
+                        1: "メニューを使用する",
+                        2: "Show menu",
+                        3: "NO",
+                        4: 0,
+                        5: [],
+                        6: False,
+                        7: 2,
+                    },
+                    {
+                        0: "UseMouse",
+                        1: "マウスを使用する",
+                        2: "Use mouse",
+                        3: "NO",
+                        4: 0,
+                        5: [],
+                        6: False,
+                        7: 2,
+                    },
+                    {
+                        0: "ScrollHeight",
+                        1: "スクロール行数",
+                        2: "Lines per scroll",
+                        3: "4",
+                        4: 1,
+                        5: [],
+                        6: False,
+                        7: 2,
+                    },
+                ],
+            }
+        )
+        worker.events.put(FrontendEvent("configuration", (hidden, True)))
+        await pilot.pause()
+        viewport = app.query_one(GameViewport)
+        assert not app.query_one("#menu-bar").display
+        assert not viewport.mouse_enabled
+        assert viewport.scroll_height == 4
+
+        await pilot.press("ctrl+comma")
+        assert isinstance(app.screen, PreferencesDialog)
+        assert app.screen.query_one("#preferences-save", Button).disabled
+        assert app.screen.query_one("#preference-0", Select).disabled
+        await pilot.click("#preferences-cancel")
+        await pilot.pause()
+
+        worker.events.put(FrontendEvent("configuration_cleared"))
+        await pilot.pause()
+        assert app.query_one("#menu-bar").display
+        assert viewport.mouse_enabled
+        assert viewport.scroll_height == 1
+        assert app.query_one("#file-preferences", Button).disabled

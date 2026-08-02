@@ -199,6 +199,36 @@ ModalScreen {
     height: 88%;
 }
 
+.preferences-dialog {
+    width: 92%;
+    height: 92%;
+}
+
+#preferences-description, #preferences-read-only {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#preferences-read-only {
+    color: #fbbf24;
+}
+
+#preferences-fields {
+    height: 1fr;
+    border: solid #334155;
+    padding: 0 1;
+}
+
+.preference-label {
+    height: auto;
+    margin-top: 1;
+    color: #bae6fd;
+}
+
+#preferences-fields Input, #preferences-fields Select {
+    width: 100%;
+}
+
 .confirm-dialog {
     width: 60;
     height: 10;
