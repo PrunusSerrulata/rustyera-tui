@@ -10,6 +10,10 @@ Read [test-cli.md](references/test-cli.md) before authoring or changing a scenar
 
 ## Enforce the task budget
 
+- Before starting any test command, confirm that any required refactoring subagent has completed
+  its single permitted run and that every requirement it reported has been implemented. Refuse to
+  start testing while any refactoring requirement remains. Once the first test starts, never spawn,
+  resume, follow up with, or rerun a refactoring subagent during that task.
 - Start one shared 60-minute wall-clock budget with the task's first test command. It includes all
   later tests, targeted reruns, end-to-end waits, and test-failure investigation. Bound every
   command by the remaining time.
