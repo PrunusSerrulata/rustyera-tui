@@ -8,7 +8,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Label, Select, Static, TabbedContent, TabPane
 
-from .color_picker import ColorField, NumericInput
+from .color_picker import ColorField
 from .configuration import ConfigurationChange, ConfigurationEntry, ConfigurationSnapshot
 from .preferences_schema import FIELDS, PAGES, FieldSpec, PageSpec
 
@@ -19,7 +19,9 @@ def _field_id(code: str) -> str:
 
 class PreferenceField(Horizontal):
     def __init__(self, spec: FieldSpec, entry: ConfigurationEntry, read_only: bool) -> None:
-        classes = "preference-field preference-wide" if spec.wide else "preference-field"
+        classes = f"preference-field preference-{spec.kind}"
+        if spec.wide:
+            classes += " preference-wide"
         super().__init__(id=f"row-{_field_id(spec.code)}", classes=classes)
         self.spec = spec
         self.entry = entry
@@ -32,14 +34,14 @@ class PreferenceField(Horizontal):
             yield Checkbox(
                 "",
                 value=self.entry.value == "YES",
+                compact=True,
                 id=control_id,
                 disabled=self.control_disabled,
             )
         elif self.spec.kind == "integer":
-            yield NumericInput(
-                self.entry.value,
-                self.spec.minimum,
-                self.spec.maximum,
+            yield Input(
+                value=self.entry.value,
+                type="integer",
                 id=control_id,
                 disabled=self.control_disabled,
             )
@@ -137,13 +139,16 @@ class PreferencesDialog(ModalScreen[None]):
         control = self.query_one(f"#{_field_id(field.code)}")
         if isinstance(control, Checkbox):
             return "YES" if control.value else "NO"
-        if isinstance(control, NumericInput):
-            return str(control.integer())
         if isinstance(control, Select):
             return str(control.value)
         if isinstance(control, ColorField):
             return control.value
         if isinstance(control, Input):
+            if field.kind == "integer":
+                value = int(control.value)
+                if not field.minimum <= value <= field.maximum:
+                    raise ValueError(f"必须在 {field.minimum} 到 {field.maximum} 之间")
+                return str(value)
             return control.value
         raise TypeError(f"unknown settings control for {field.code}")
 
@@ -151,7 +156,7 @@ class PreferencesDialog(ModalScreen[None]):
         control = self.query_one(f"#{_field_id(field.code)}")
         if isinstance(control, Checkbox):
             control.value = value == "YES"
-        elif isinstance(control, (NumericInput, ColorField)):
+        elif isinstance(control, ColorField):
             control.value = value
         elif isinstance(control, Select):
             control.value = value

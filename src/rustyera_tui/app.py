@@ -226,6 +226,7 @@ class RustyEraTui(App[None]):
         viewport = self.query_one(GameViewport)
         changed_from, trimmed_prefix = self.presentation.take_render_change()
         with self.batch_update():
+            viewport.set_button_focus(self.presentation.button_focus)
             horizontal_overflow = await viewport.set_lines(
                 self.presentation.lines,
                 changed_from=changed_from,

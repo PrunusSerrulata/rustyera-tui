@@ -200,9 +200,10 @@ ModalScreen {
 }
 
 .preferences-dialog {
-    width: 96%;
-    height: 96%;
-    max-width: 150;
+    width: 108;
+    height: 34;
+    max-width: 96%;
+    max-height: 96%;
     text-align: left;
 }
 
@@ -261,6 +262,16 @@ ModalScreen {
     align: left middle;
 }
 
+.preference-field.preference-boolean {
+    height: 1;
+}
+
+.preference-field.preference-boolean .preference-field-label,
+.preference-field > Checkbox {
+    height: 1;
+    min-height: 1;
+}
+
 .preference-wide {
     column-span: 2;
 }
@@ -274,31 +285,12 @@ ModalScreen {
 
 .preference-field > Checkbox {
     width: 5;
-    height: 3;
 }
 
 .preference-field > Input,
 .preference-field > Select,
-.preference-field > .numeric-input,
 .preference-field > .color-field {
     width: 1fr;
-}
-
-.numeric-input {
-    height: 3;
-    align: left middle;
-}
-
-.numeric-input Input {
-    width: 1fr;
-}
-
-.numeric-input Button {
-    width: 5;
-    min-width: 5;
-    height: 3;
-    min-height: 3;
-    padding: 0;
 }
 
 .color-field {
@@ -356,8 +348,7 @@ ModalScreen {
     content-align: left middle;
 }
 
-.color-editor-row Input,
-.color-editor-row .numeric-input {
+.color-editor-row Input {
     width: 1fr;
 }
 

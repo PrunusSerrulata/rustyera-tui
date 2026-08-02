@@ -19,8 +19,8 @@ from rustyera_tui.presentation import (
     DisplaySegment,
     SeparatorLayout,
 )
-from rustyera_tui.color_picker import ColorField, ColorPickerDialog, NumericInput
-from rustyera_tui.preferences_schema import FIELDS
+from rustyera_tui.color_picker import ColorField, ColorPickerDialog
+from rustyera_tui.preferences_schema import FIELDS, FieldSpec
 from rustyera_tui.runtime import FrontendEvent, PresentationBatch, RuntimeFailure
 from rustyera_tui.widgets import GameLine, GameViewport
 from rustyera_tui.wire import variant
@@ -75,6 +75,61 @@ def configuration_entry(
         9: value if effective is None else effective,
         10: application,
     }
+
+
+def configuration_value(field: FieldSpec) -> tuple[str, int]:
+    if field.kind == "boolean":
+        return "YES", 0
+    if field.kind == "integer":
+        return str(max(0, field.minimum)), 1
+    if field.kind == "select":
+        return field.choices[0][1], 3
+    if field.kind == "color":
+        return "0,0,0", 4
+    return "", 2
+
+
+async def test_preferences_use_native_compact_controls_and_fit_the_terminal(
+    tmp_path: Path,
+) -> None:
+    entries = [
+        configuration_entry(code, *configuration_value(field))
+        for code, field in FIELDS.items()
+    ]
+    snapshot = ConfigurationSnapshot.from_wire({0: 1, 1: b"digest", 2: entries, 3: False})
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(PreferencesDialog(snapshot, False))
+        await pilot.pause()
+        dialog = app.screen.query_one(".preferences-dialog")
+        assert (dialog.size.width, dialog.size.height) == (104, 30)
+
+        for code, field in FIELDS.items():
+            selector = f"#preference-{code.lower().replace('_', '-')}"
+            control = app.screen.query_one(selector)
+            if field.kind == "boolean":
+                assert isinstance(control, Checkbox)
+                assert control.compact
+            elif field.kind == "integer":
+                assert isinstance(control, Input)
+                assert control.type == "integer"
+
+        use_mouse = app.screen.query_one("#preference-usemouse", Checkbox)
+        original = use_mouse.value
+        use_mouse.focus()
+        await pilot.press("space")
+        assert use_mouse.value is not original
+
+        await pilot.resize_terminal(90, 28)
+        await pilot.pause()
+        assert dialog.size.width <= 87
+        assert dialog.size.height <= 27
+        page = app.screen.query_one(".preferences-page-scroll")
+        assert page.max_scroll_y > 0
+        actions = app.screen.query_one(".preferences-actions")
+        assert actions.region.bottom <= app.size.height
 
 
 async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
@@ -989,12 +1044,30 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         0,
         True,
     )
-    line = {0: 1, 1: False, 2: True, 3: True, 4: 0, 5: [button]}
+    explicit_hover = {
+        0: {0: 204, 1: 0, 2: 204, 3: 255},
+        2: False,
+        3: False,
+        4: False,
+        5: False,
+        7: 12_000,
+    }
+    explicit_button = variant(
+        1,
+        [variant(0, "专用", style, None)],
+        {0: 4, 1: 10},
+        "专用颜色",
+        explicit_hover,
+        variant(0, 0),
+        0,
+        True,
+    )
+    line = {0: 1, 1: False, 2: True, 3: True, 4: 0, 5: [button, explicit_button]}
     settings = {
         0: 100_000,
         1: 1_000,
         2: {0: 0, 1: 0, 2: 0, 3: 255},
-        3: {0: 255, 1: 255, 2: 255, 3: 255},
+        3: {0: 51, 1: 102, 2: 153, 3: 255},
         4: 1000,
         5: True,
         6: False,
@@ -1012,6 +1085,17 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         game_line = app.query_one(GameLine)
         assert game_line.regions[0].start == 0
         assert str(game_line.render()).startswith("开始")
+        assert await pilot.hover(".game-line", offset=(1, 0))
+        hovered_style = game_line.render().get_style_at_offset(0)
+        assert hovered_style.foreground is not None
+        assert hovered_style.foreground.rgb == (51, 102, 153)
+        assert not hovered_style.reverse
+        assert not hovered_style.underline
+        assert await pilot.hover(".game-line", offset=(5, 0))
+        explicit_style = game_line.render().get_style_at_offset(2)
+        assert explicit_style.foreground is not None
+        assert explicit_style.foreground.rgb == (204, 0, 204)
+        assert not explicit_style.reverse
         assert await pilot.hover(".game-line", offset=(1, 0))
         assert await pilot.click(".game-line", offset=(1, 0))
         assert ("activate", token) in worker.commands
@@ -1417,8 +1501,18 @@ async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_v
         await pilot.click("#menu-file")
         await pilot.click("#file-preferences")
         assert isinstance(app.screen, PreferencesDialog)
+        dialog = app.screen.query_one(".preferences-dialog")
+        assert dialog.size.width < app.size.width
+        assert dialog.size.height < app.size.height
         assert len(app.screen.query(TabbedContent)) == 1
-        max_log = app.screen.query_one("#preference-maxlog", NumericInput)
+        for code in ("usemouse", "autosave", "systemsaveinbinary", "zipsavedata"):
+            assert isinstance(app.screen.query_one(f"#preference-{code}"), Checkbox)
+        max_log = app.screen.query_one("#preference-maxlog", Input)
+        assert max_log.type == "integer"
+        max_log.value = ""
+        await pilot.click("#preferences-apply")
+        await pilot.pause()
+        assert not any(command == "save_configuration" for command, _value in worker.commands)
         max_log.value = "499"
         await pilot.click("#preferences-apply")
         await pilot.pause()
@@ -1466,6 +1560,8 @@ async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_v
         await pilot.pause(0.1)
         assert isinstance(app.screen, ColorPickerDialog)
         assert len(app.screen.query("#color-grid Button")) == 216
+        for component in ("red", "green", "blue"):
+            assert app.screen.query_one(f"#color-{component}", Input).type == "integer"
         app.screen.query_one("#color-hex", Input).value = "#GGGGGG"
         await pilot.click("#color-confirm")
         await pilot.pause(0.1)

@@ -29,6 +29,7 @@ from .presentation_types import (
 from .wire import unwrap_variant, variant
 
 VIEWPORT_BUFFER_LINES = 1_000
+DEFAULT_BUTTON_FOCUS = "#ffff00"
 
 
 @dataclass(slots=True)
@@ -38,7 +39,7 @@ class PresentationModel:
     lines: list[DisplayLineModel] = field(default_factory=list)
     input_wait: dict[int, Any] | None = None
     background: str = "#000000"
-    button_focus: str = "#000000"
+    button_focus: str = DEFAULT_BUTTON_FOCUS
     maximum_physical_lines: int = VIEWPORT_BUFFER_LINES
     changed_from: int | None = 0
     trimmed_prefix: int = 0

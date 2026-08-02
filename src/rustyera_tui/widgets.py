@@ -13,6 +13,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 from .presentation import (
+    DEFAULT_BUTTON_FOCUS,
     MAX_TABLE_COLUMN_WIDTH,
     MIN_TABLE_COLUMN_WIDTH,
     TARGET_TABLE_COLUMNS,
@@ -34,16 +35,15 @@ class ClickRegion:
     title: str | None
 
 
-def _rich_style(style: SegmentStyle, *, disabled: bool = False, hovered: bool = False) -> Style:
+def _rich_style(style: SegmentStyle, *, disabled: bool = False) -> Style:
     return Style(
         color=style.foreground,
         bgcolor=style.background,
         bold=style.bold,
         italic=style.italic,
-        underline=style.underline or hovered,
+        underline=style.underline,
         strike=style.strike,
         dim=disabled,
-        reverse=hovered,
     )
 
 
@@ -65,6 +65,7 @@ class GameLine(Static):
         self.hovered_region: int | None = None
         self.interactions_enabled = True
         self.mouse_enabled = True
+        self.button_focus = DEFAULT_BUTTON_FOCUS
         self.layout_width: int | None = None
         self._projected_width: int | None = None
         self._projected_segments: tuple[DisplaySegment, ...] = ()
@@ -173,16 +174,18 @@ class GameLine(Static):
                 output.append(" " * alignment_padding)
             for text, segment, region_index in layout:
                 hovered = region_index is not None and self.hovered_region == region_index
-                selected_style = (
-                    segment.hover_style if hovered and segment.hover_style else segment.style
-                )
+                selected_style = segment.style
+                if hovered:
+                    selected_style = segment.hover_style or replace(
+                        segment.style,
+                        foreground=self.button_focus,
+                    )
                 output.append(
                     text,
                     _rich_style(
                         selected_style,
                         disabled=segment.token is not None
                         and (not segment.enabled or not self.interactions_enabled),
-                        hovered=hovered,
                     ),
                 )
             if row_index + 1 < len(layouts):
@@ -194,6 +197,12 @@ class GameLine(Static):
         if self.layout_width != width:
             self.layout_width = width
             if self._is_width_sensitive() and self.is_mounted:
+                self._render_line()
+
+    def set_button_focus(self, color: str) -> None:
+        if self.button_focus != color:
+            self.button_focus = color
+            if self.is_mounted:
                 self._render_line()
 
     def on_resize(self, event: events.Resize) -> None:
@@ -410,6 +419,7 @@ class GameViewport(ScrollableContainer):
         self.interactions_enabled = True
         self.mouse_enabled = True
         self.presentation_background = "#000000"
+        self.button_focus = DEFAULT_BUTTON_FOCUS
         self._horizontal_overflow = False
 
     @property
@@ -463,6 +473,7 @@ class GameViewport(ScrollableContainer):
         widget.layout_width = self.content_width
         widget.interactions_enabled = self.interactions_enabled
         widget.mouse_enabled = self.mouse_enabled
+        widget.button_focus = self.button_focus
         widget.styles.background = self.presentation_background
         return widget
 
@@ -480,6 +491,12 @@ class GameViewport(ScrollableContainer):
         for child in self.children:
             if isinstance(child, GameLine):
                 child.styles.background = color
+
+    def set_button_focus(self, color: str) -> None:
+        self.button_focus = color
+        for child in self.children:
+            if isinstance(child, GameLine):
+                child.set_button_focus(color)
 
     async def set_lines(
         self,
