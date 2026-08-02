@@ -39,6 +39,15 @@ truncated), so an agent always receives the next wait without transport truncati
   `budget_exhausted`, or `stopped`.
 - `error`: Infrastructure or protocol failure.
 
+From process launch through exit, the driver must also emit a complete status snapshot every 5
+seconds. It contains the full rendered interface element tree plus runtime state, wait,
+presentation, output, statuses, watches, and logs; if an HTML surface participates, it additionally
+enumerates every current HTML element with tag, attributes, text/value, and visibility. Snapshot
+equality ignores only timestamps and reporting-only metadata. If a snapshot is identical to the
+immediately preceding snapshot, emit `error`, terminate the run at once as stalled, and do not wait
+for the scenario timeout. All test commands in a task share the 60-minute wall-clock budget defined
+by the repository rules.
+
 Exit codes are `0` for passed/stopped fixed work, `1` for semantic failure, `2` for input/budget
 exhaustion, and `3` for infrastructure, schema, or protocol failure.
 

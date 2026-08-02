@@ -8,6 +8,22 @@ description: Run deterministic fixed-sequence, agent-driven, save/snapshot resto
 Drive `rustyera-test`; do not recreate a Python input state machine or call Rust runtime internals.
 Read [test-cli.md](references/test-cli.md) before authoring or changing a scenario.
 
+## Enforce the task budget
+
+- Start one shared 60-minute wall-clock budget with the task's first test command. It includes all
+  later tests, targeted reruns, end-to-end waits, and test-failure investigation. Bound every
+  command by the remaining time.
+- Start each distinct full test suite at most once. After a failure is fixed, rerun only the
+  directly affected node IDs, test files, or scenarios; never rerun the full suite in that task.
+- From launch through exit, every end-to-end or long-flow run must print a complete observable
+  snapshot every 5 seconds: all rendered interface elements, runtime state, wait, presentation,
+  output, statuses, watches, and logs. If an HTML client participates, include all current HTML
+  elements with their tags, attributes, text/value, and visibility. Ignore timestamps and other
+  reporting-only metadata when comparing snapshots. Two consecutive identical snapshots mean the
+  game is static and the test is stalled: terminate immediately and report an error.
+- At 60 minutes, terminate every test process and report the active command, exact scenario/step,
+  last complete snapshot, elapsed time, completed checks, and unverified checks.
+
 ## Prepare the run
 
 1. Inspect `pyproject.toml`, `AGENTS.md`, the relevant code diff, and the selected scenario.
@@ -45,9 +61,10 @@ NDJSON command on stdin.
 - Use `{"op":"stop"}` only after the goal is satisfied or continuing cannot add coverage.
 
 Prefer visible, valid choices. Never invent hidden state or bypass input validation. Continue until
-the machine-readable goal succeeds, the first differential failure occurs, or the hard step/time
-budget is exhausted. A budget exhaustion is a failed test unless the scenario explicitly defines
-exploration-only acceptance.
+the machine-readable goal succeeds, the first differential failure occurs, two consecutive
+5-second snapshots are identical, or the hard step/time budget is exhausted. A budget exhaustion
+or identical snapshot is a failed test unless the scenario explicitly defines exploration-only
+acceptance; the task-wide 60-minute deadline is always a failure.
 
 ## Interpret and report
 
@@ -61,7 +78,8 @@ exploration-only acceptance.
 
 ## Validate repository changes
 
-Run the smallest relevant pytest first, then the complete TUI pytest and Ruff checks. Run real C ABI
-fixture or eraTW scenarios when runtime behavior changed. If the Emuera reference CLI changed, use
-the sibling core repository's `$test-rustyera-core` workflow for its required Rust gates, platform
-smoke, and same-input differential evidence.
+Run the smallest relevant pytest first, then run the complete TUI pytest once and the Ruff checks.
+If the complete pytest fails, fix it and rerun only the directly affected node IDs or test files.
+Run real C ABI fixture or eraTW scenarios when runtime behavior changed. If the Emuera reference
+CLI changed, use the sibling core repository's `$test-rustyera-core` workflow for its required Rust
+gates, platform smoke, and same-input differential evidence.
