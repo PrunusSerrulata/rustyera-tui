@@ -244,14 +244,13 @@ ModalScreen {
 .preferences-grid {
     grid-size: 2;
     grid-columns: 1fr 1fr;
-    grid-gutter: 0 2;
+    grid-gutter: 1 2;
     height: auto;
 }
 
 .preferences-group-title {
     column-span: 2;
     height: auto;
-    margin-top: 1;
     color: #bae6fd;
     text-style: bold;
 }
@@ -285,6 +284,14 @@ ModalScreen {
 
 .preference-field > Checkbox {
     width: 5;
+}
+
+.preference-checkbox > .toggle--button {
+    color: $panel;
+}
+
+.preference-checkbox.-on > .toggle--button {
+    color: $text-success;
 }
 
 .preference-field > Input,

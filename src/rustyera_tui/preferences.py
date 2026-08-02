@@ -17,6 +17,12 @@ def _field_id(code: str) -> str:
     return f"preference-{code.lower().replace('_', '-')}"
 
 
+class PreferenceCheckbox(Checkbox):
+    """A conventional check mark without Textual's permanent `X` glyph."""
+
+    BUTTON_INNER = "✓"
+
+
 class PreferenceField(Horizontal):
     def __init__(self, spec: FieldSpec, entry: ConfigurationEntry, read_only: bool) -> None:
         classes = f"preference-field preference-{spec.kind}"
@@ -31,10 +37,11 @@ class PreferenceField(Horizontal):
         yield Label(self.spec.label, markup=False, classes="preference-field-label")
         control_id = _field_id(self.spec.code)
         if self.spec.kind == "boolean":
-            yield Checkbox(
+            yield PreferenceCheckbox(
                 "",
                 value=self.entry.value == "YES",
                 compact=True,
+                classes="preference-checkbox",
                 id=control_id,
                 disabled=self.control_disabled,
             )
