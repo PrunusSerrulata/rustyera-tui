@@ -33,7 +33,7 @@ from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.1.0-alpha.1 (eb5cabd3)"
+CORE_VERSION = "0.1.0-alpha.1 (ca1993fb)"
 
 
 def frontend_version() -> str:
@@ -319,6 +319,8 @@ class RustyEraTui(App[None]):
         elif kind == "configuration":
             self.configuration_snapshot, self.configuration_read_only = value
             self._apply_client_preferences()
+            if isinstance(self.screen, PreferencesDialog):
+                self.screen.replace_snapshot(self.configuration_snapshot)
             self._refresh_menu_availability()
         elif kind == "configuration_cleared":
             self.configuration_snapshot = None
@@ -326,7 +328,19 @@ class RustyEraTui(App[None]):
             self._reset_client_preferences()
             self._refresh_menu_availability()
         elif kind == "configuration_saved":
-            self.notify("偏好选项已保存，正在重启游戏")
+            restart, restart_required = value
+            if restart:
+                if isinstance(self.screen, PreferencesDialog):
+                    self.screen.dismiss()
+                self.notify("项目设置已保存，正在重启游戏")
+            elif restart_required:
+                self.notify("项目设置已保存；部分更改将在重启后生效")
+            else:
+                self.notify("项目设置已应用")
+        elif kind == "configuration_save_failed":
+            if isinstance(self.screen, PreferencesDialog):
+                self.screen.save_failed(str(value))
+            self.notify(str(value), severity="error")
         elif kind == "open_configuration":
             self.action_preferences()
         elif kind == "log":
@@ -336,6 +350,8 @@ class RustyEraTui(App[None]):
                 self._log(str(value))
         elif kind == "error":
             self._finish_project_progress()
+            if isinstance(self.screen, PreferencesDialog) and self.screen.busy:
+                self.screen.save_failed(str(value))
             self._log(str(value), LogLevel.ERROR)
             self.notify(str(value), title="RustyEra", severity="error", timeout=8)
         elif kind == "runtime_error":
@@ -685,28 +701,26 @@ class RustyEraTui(App[None]):
         if self.configuration_snapshot is None:
             self.notify("Runtime 尚未提供项目配置", severity="warning")
             return
-        self.push_screen(
-            PreferencesDialog(self.configuration_snapshot, self.configuration_read_only),
-            lambda changes: (
-                changes is not None
-                and bool(changes)
-                and self.worker.send("save_configuration", changes)
-            ),
-        )
+        self.push_screen(PreferencesDialog(self.configuration_snapshot, self.configuration_read_only))
+
+    def on_preferences_dialog_apply_requested(
+        self, event: PreferencesDialog.ApplyRequested
+    ) -> None:
+        if event.restart and not event.changes:
+            if isinstance(self.screen, PreferencesDialog):
+                self.screen.dismiss()
+            self.worker.send("restart")
+            return
+        self.worker.send("save_configuration", (event.changes, event.restart))
 
     def _apply_client_preferences(self) -> None:
         if self.configuration_snapshot is None or not self.is_mounted:
             return
         snapshot = self.configuration_snapshot
         screen = self.screen_stack[0]
-        screen.query_one("#menu-bar").display = snapshot.value("UseMenu", "YES") == "YES"
+        screen.query_one("#menu-bar").display = True
         viewport = screen.query_one(GameViewport)
-        viewport.set_mouse_enabled(snapshot.value("UseMouse", "YES") == "YES")
-        try:
-            scroll_height = int(snapshot.value("ScrollHeight", "1"))
-        except ValueError:
-            scroll_height = 1
-        viewport.set_scroll_height(scroll_height)
+        viewport.set_mouse_enabled(snapshot.effective_value("UseMouse", "YES") == "YES")
 
     def _reset_client_preferences(self) -> None:
         if not self.is_mounted:
@@ -715,7 +729,6 @@ class RustyEraTui(App[None]):
         screen.query_one("#menu-bar").display = True
         viewport = screen.query_one(GameViewport)
         viewport.set_mouse_enabled(True)
-        viewport.set_scroll_height(1)
 
     def _choose_path(self, title: str, mode: str, command: str) -> None:
         initial = self.project or Path.cwd()

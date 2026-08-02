@@ -338,25 +338,26 @@ def test_trim_lines_removes_the_oldest_history_and_reports_incremental_hints() -
     assert rich.take_render_change() == (2, 1)
 
 
-def test_main_viewport_keeps_only_the_newest_thousand_logical_lines() -> None:
+def test_main_viewport_tracks_the_runtime_max_log_setting() -> None:
     model = PresentationModel()
     initial = snapshot()
+    configured_limit = 1_500
     initial[2][0] = [
         {0: line_id, 1: False, 2: True, 3: True, 4: 0, 5: []}
-        for line_id in range(1, VIEWPORT_BUFFER_LINES + 3)
+        for line_id in range(1, configured_limit + 3)
     ]
-    initial[6][4] = 5_000
+    initial[6][4] = configured_limit
 
     model.apply_snapshot(initial)
 
-    assert len(model.lines) == VIEWPORT_BUFFER_LINES
+    assert len(model.lines) == configured_limit
     assert [item.line_id for item in model.lines[:2]] == [3, 4]
     assert model.lines[-1].segments == ()
-    assert model.maximum_physical_lines == VIEWPORT_BUFFER_LINES
+    assert model.maximum_physical_lines == configured_limit
 
     model.take_render_change()
     model.apply_delta({0: 1, 1: 2, 2: [variant(14, 2)]})
-    assert len(model.lines) == VIEWPORT_BUFFER_LINES
+    assert len(model.lines) == configured_limit
     assert model.lines[0].line_id == 3
     assert model.take_render_change() == (None, 0)
 

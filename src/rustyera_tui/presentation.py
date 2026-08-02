@@ -52,12 +52,12 @@ class PresentationModel:
         history = snapshot[2]
         self.lines = [parse_line(line) for line in history.get(0, [])]
         self._hidden_prefix = 0
+        self._apply_settings(snapshot.get(6))
         self._trim_viewport_lines()
         self._rebuild_line_indices()
         self.changed_from = 0
         self.trimmed_prefix = 0
         self.input_wait = snapshot.get(5)
-        self._apply_settings(snapshot.get(6))
 
     def apply_delta(self, delta: dict[int, Any]) -> None:
         if delta[0] != self.revision:
@@ -139,7 +139,7 @@ class PresentationModel:
         self._line_indices = {line.line_id: index for index, line in enumerate(self.lines)}
 
     def _trim_viewport_lines(self) -> None:
-        count = len(self.lines) - VIEWPORT_BUFFER_LINES
+        count = len(self.lines) - self.maximum_physical_lines
         if count <= 0:
             return
         del self.lines[:count]
@@ -154,9 +154,8 @@ class PresentationModel:
             return
         self.background = color_hex(settings[2])
         self.button_focus = color_hex(settings[3])
-        # The runtime setting describes its canonical physical history. The terminal
-        # viewport deliberately keeps a smaller, frontend-owned logical-line buffer.
-        self.maximum_physical_lines = VIEWPORT_BUFFER_LINES
+        self.maximum_physical_lines = max(500, int(settings.get(4, VIEWPORT_BUFFER_LINES)))
+        self._trim_viewport_lines()
 
     def _disable_old_buttons(self, generation: int) -> None:
         for index, line in enumerate(self.lines):

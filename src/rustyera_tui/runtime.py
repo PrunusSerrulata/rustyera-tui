@@ -95,10 +95,30 @@ class DiagnosisExport:
 
 
 @dataclass(frozen=True, slots=True)
-class PendingConfigurationUpdate:
+class PendingConfigurationPrepare:
     message_id: int
     project_revision: int
     source_digest: bytes
+    restart: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedConfigurationCommit:
+    prepared: PreparedConfiguration
+    candidate: ProjectBundle
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedConfigurationAbort:
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class PendingConfigurationFinalize:
+    finalize_message_id: int
+    preparation_message_id: int
+    restart: bool
+    outcome: PreparedConfigurationCommit | PreparedConfigurationAbort
 
 
 class RuntimeClient:
@@ -147,8 +167,11 @@ class RuntimeClient:
         self.allow_compiled_cache_load = True
         self.pending_project_file_bytes: bytes | None = None
         self.pending_project_file_export_path: Path | None = None
-        self.pending_configuration: PendingConfigurationUpdate | None = None
+        self.pending_configuration: (
+            PendingConfigurationPrepare | PendingConfigurationFinalize | None
+        ) = None
         self.configuration_snapshot: ConfigurationSnapshot | None = None
+        self.configuration_profile_supported = False
         self.project_file_export_retry_after_ns = 0
         self.debug_requested = False
         self.debug_grant: dict[int, Any] | None = None
@@ -217,6 +240,7 @@ class RuntimeClient:
         self.cache_preparation_started = False
         self.pending_configuration = None
         self.configuration_snapshot = None
+        self.configuration_profile_supported = False
 
     def recreate(
         self,
@@ -282,6 +306,7 @@ class RuntimeClient:
             3: limits,
             4: capabilities,
             5: ["zh-CN", "ja", "en"],
+            6: 1,
         }
         self.send_runtime(0, hello)
 
@@ -455,6 +480,7 @@ class RuntimeClient:
         if tag == 1:  # ServerHello
             self.session = value[1]
             self.epoch = value[4]
+            self.configuration_profile_supported = value.get(7) == 1
             if self.pending_bundle is not None:
                 if self.pending_project_file_bytes is not None:
                     project_file = self.pending_project_file_bytes
@@ -487,6 +513,8 @@ class RuntimeClient:
             self._handle_project_report(value)
         elif tag == 25:  # ConfigurationUpdatePrepared
             self._handle_configuration_prepared(value, correlation_id)
+        elif tag == 27:  # ConfigurationUpdateCommitted
+            self._handle_configuration_committed(value, correlation_id)
         elif tag == 21:
             self.phase = value[0]
             self.epoch = value[2]
@@ -580,8 +608,11 @@ class RuntimeClient:
             )
             pending_configuration = getattr(self, "pending_configuration", None)
             configuration_rejection = (
-                pending_configuration is not None
+                isinstance(pending_configuration, PendingConfigurationPrepare)
                 and correlation_id == pending_configuration.message_id
+            ) or (
+                isinstance(pending_configuration, PendingConfigurationFinalize)
+                and correlation_id == pending_configuration.finalize_message_id
             )
             if configuration_rejection:
                 self.pending_configuration = None
@@ -624,6 +655,10 @@ class RuntimeClient:
                 else:
                     self.pending_project_file_export_path = None
                     self.events.put(FrontendEvent("project_file_export_finished", False))
+            elif configuration_rejection:
+                self.events.put(
+                    FrontendEvent("configuration_save_failed", f"保存设置被拒绝：{rejection}")
+                )
             # A presentation may advance after the frontend rendered an observation but
             # before the caller-pumped runtime handles it. This is a benign stale sample;
             # a later rendered revision will submit a replacement observation.
@@ -631,6 +666,7 @@ class RuntimeClient:
                 cache_export_rejection
                 or diagnosis_export_rejection
                 or project_file_export_rejection
+                or configuration_rejection
             ) and not (projection_request and value.get(0) == 2 and stale_projection):
                 code = enum_text(value.get(0), COMMAND_ERROR_CODES, "CommandErrorCode")
                 self.events.put(FrontendEvent("runtime_error", f"命令被拒绝 [{code}]：{rejection}"))
@@ -765,19 +801,22 @@ class RuntimeClient:
             self.events.put(FrontendEvent("status", "项目编译完成，正在进入标题画面…"))
             self.send_runtime(20, self._new_game_start())
 
-    def _publish_configuration(self, value: Any) -> None:
+    def _publish_configuration(self, value: Any) -> ConfigurationSnapshot | None:
         if value is None:
-            return
+            return None
         try:
             snapshot = ConfigurationSnapshot.from_wire(value)
         except ValueError as error:
             self.events.put(FrontendEvent("error", f"Runtime 返回了无效的项目配置：{error}"))
-            return
+            return None
         self.configuration_snapshot = snapshot
         read_only = self.bundle is not None and self.bundle.project_file is not None
         self.events.put(FrontendEvent("configuration", (snapshot, read_only)))
+        return snapshot
 
-    def prepare_configuration_update(self, changes: list[ConfigurationChange]) -> None:
+    def prepare_configuration_update(
+        self, changes: list[ConfigurationChange], restart: bool = False
+    ) -> None:
         if self.bundle is None:
             raise RuntimeError("没有已载入的项目")
         if self.bundle.project_file is not None:
@@ -787,21 +826,23 @@ class RuntimeClient:
         snapshot = self.configuration_snapshot
         if snapshot is None:
             raise RuntimeError("Runtime 尚未提供项目配置")
+        if not self.configuration_profile_supported:
+            raise RuntimeError("当前 Runtime 不支持 TUI 项目设置画像")
         message_id = self.send_runtime(24, snapshot.prepare_wire(changes))
-        self.pending_configuration = PendingConfigurationUpdate(
+        self.pending_configuration = PendingConfigurationPrepare(
             message_id,
             snapshot.project_revision,
             snapshot.source_digest,
+            restart,
         )
 
     def _handle_configuration_prepared(
         self, prepared: dict[int, Any], correlation_id: int | None
     ) -> None:
         pending = self.pending_configuration
-        if pending is None or correlation_id != pending.message_id:
+        if not isinstance(pending, PendingConfigurationPrepare) or correlation_id != pending.message_id:
             self.events.put(log_event("忽略了非预期的配置保存响应", LogLevel.WARNING))
             return
-        self.pending_configuration = None
         try:
             value = PreparedConfiguration.from_wire(prepared)
             if (
@@ -809,18 +850,65 @@ class RuntimeClient:
                 or value.expected_source_digest != pending.source_digest
             ):
                 raise ValueError("prepared configuration identity does not match the request")
+            if blake3.blake3(value.contents.encode()).digest() != value.prepared_source_digest:
+                raise ValueError("prepared configuration digest does not match its contents")
             if self.bundle is None:
                 raise RuntimeError("配置保存完成时项目已关闭")
             self.bundle.write_configuration(value.expected_source_digest, value.contents)
             candidate = ProjectBundle.scan_quick(self.bundle.root, 1, self._project_scan_progress)
         except (OSError, RuntimeError, UnicodeError, ValueError) as error:
-            self.events.put(FrontendEvent("error", f"保存偏好选项失败：{error}"))
+            message = f"保存偏好选项失败：{error}"
+            finalize_message_id = self.send_runtime(26, {0: pending.message_id, 1: 0})
+            self.pending_configuration = PendingConfigurationFinalize(
+                finalize_message_id,
+                pending.message_id,
+                pending.restart,
+                PreparedConfigurationAbort(message),
+            )
+            self.events.put(FrontendEvent("configuration_save_failed", message))
             return
-        self.events.put(FrontendEvent("configuration_saved"))
-        if not value.restart_required:
+        finalize_message_id = self.send_runtime(26, {0: pending.message_id, 1: 1})
+        self.pending_configuration = PendingConfigurationFinalize(
+            finalize_message_id,
+            pending.message_id,
+            pending.restart,
+            PreparedConfigurationCommit(value, candidate),
+        )
+
+    def _handle_configuration_committed(
+        self, committed: dict[int, Any], correlation_id: int | None
+    ) -> None:
+        pending = self.pending_configuration
+        if (
+            not isinstance(pending, PendingConfigurationFinalize)
+            or correlation_id != pending.finalize_message_id
+        ):
+            self.events.put(log_event("忽略了非预期的配置提交响应", LogLevel.WARNING))
+            return
+        self.pending_configuration = None
+        snapshot = self._publish_configuration(committed.get(0))
+        if snapshot is None:
+            self.events.put(
+                FrontendEvent(
+                    "configuration_save_failed",
+                    "Runtime 返回了无效的配置提交响应",
+                )
+            )
+            return
+        if isinstance(pending.outcome, PreparedConfigurationAbort):
+            return
+        outcome = pending.outcome
+        self.bundle = outcome.candidate
+        self.events.put(
+            FrontendEvent(
+                "configuration_saved",
+                (pending.restart, snapshot.restart_pending),
+            )
+        )
+        if not pending.restart:
             return
         try:
-            self.recreate(candidate)
+            self.recreate(outcome.candidate)
         except Exception as error:  # noqa: BLE001 - preserve the worker after a restart failure
             self.events.put(FrontendEvent("error", f"偏好选项已保存，但重启游戏失败：{error}"))
 

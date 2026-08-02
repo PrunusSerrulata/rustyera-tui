@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 from rich.cells import cell_len
-from textual.widgets import Button, DataTable, Input, RichLog, Select, Static
+from textual.widgets import Button, Checkbox, DataTable, Input, RichLog, Select, Static, TabbedContent
 
 from rustyera_tui.app import CORE_VERSION, RustyEraTui
 from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
@@ -19,6 +19,8 @@ from rustyera_tui.presentation import (
     DisplaySegment,
     SeparatorLayout,
 )
+from rustyera_tui.color_picker import ColorField, ColorPickerDialog, NumericInput
+from rustyera_tui.preferences_schema import FIELDS
 from rustyera_tui.runtime import FrontendEvent, PresentationBatch, RuntimeFailure
 from rustyera_tui.widgets import GameLine, GameViewport
 from rustyera_tui.wire import variant
@@ -44,6 +46,35 @@ class FakeWorker:
 
     def join(self, timeout: float | None = None) -> None:
         del timeout
+
+
+def test_project_settings_schema_contains_exactly_38_visible_fields() -> None:
+    assert len(FIELDS) == 38
+
+
+def configuration_entry(
+    code: str,
+    value: str,
+    kind: int,
+    *,
+    fixed: bool = False,
+    default: str | None = None,
+    effective: str | None = None,
+    application: int = 0,
+) -> dict[int, Any]:
+    return {
+        0: code,
+        1: code,
+        2: code,
+        3: value,
+        4: kind,
+        5: [],
+        6: fixed,
+        7: 2,
+        8: value if default is None else default,
+        9: value if effective is None else effective,
+        10: application,
+    }
 
 
 async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
@@ -132,7 +163,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.1.0a1" in contents
-        assert "core 版本：0.1.0-alpha.1 (eb5cabd3)" in contents
+        assert "core 版本：0.1.0-alpha.1 (ca1993fb)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 
@@ -1364,121 +1395,97 @@ async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_v
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
-    snapshot = ConfigurationSnapshot.from_wire(
-        {
-            0: 9,
-            1: b"digest",
-            2: [
-                {
-                    0: "UseMenu",
-                    1: "メニューを使用する",
-                    2: "Show menu",
-                    3: "YES",
-                    4: 0,
-                    5: [],
-                    6: False,
-                    7: 2,
-                },
-                {
-                    0: "FontSize",
-                    1: "フォントサイズ",
-                    2: "Font size",
-                    3: "18",
-                    4: 1,
-                    5: [],
-                    6: False,
-                    7: 2,
-                },
-                {
-                    0: "BackColor",
-                    1: "背景色",
-                    2: "Background",
-                    3: "0,0,0",
-                    4: 4,
-                    5: [],
-                    6: True,
-                    7: 2,
-                },
-            ],
-        }
-    )
+    entries = [
+        configuration_entry("UseMouse", "YES", 0, effective="NO"),
+        configuration_entry("MaxLog", "1000", 1),
+        configuration_entry("ForeColor", "192,192,192", 4, fixed=True),
+        configuration_entry("BackColor", "0,0,0", 4),
+        configuration_entry("AutoSave", "YES", 0, application=1),
+        configuration_entry("SystemSaveInBinary", "NO", 0, application=1),
+        configuration_entry("ZipSaveData", "NO", 0, application=1),
+    ]
+    snapshot = ConfigurationSnapshot.from_wire({0: 9, 1: b"digest", 2: entries, 3: False})
 
     async with app.run_test(size=(120, 40)) as pilot:
         worker.events.put(FrontendEvent("phase", 4))
         worker.events.put(FrontendEvent("configuration", (snapshot, False)))
-        await pilot.pause()
+        await pilot.pause(0.1)
         assert app.query_one("#menu-bar").display
+        assert not app.query_one(GameViewport).mouse_enabled
         assert not app.query_one("#file-preferences", Button).disabled
 
         await pilot.click("#menu-file")
         await pilot.click("#file-preferences")
         assert isinstance(app.screen, PreferencesDialog)
-        font = app.screen.query_one("#preference-1", Input)
-        fixed = app.screen.query_one("#preference-2", Input)
-        assert fixed.disabled
-        font.value = "20"
-        await pilot.click("#preferences-save")
+        assert len(app.screen.query(TabbedContent)) == 1
+        max_log = app.screen.query_one("#preference-maxlog", NumericInput)
+        max_log.value = "499"
+        await pilot.click("#preferences-apply")
+        await pilot.pause()
+        assert not any(command == "save_configuration" for command, _value in worker.commands)
+        max_log.value = "1200"
+        await pilot.click("#preferences-reset")
+        assert max_log.value == "1000"
+        fixed_color = app.screen.query_one("#preference-forecolor", ColorField)
+        assert fixed_color.query_one(Button).disabled
+        use_mouse = app.screen.query_one("#preference-usemouse", Checkbox)
+        use_mouse.value = False
+        await pilot.click("#preferences-apply")
         await pilot.pause()
         assert (
             "save_configuration",
-            [ConfigurationChange("FontSize", "20")],
+            ([ConfigurationChange("UseMouse", "NO")], False),
         ) in worker.commands
-
-        hidden = ConfigurationSnapshot.from_wire(
-            {
-                0: 10,
-                1: b"next",
-                2: [
-                    {
-                        0: "UseMenu",
-                        1: "メニューを使用する",
-                        2: "Show menu",
-                        3: "NO",
-                        4: 0,
-                        5: [],
-                        6: False,
-                        7: 2,
-                    },
-                    {
-                        0: "UseMouse",
-                        1: "マウスを使用する",
-                        2: "Use mouse",
-                        3: "NO",
-                        4: 0,
-                        5: [],
-                        6: False,
-                        7: 2,
-                    },
-                    {
-                        0: "ScrollHeight",
-                        1: "スクロール行数",
-                        2: "Lines per scroll",
-                        3: "4",
-                        4: 1,
-                        5: [],
-                        6: False,
-                        7: 2,
-                    },
-                ],
-            }
-        )
-        worker.events.put(FrontendEvent("configuration", (hidden, True)))
-        await pilot.pause()
-        viewport = app.query_one(GameViewport)
-        assert not app.query_one("#menu-bar").display
-        assert not viewport.mouse_enabled
-        assert viewport.scroll_height == 4
-
-        await pilot.press("ctrl+comma")
         assert isinstance(app.screen, PreferencesDialog)
-        assert app.screen.query_one("#preferences-save", Button).disabled
-        assert app.screen.query_one("#preference-0", Select).disabled
+
+        updated_entries = [
+            configuration_entry("UseMouse", "NO", 0),
+            *entries[1:],
+        ]
+        updated = ConfigurationSnapshot.from_wire(
+            {0: 9, 1: b"next", 2: updated_entries, 3: True}
+        )
+        worker.events.put(FrontendEvent("configuration", (updated, False)))
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, PreferencesDialog)
+        assert "需重启" in str(app.screen.query_one("#preferences-status", Static).render())
+
+        tabs = app.screen.query_one("#preferences-tabs", TabbedContent)
+        tabs.active = "preferences-save"
+        await pilot.pause()
+        zip_save = app.screen.query_one("#preference-zipsavedata", Checkbox)
+        assert zip_save.disabled
+        app.screen.query_one("#preference-systemsaveinbinary", Checkbox).value = True
+        await pilot.pause()
+        assert not zip_save.disabled
+
+        tabs.active = "preferences-interface"
+        await pilot.pause()
+        color = app.screen.query_one("#preference-backcolor", ColorField)
+        await pilot.click(f"#{color.id}-choose")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, ColorPickerDialog)
+        assert len(app.screen.query("#color-grid Button")) == 216
+        app.screen.query_one("#color-hex", Input).value = "#GGGGGG"
+        await pilot.click("#color-confirm")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, ColorPickerDialog)
+        app.screen.query_one("#color-hex", Input).value = "#336699"
+        await pilot.pause(0.1)
+        await pilot.click("#color-confirm")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, PreferencesDialog)
+        assert color.value == "51,102,153"
+
         await pilot.click("#preferences-cancel")
         await pilot.pause()
-
-        worker.events.put(FrontendEvent("configuration_cleared"))
+        await pilot.press("ctrl+comma")
+        assert isinstance(app.screen, PreferencesDialog)
+        await pilot.click("#preferences-apply-restart")
         await pilot.pause()
+        assert ("restart", None) in worker.commands
+        worker.events.put(FrontendEvent("configuration_cleared"))
+        await pilot.pause(0.1)
         assert app.query_one("#menu-bar").display
-        assert viewport.mouse_enabled
-        assert viewport.scroll_height == 1
+        assert app.query_one(GameViewport).mouse_enabled
         assert app.query_one("#file-preferences", Button).disabled

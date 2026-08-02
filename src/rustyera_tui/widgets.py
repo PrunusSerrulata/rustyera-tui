@@ -409,7 +409,6 @@ class GameViewport(ScrollableContainer):
         self.models: list[DisplayLineModel] = []
         self.interactions_enabled = True
         self.mouse_enabled = True
-        self.scroll_height = 1
         self.presentation_background = "#000000"
         self._horizontal_overflow = False
 
@@ -458,21 +457,6 @@ class GameViewport(ScrollableContainer):
         for child in self.children:
             if isinstance(child, GameLine):
                 child.mouse_enabled = enabled
-
-    def set_scroll_height(self, height: int) -> None:
-        self.scroll_height = max(1, height)
-
-    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
-        event.stop()
-        if not self.mouse_enabled:
-            return
-        self.scroll_relative(y=self.scroll_height, animate=False)
-
-    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        event.stop()
-        if not self.mouse_enabled:
-            return
-        self.scroll_relative(y=-self.scroll_height, animate=False)
 
     def _line_widget(self, line: DisplayLineModel) -> GameLine:
         widget = GameLine(line)

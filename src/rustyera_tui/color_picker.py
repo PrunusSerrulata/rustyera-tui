@@ -1,0 +1,247 @@
+"""Numeric and generated-grid color controls for project settings."""
+
+from __future__ import annotations
+
+from textual import on
+from textual.app import ComposeResult
+from textual.containers import Grid, Horizontal, Vertical
+from textual.message import Message
+from textual.screen import ModalScreen
+from textual.widgets import Button, Input, Label, Static
+
+
+def parse_rgb(value: str) -> tuple[int, int, int]:
+    parts = value.split(",")
+    if len(parts) != 3:
+        raise ValueError("颜色值必须包含三个 RGB 分量")
+    rgb = tuple(int(part.strip()) for part in parts)
+    if any(component < 0 or component > 255 for component in rgb):
+        raise ValueError("RGB 分量必须在 0 到 255 之间")
+    return rgb  # type: ignore[return-value]
+
+
+def hex_color(rgb: tuple[int, int, int]) -> str:
+    return "#" + "".join(f"{component:02X}" for component in rgb)
+
+
+def parse_hex(value: str) -> tuple[int, int, int]:
+    normalized = value.strip().removeprefix("#")
+    if len(normalized) != 6:
+        raise ValueError("HEX 颜色必须是六位十六进制数")
+    try:
+        return tuple(int(normalized[index : index + 2], 16) for index in (0, 2, 4))  # type: ignore[return-value]
+    except ValueError as error:
+        raise ValueError("HEX 颜色包含无效字符") from error
+
+
+class NumericInput(Horizontal):
+    """A compact integer field with terminal-friendly step buttons."""
+
+    class Changed(Message):
+        def __init__(self, control: NumericInput) -> None:
+            super().__init__()
+            self.numeric_input = control
+
+    def __init__(
+        self,
+        value: str,
+        minimum: int,
+        maximum: int,
+        *,
+        id: str,
+        disabled: bool = False,
+    ) -> None:
+        super().__init__(id=id, classes="numeric-input")
+        self.minimum = minimum
+        self.maximum = maximum
+        self.initial_value = value
+        self.control_disabled = disabled
+
+    def compose(self) -> ComposeResult:
+        yield Input(
+            value=self.initial_value,
+            type="integer",
+            id=f"{self.id}-value",
+            disabled=self.control_disabled,
+        )
+        yield Button("▲", id=f"{self.id}-up", disabled=self.control_disabled)
+        yield Button("▼", id=f"{self.id}-down", disabled=self.control_disabled)
+
+    @property
+    def value(self) -> str:
+        return self.query_one(Input).value
+
+    @value.setter
+    def value(self, value: str) -> None:
+        self.query_one(Input).value = value
+
+    def integer(self) -> int:
+        value = int(self.value)
+        if not self.minimum <= value <= self.maximum:
+            raise ValueError(f"必须在 {self.minimum} 到 {self.maximum} 之间")
+        return value
+
+    def on_input_changed(self, _event: Input.Changed) -> None:
+        self.post_message(self.Changed(self))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id not in {f"{self.id}-up", f"{self.id}-down"}:
+            return
+        event.stop()
+        try:
+            current = int(self.value)
+        except ValueError:
+            current = self.minimum
+        delta = 1 if event.button.id == f"{self.id}-up" else -1
+        self.value = str(min(self.maximum, max(self.minimum, current + delta)))
+        self.post_message(self.Changed(self))
+
+
+class ColorPickerDialog(ModalScreen[str | None]):
+    """Select one of 216 generated colors or enter an exact HEX/RGB value."""
+
+    LEVELS = (0, 51, 102, 153, 204, 255)
+
+    def __init__(self, value: str) -> None:
+        super().__init__()
+        self.rgb = parse_rgb(value)
+        self._syncing = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog color-picker-dialog"):
+            yield Label("选择颜色", classes="dialog-title")
+            with Horizontal(classes="color-editor-row"):
+                yield Label("颜色预览", classes="color-editor-label")
+                yield Static("", id="color-preview")
+            with Horizontal(classes="color-editor-row"):
+                yield Label("HEX", classes="color-editor-label")
+                yield Input(value=hex_color(self.rgb), id="color-hex", max_length=7)
+            for name, label, component in zip(
+                ("red", "green", "blue"),
+                ("红色", "绿色", "蓝色"),
+                self.rgb,
+                strict=True,
+            ):
+                with Horizontal(classes="color-editor-row"):
+                    yield Label(label, classes="color-editor-label")
+                    yield NumericInput(str(component), 0, 255, id=f"color-{name}")
+            yield Label("216 色网格", classes="color-grid-title")
+            with Grid(id="color-grid"):
+                for red in self.LEVELS:
+                    for green in self.LEVELS:
+                        for blue in self.LEVELS:
+                            color = hex_color((red, green, blue))
+                            button = Button(" ", id=f"color-cell-{red}-{green}-{blue}")
+                            button.styles.background = color
+                            yield button
+            yield Static("", id="color-error", markup=False)
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("取消", id="color-cancel")
+                yield Button("确定", id="color-confirm", variant="primary")
+
+    def on_mount(self) -> None:
+        self._sync_fields()
+
+    def _sync_fields(self) -> None:
+        self._syncing = True
+        try:
+            self.query_one("#color-hex", Input).value = hex_color(self.rgb)
+            for name, component in zip(("red", "green", "blue"), self.rgb, strict=True):
+                self.query_one(f"#color-{name}", NumericInput).value = str(component)
+            preview = self.query_one("#color-preview", Static)
+            preview.styles.background = hex_color(self.rgb)
+            preview.update(hex_color(self.rgb))
+            self._show_error("")
+        finally:
+            self._syncing = False
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if self._syncing or event.input.id != "color-hex":
+            return
+        try:
+            self.rgb = parse_hex(event.value)
+        except ValueError:
+            return
+        self._sync_fields()
+
+    def _show_error(self, message: str) -> None:
+        if self.is_mounted:
+            self.query_one("#color-error", Static).update(message)
+
+    def on_numeric_input_changed(self, _event: NumericInput.Changed) -> None:
+        if self._syncing:
+            return
+        try:
+            self.rgb = tuple(
+                self.query_one(f"#color-{name}", NumericInput).integer()
+                for name in ("red", "green", "blue")
+            )  # type: ignore[assignment]
+        except ValueError:
+            return
+        self._sync_fields()
+
+    @on(Button.Pressed, "#color-cancel")
+    def cancel(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#color-confirm")
+    def confirm(self, event: Button.Pressed) -> None:
+        event.stop()
+        try:
+            hex_rgb = parse_hex(self.query_one("#color-hex", Input).value)
+            rgb = tuple(
+                self.query_one(f"#color-{name}", NumericInput).integer()
+                for name in ("red", "green", "blue")
+            )
+        except ValueError as error:
+            self._show_error(str(error))
+            return
+        if rgb != hex_rgb:
+            self._show_error("HEX 与 RGB 分量不一致")
+            return
+        self.dismiss(",".join(str(component) for component in rgb))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        if button_id.startswith("color-cell-"):
+            self.rgb = tuple(
+                int(part) for part in button_id.removeprefix("color-cell-").split("-")
+            )  # type: ignore[assignment]
+            self._sync_fields()
+
+
+class ColorField(Horizontal):
+    def __init__(self, value: str, *, id: str, disabled: bool = False) -> None:
+        super().__init__(id=id, classes="color-field")
+        self.rgb = parse_rgb(value)
+        self.control_disabled = disabled
+
+    def compose(self) -> ComposeResult:
+        color = hex_color(self.rgb)
+        swatch = Static(color, classes="color-swatch")
+        swatch.styles.background = color
+        yield swatch
+        yield Button("选择颜色…", id=f"{self.id}-choose", disabled=self.control_disabled)
+
+    @property
+    def value(self) -> str:
+        return ",".join(str(component) for component in self.rgb)
+
+    @value.setter
+    def value(self, value: str) -> None:
+        self.rgb = parse_rgb(value)
+        if self.is_mounted:
+            swatch = self.query_one(Static)
+            swatch.update(hex_color(self.rgb))
+            swatch.styles.background = hex_color(self.rgb)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != f"{self.id}-choose":
+            return
+        event.stop()
+        self.app.push_screen(ColorPickerDialog(self.value), self._color_selected)
+
+    def _color_selected(self, value: str | None) -> None:
+        if value is not None:
+            self.value = value

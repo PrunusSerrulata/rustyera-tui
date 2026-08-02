@@ -140,7 +140,8 @@ class RuntimeWorker(threading.Thread):
                         raise RuntimeError("no project is active")
                     client.send_runtime(23, {})
                 case "save_configuration":
-                    client.prepare_configuration_update(command.value)
+                    changes, restart = command.value
+                    client.prepare_configuration_update(changes, restart)
                 case "reload_all":
                     client.reload_all()
                 case "reload_file":

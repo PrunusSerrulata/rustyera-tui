@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 TUI_CLIENT = 1 << 1
+APPLICATION_HOT = 0
+APPLICATION_RESTART = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +20,9 @@ class ConfigurationEntry:
     allowed: tuple[str, ...]
     fixed: bool
     applicability: int
+    default_value: str
+    effective_value: str
+    application: int
 
     @classmethod
     def from_wire(cls, value: Any) -> ConfigurationEntry:
@@ -31,6 +36,9 @@ class ConfigurationEntry:
         allowed = value.get(5)
         fixed = value.get(6)
         applicability = value.get(7)
+        default_value = value.get(8)
+        effective_value = value.get(9)
+        application = value.get(10)
         if not all(isinstance(item, str) for item in (code, japanese, english, current)):
             raise ValueError("configuration entry has invalid text fields")
         if not isinstance(kind, int) or not 0 <= kind <= 7:
@@ -39,6 +47,10 @@ class ConfigurationEntry:
             raise ValueError("configuration entry has invalid allowed values")
         if not isinstance(fixed, bool) or not isinstance(applicability, int):
             raise ValueError("configuration entry has invalid flags")
+        if not isinstance(default_value, str) or not isinstance(effective_value, str):
+            raise ValueError("configuration entry has invalid defaults")
+        if application not in (APPLICATION_HOT, APPLICATION_RESTART):
+            raise ValueError("configuration entry has invalid application policy")
         return cls(
             code,
             japanese,
@@ -48,6 +60,9 @@ class ConfigurationEntry:
             tuple(allowed),
             fixed,
             applicability,
+            default_value,
+            effective_value,
+            application,
         )
 
     @property
@@ -60,6 +75,7 @@ class ConfigurationSnapshot:
     project_revision: int
     source_digest: bytes
     entries: tuple[ConfigurationEntry, ...]
+    restart_pending: bool
 
     @classmethod
     def from_wire(cls, value: Any) -> ConfigurationSnapshot:
@@ -68,11 +84,19 @@ class ConfigurationSnapshot:
         revision = value.get(0)
         digest = value.get(1)
         entries = value.get(2)
+        restart_pending = value.get(3)
         if not isinstance(revision, int) or not isinstance(digest, bytes):
             raise ValueError("configuration snapshot has invalid identity")
         if not isinstance(entries, list):
             raise ValueError("configuration snapshot has invalid entries")
-        return cls(revision, digest, tuple(ConfigurationEntry.from_wire(item) for item in entries))
+        if not isinstance(restart_pending, bool):
+            raise ValueError("configuration snapshot has invalid restart status")
+        return cls(
+            revision,
+            digest,
+            tuple(ConfigurationEntry.from_wire(item) for item in entries),
+            restart_pending,
+        )
 
     @property
     def tui_entries(self) -> tuple[ConfigurationEntry, ...]:
@@ -80,6 +104,12 @@ class ConfigurationSnapshot:
 
     def value(self, code: str, default: str) -> str:
         return next((entry.value for entry in self.entries if entry.code == code), default)
+
+    def effective_value(self, code: str, default: str) -> str:
+        return next(
+            (entry.effective_value for entry in self.entries if entry.code == code),
+            default,
+        )
 
     def prepare_wire(self, changes: list[ConfigurationChange]) -> dict[int, Any]:
         return {
@@ -104,6 +134,7 @@ class PreparedConfiguration:
     expected_source_digest: bytes
     contents: str
     restart_required: bool
+    prepared_source_digest: bytes
 
     @classmethod
     def from_wire(cls, value: Any) -> PreparedConfiguration:
@@ -113,11 +144,13 @@ class PreparedConfiguration:
         digest = value.get(1)
         contents = value.get(2)
         restart = value.get(3)
+        prepared_digest = value.get(4)
         if (
             not isinstance(revision, int)
             or not isinstance(digest, bytes)
             or not isinstance(contents, str)
             or not isinstance(restart, bool)
+            or not isinstance(prepared_digest, bytes)
         ):
             raise ValueError("prepared configuration has invalid fields")
-        return cls(revision, digest, contents, restart)
+        return cls(revision, digest, contents, restart, prepared_digest)

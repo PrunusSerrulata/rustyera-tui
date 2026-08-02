@@ -12,7 +12,7 @@ from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile
 from rustyera_tui.presentation import ServicePresentationModel
 from rustyera_tui.runtime import (
     FrontendEvent,
-    PendingConfigurationUpdate,
+    PendingConfigurationPrepare,
     RuntimeClient,
     RuntimeFailure,
 )
@@ -36,6 +36,7 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client.pending_export_message = None
     client.pending_export_kind = None
     client.pending_diagnosis = None
+    client.configuration_profile_supported = True
     client.single_step_enabled = False
     captured: list[tuple[int, Any]] = []
     client.send_runtime = (  # type: ignore[method-assign]
@@ -487,19 +488,38 @@ def test_configuration_update_uses_authoritative_snapshot_and_open_effect_is_sup
     client, captured = client_with_capture()
     client.bundle = SimpleNamespace(project_file=None)
     client.pending_configuration = None
-    client.configuration_snapshot = ConfigurationSnapshot.from_wire({0: 7, 1: b"digest", 2: []})
+    client.configuration_snapshot = ConfigurationSnapshot.from_wire(
+        {0: 7, 1: b"digest", 2: [], 3: False}
+    )
 
     client.prepare_configuration_update([ConfigurationChange("FontSize", "20")])
     assert captured.pop() == (
         24,
         {0: 7, 1: b"digest", 2: [{0: "FontSize", 1: "20"}]},
     )
-    assert client.pending_configuration is not None
+    assert isinstance(client.pending_configuration, PendingConfigurationPrepare)
     assert client.pending_configuration.message_id == 1
 
     client._acknowledge_effects({0: [{0: 41, 1: variant(4)}]})
     assert client.events.get_nowait() == FrontendEvent("open_configuration")
     assert captured.pop() == (43, {0: [{0: 41, 1: 0}]})
+
+
+def test_configuration_update_requires_the_negotiated_tui_profile() -> None:
+    client, _captured = client_with_capture()
+    client.bundle = SimpleNamespace(project_file=None)
+    client.configuration_profile_supported = False
+    client.pending_configuration = None
+    client.configuration_snapshot = ConfigurationSnapshot.from_wire(
+        {0: 7, 1: b"digest", 2: [], 3: False}
+    )
+
+    try:
+        client.prepare_configuration_update([])
+    except RuntimeError as error:
+        assert "不支持 TUI" in str(error)
+    else:
+        raise AssertionError("an unsupported configuration profile was accepted")
 
 
 def test_prepared_configuration_writes_and_restarts_without_exposing_wire_maps(
@@ -512,21 +532,25 @@ def test_prepared_configuration_writes_and_restarts_without_exposing_wire_maps(
     assert digest is not None
     client, _captured = client_with_capture()
     client.bundle = bundle
-    client.pending_configuration = PendingConfigurationUpdate(7, 1, digest)
+    client.pending_configuration = PendingConfigurationPrepare(7, 1, digest, True)
     recreated: list[ProjectBundle] = []
     client.recreate = recreated.append  # type: ignore[method-assign]
 
+    contents = "FontSize:20\n"
+    prepared_digest = blake3.blake3(contents.encode()).digest()
     client._handle_configuration_prepared(
-        {0: 1, 1: digest, 2: "FontSize:20\n", 3: True},
-        7,
+        {0: 1, 1: digest, 2: contents, 3: False, 4: prepared_digest}, 7
     )
 
     assert config.read_text(encoding="utf-8") == "FontSize:20\n"
+    client._handle_configuration_committed(
+        {0: {0: 1, 1: prepared_digest, 2: [], 3: True}}, 1
+    )
     assert len(recreated) == 1
     events = []
     while not client.events.empty():
         events.append(client.events.get_nowait())
-    assert FrontendEvent("configuration_saved") in events
+    assert FrontendEvent("configuration_saved", (True, True)) in events
 
 
 def test_invalid_or_conflicting_prepared_configuration_keeps_session_alive(
@@ -539,21 +563,66 @@ def test_invalid_or_conflicting_prepared_configuration_keeps_session_alive(
     assert digest is not None
     client, _captured = client_with_capture()
     client.bundle = bundle
-    client.pending_configuration = PendingConfigurationUpdate(7, 1, digest)
+    client.pending_configuration = PendingConfigurationPrepare(7, 1, digest, False)
 
     client._handle_configuration_prepared({0: "bad"}, 7)
     failure = client.events.get_nowait()
-    assert failure.kind == "error"
+    assert failure.kind == "configuration_save_failed"
     assert "保存偏好选项失败" in failure.value
     assert config.read_text(encoding="utf-8") == "FontSize:18\n"
+    client._handle_configuration_committed(
+        {0: {0: 1, 1: digest, 2: [], 3: False}}, 1
+    )
+    assert client.pending_configuration is None
+    assert client.events.get_nowait().kind == "configuration"
 
     config.write_text("FontSize:19\n", encoding="utf-8")
-    client.pending_configuration = PendingConfigurationUpdate(8, 1, digest)
+    client.pending_configuration = PendingConfigurationPrepare(8, 1, digest, False)
+    contents = "FontSize:20\n"
     client._handle_configuration_prepared(
-        {0: 1, 1: digest, 2: "FontSize:20\n", 3: True},
+        {
+            0: 1,
+            1: digest,
+            2: contents,
+            3: True,
+            4: blake3.blake3(contents.encode()).digest(),
+        },
         8,
     )
     conflict = client.events.get_nowait()
-    assert conflict.kind == "error"
+    assert conflict.kind == "configuration_save_failed"
     assert "其他程序修改" in conflict.value
     assert config.read_text(encoding="utf-8") == "FontSize:19\n"
+
+
+def test_invalid_committed_configuration_stops_the_success_path(tmp_path: Path) -> None:
+    config = tmp_path / "emuera.config"
+    config.write_text("UseMouse:YES\n", encoding="utf-8")
+    bundle = ProjectBundle.scan(tmp_path)
+    digest = bundle.files["emuera.config"].content_hash
+    assert digest is not None
+    client, _captured = client_with_capture()
+    client.bundle = bundle
+    client.pending_configuration = PendingConfigurationPrepare(7, 1, digest, True)
+    recreated: list[ProjectBundle] = []
+    client.recreate = recreated.append  # type: ignore[method-assign]
+    contents = "UseMouse:NO\n"
+    client._handle_configuration_prepared(
+        {
+            0: 1,
+            1: digest,
+            2: contents,
+            3: False,
+            4: blake3.blake3(contents.encode()).digest(),
+        },
+        7,
+    )
+
+    client._handle_configuration_committed({0: {0: "bad"}}, 1)
+
+    events = []
+    while not client.events.empty():
+        events.append(client.events.get_nowait())
+    assert any(event.kind == "configuration_save_failed" for event in events)
+    assert not any(event.kind == "configuration_saved" for event in events)
+    assert not recreated

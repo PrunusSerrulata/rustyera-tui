@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
 from textual.message import Message
 from textual.screen import ModalScreen
@@ -21,8 +21,8 @@ from textual.widgets import (
     Static,
 )
 
-from .configuration import ConfigurationChange, ConfigurationSnapshot
 from .log_model import LogEntry, LogLevel, filter_log_entries, format_log_entries
+from .preferences import PreferencesDialog as PreferencesDialog
 
 
 class ConfirmDialog(ModalScreen[bool]):
@@ -44,82 +44,6 @@ class ConfirmDialog(ModalScreen[bool]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "confirm-accept")
-
-
-class PreferencesDialog(ModalScreen[list[ConfigurationChange] | None]):
-    """Edit the Runtime-projected, client-applicable emuera.config values."""
-
-    def __init__(self, snapshot: ConfigurationSnapshot, read_only: bool) -> None:
-        super().__init__()
-        self.snapshot = snapshot
-        self.read_only = read_only
-        self.entries = snapshot.tui_entries
-
-    def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog wide-dialog preferences-dialog"):
-            yield Label("偏好选项", classes="dialog-title")
-            yield Static(
-                "设置保存到项目根目录的 emuera.config，保存后游戏会自动重启。"
-                "字体名称和字号参与游戏排版；终端实际字形仍由终端程序控制。",
-                markup=False,
-                id="preferences-description",
-            )
-            if self.read_only:
-                yield Static(
-                    "当前为 .reraproj 打包项目，配置仅供查看。",
-                    markup=False,
-                    id="preferences-read-only",
-                )
-            with VerticalScroll(id="preferences-fields"):
-                for index, entry in enumerate(self.entries):
-                    fixed = entry.fixed
-                    suffix = "（固定配置，只读）" if fixed else ""
-                    yield Label(
-                        f"{entry.label} [{entry.code}]{suffix}",
-                        markup=False,
-                        classes="preference-label",
-                    )
-                    allowed = entry.allowed
-                    if entry.kind == 0:
-                        allowed = ["YES", "NO"]
-                    if entry.kind in (0, 3) and allowed:
-                        yield Select(
-                            ((str(value), str(value)) for value in allowed),
-                            value=entry.value,
-                            allow_blank=False,
-                            id=f"preference-{index}",
-                            disabled=fixed or self.read_only,
-                        )
-                    else:
-                        yield Input(
-                            value=entry.value,
-                            id=f"preference-{index}",
-                            disabled=fixed or self.read_only,
-                        )
-            with Horizontal(classes="dialog-buttons"):
-                yield Button(
-                    "保存并重启",
-                    id="preferences-save",
-                    variant="primary",
-                    disabled=self.read_only,
-                )
-                yield Button("取消" if not self.read_only else "关闭", id="preferences-cancel")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "preferences-cancel":
-            self.dismiss(None)
-            return
-        if event.button.id != "preferences-save":
-            return
-        changes: list[ConfigurationChange] = []
-        for index, entry in enumerate(self.entries):
-            if entry.fixed:
-                continue
-            field = self.query_one(f"#preference-{index}")
-            value = str(field.value)
-            if value != entry.value:
-                changes.append(ConfigurationChange(entry.code, value))
-        self.dismiss(changes)
 
 
 class AboutDialog(ModalScreen[None]):

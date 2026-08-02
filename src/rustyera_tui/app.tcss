@@ -200,33 +200,200 @@ ModalScreen {
 }
 
 .preferences-dialog {
-    width: 92%;
-    height: 92%;
+    width: 96%;
+    height: 96%;
+    max-width: 150;
+    text-align: left;
 }
 
-#preferences-description, #preferences-read-only {
-    height: auto;
-    margin-bottom: 1;
+.preferences-dialog Button,
+.preferences-dialog Tab,
+.color-picker-dialog Button {
+    content-align: left middle;
+    text-align: left;
 }
 
 #preferences-read-only {
+    height: auto;
+    margin-bottom: 1;
     color: #fbbf24;
 }
 
-#preferences-fields {
+#preferences-tabs {
     height: 1fr;
-    border: solid #334155;
+}
+
+.preferences-page-scroll {
+    height: 1fr;
     padding: 0 1;
 }
 
-.preference-label {
+.preferences-warning {
+    height: auto;
+    color: #fca5a5;
+    text-style: bold;
+}
+
+.preferences-restart-note {
+    height: auto;
+    color: #fbbf24;
+    margin-bottom: 1;
+}
+
+.preferences-grid {
+    grid-size: 2;
+    grid-columns: 1fr 1fr;
+    grid-gutter: 0 2;
+    height: auto;
+}
+
+.preferences-group-title {
+    column-span: 2;
     height: auto;
     margin-top: 1;
     color: #bae6fd;
+    text-style: bold;
 }
 
-#preferences-fields Input, #preferences-fields Select {
+.preference-field {
+    height: 3;
     width: 100%;
+    align: left middle;
+}
+
+.preference-wide {
+    column-span: 2;
+}
+
+.preference-field-label {
+    width: 36;
+    min-width: 36;
+    height: 3;
+    content-align: left middle;
+}
+
+.preference-field > Checkbox {
+    width: 5;
+    height: 3;
+}
+
+.preference-field > Input,
+.preference-field > Select,
+.preference-field > .numeric-input,
+.preference-field > .color-field {
+    width: 1fr;
+}
+
+.numeric-input {
+    height: 3;
+    align: left middle;
+}
+
+.numeric-input Input {
+    width: 1fr;
+}
+
+.numeric-input Button {
+    width: 5;
+    min-width: 5;
+    height: 3;
+    min-height: 3;
+    padding: 0;
+}
+
+.color-field {
+    height: 3;
+    align: left middle;
+}
+
+.color-swatch {
+    width: 14;
+    height: 3;
+    padding: 1;
+}
+
+.color-field Button {
+    width: 14;
+    min-width: 14;
+    height: 3;
+    min-height: 3;
+    padding: 0 1;
+}
+
+#preferences-status {
+    height: 1;
+    color: #fbbf24;
+}
+
+.preferences-actions {
+    height: 3;
+    align: left middle;
+}
+
+.preferences-actions Button {
+    min-width: 12;
+    margin-right: 1;
+}
+
+.preferences-action-spacer {
+    width: 1fr;
+}
+
+.color-picker-dialog {
+    width: 78;
+    height: 38;
+    text-align: left;
+}
+
+.color-editor-row {
+    height: 3;
+    align: left middle;
+}
+
+.color-editor-label {
+    width: 12;
+    height: 3;
+    content-align: left middle;
+}
+
+.color-editor-row Input,
+.color-editor-row .numeric-input {
+    width: 1fr;
+}
+
+#color-preview {
+    width: 1fr;
+    height: 3;
+    padding: 1;
+}
+
+.color-grid-title {
+    height: 1;
+    color: #bae6fd;
+}
+
+#color-grid {
+    grid-size: 18;
+    grid-columns: 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3;
+    grid-rows: 1 1 1 1 1 1 1 1 1 1 1 1;
+    grid-gutter: 0;
+    height: 12;
+    width: 54;
+    margin: 0 1;
+}
+
+#color-grid Button {
+    width: 3;
+    min-width: 3;
+    height: 1;
+    min-height: 1;
+    border: none;
+    padding: 0;
+}
+
+#color-error {
+    height: 1;
+    color: #fca5a5;
 }
 
 .confirm-dialog {
