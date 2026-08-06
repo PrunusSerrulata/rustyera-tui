@@ -18,6 +18,7 @@ from rich.cells import cell_len
 
 from .abi import RuntimeAbi
 from .configuration import (
+    APPLICATION_HOT,
     ConfigurationChange,
     ConfigurationSnapshot,
     PreparedConfiguration,
@@ -100,12 +101,13 @@ class PendingConfigurationPrepare:
     project_revision: int
     source_digest: bytes
     restart: bool
+    session_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedConfigurationCommit:
     prepared: PreparedConfiguration
-    candidate: ProjectBundle
+    candidate: ProjectBundle | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -819,8 +821,6 @@ class RuntimeClient:
     ) -> None:
         if self.bundle is None:
             raise RuntimeError("没有已载入的项目")
-        if self.bundle.project_file is not None:
-            raise PermissionError("打包项目中的 emuera.config 为只读")
         if self.pending_configuration is not None:
             raise RuntimeError("偏好选项正在保存")
         snapshot = self.configuration_snapshot
@@ -828,12 +828,23 @@ class RuntimeClient:
             raise RuntimeError("Runtime 尚未提供项目配置")
         if not self.configuration_profile_supported:
             raise RuntimeError("当前 Runtime 不支持 TUI 项目设置画像")
+        session_only = self.bundle.project_file is not None
+        if session_only:
+            entries = {entry.code.casefold(): entry for entry in snapshot.tui_entries}
+            if restart or any(
+                (entry := entries.get(change.code.casefold())) is None
+                or entry.fixed
+                or entry.application != APPLICATION_HOT
+                for change in changes
+            ):
+                raise PermissionError("项目文件仅支持当前会话内即时生效的设置")
         message_id = self.send_runtime(24, snapshot.prepare_wire(changes))
         self.pending_configuration = PendingConfigurationPrepare(
             message_id,
             snapshot.project_revision,
             snapshot.source_digest,
             restart,
+            session_only,
         )
 
     def _handle_configuration_prepared(
@@ -854,8 +865,15 @@ class RuntimeClient:
                 raise ValueError("prepared configuration digest does not match its contents")
             if self.bundle is None:
                 raise RuntimeError("配置保存完成时项目已关闭")
-            self.bundle.write_configuration(value.expected_source_digest, value.contents)
-            candidate = ProjectBundle.scan_quick(self.bundle.root, 1, self._project_scan_progress)
+            if pending.session_only:
+                if value.restart_required:
+                    raise PermissionError("项目文件仅支持当前会话内即时生效的设置")
+                candidate = None
+            else:
+                self.bundle.write_configuration(value.expected_source_digest, value.contents)
+                candidate = ProjectBundle.scan_quick(
+                    self.bundle.root, 1, self._project_scan_progress
+                )
         except (OSError, RuntimeError, UnicodeError, ValueError) as error:
             message = f"保存偏好选项失败：{error}"
             finalize_message_id = self.send_runtime(26, {0: pending.message_id, 1: 0})
@@ -898,15 +916,20 @@ class RuntimeClient:
         if isinstance(pending.outcome, PreparedConfigurationAbort):
             return
         outcome = pending.outcome
-        self.bundle = outcome.candidate
-        self.events.put(
-            FrontendEvent(
-                "configuration_saved",
-                (pending.restart, snapshot.restart_pending),
+        if outcome.candidate is None:
+            self.events.put(FrontendEvent("configuration_session_applied"))
+        else:
+            self.bundle = outcome.candidate
+            self.events.put(
+                FrontendEvent(
+                    "configuration_saved",
+                    (pending.restart, snapshot.restart_pending),
+                )
             )
-        )
         if not pending.restart:
             return
+        if outcome.candidate is None:
+            raise RuntimeError("会话设置不能通过重启应用")
         try:
             self.recreate(outcome.candidate)
         except Exception as error:  # noqa: BLE001 - preserve the worker after a restart failure

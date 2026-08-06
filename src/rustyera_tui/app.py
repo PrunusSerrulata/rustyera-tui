@@ -338,6 +338,10 @@ class RustyEraTui(App[None]):
                 self.notify("项目设置已保存；部分更改将在重启后生效")
             else:
                 self.notify("项目设置已应用")
+        elif kind == "configuration_session_applied":
+            if isinstance(self.screen, PreferencesDialog):
+                self.screen.session_applied()
+            self.notify("会话设置已应用；退出游戏后将丢失")
         elif kind == "configuration_save_failed":
             if isinstance(self.screen, PreferencesDialog):
                 self.screen.save_failed(str(value))

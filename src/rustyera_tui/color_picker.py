@@ -5,6 +5,7 @@ from __future__ import annotations
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
@@ -174,6 +175,9 @@ class ColorPickerDialog(ModalScreen[str | None]):
 
 
 class ColorField(Horizontal):
+    class Changed(Message):
+        pass
+
     def __init__(self, value: str, *, id: str, disabled: bool = False) -> None:
         super().__init__(id=id, classes="color-field")
         self.rgb = parse_rgb(value)
@@ -212,3 +216,4 @@ class ColorField(Horizontal):
     def _color_selected(self, value: str | None) -> None:
         if value is not None:
             self.value = value
+            self.post_message(self.Changed())

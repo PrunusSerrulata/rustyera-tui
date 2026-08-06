@@ -1613,3 +1613,72 @@ async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_v
         assert app.query_one("#menu-bar").display
         assert app.query_one(GameViewport).mouse_enabled
         assert app.query_one("#file-preferences", Button).disabled
+
+
+async def test_packaged_project_preferences_apply_only_hot_session_settings(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    snapshot = ConfigurationSnapshot.from_wire(
+        {
+            0: 10,
+            1: b"package",
+            2: [
+                configuration_entry("UseMouse", "YES", 0),
+                configuration_entry("BackColor", "0,0,0", 4),
+                configuration_entry("AutoSave", "YES", 0, application=1),
+                configuration_entry("SystemSaveInBinary", "NO", 0, application=1),
+                configuration_entry("ZipSaveData", "NO", 0, application=1),
+            ],
+            3: False,
+        }
+    )
+
+    async with app.run_test(size=(110, 35)) as pilot:
+        worker.events.put(FrontendEvent("phase", 4))
+        worker.events.put(FrontendEvent("configuration", (snapshot, True)))
+        await pilot.pause(0.1)
+        await pilot.press("ctrl+comma")
+        assert isinstance(app.screen, PreferencesDialog)
+        assert "退出游戏后将丢失" in str(
+            app.screen.query_one("#preferences-read-only", Static).render()
+        )
+        use_mouse = app.screen.query_one("#preference-usemouse", Checkbox)
+        auto_save = app.screen.query_one("#preference-autosave", Checkbox)
+        assert not use_mouse.disabled
+        assert auto_save.disabled
+        assert app.screen.query_one("#preferences-apply", Button).disabled
+        assert app.screen.query_one("#preferences-apply-restart", Button).disabled
+
+        tabs = app.screen.query_one("#preferences-tabs", TabbedContent)
+        tabs.active = "preferences-save"
+        await pilot.pause()
+        assert app.screen.query_one("#preferences-reset", Button).disabled
+        tabs.active = "preferences-interface"
+        await pilot.pause()
+
+        use_mouse.value = False
+        back_color = app.screen.query_one("#preference-backcolor", ColorField)
+        back_color.value = "1,2,3"
+        await pilot.pause()
+        assert not app.screen.query_one("#preferences-apply", Button).disabled
+        await pilot.click("#preferences-apply")
+        await pilot.pause()
+        assert (
+            "save_configuration",
+            (
+                [
+                    ConfigurationChange("UseMouse", "NO"),
+                    ConfigurationChange("BackColor", "1,2,3"),
+                ],
+                False,
+            ),
+        ) in worker.commands
+
+        worker.events.put(FrontendEvent("configuration_session_applied"))
+        await pilot.pause(0.1)
+        assert "退出游戏后将丢失" in str(
+            app.screen.query_one("#preferences-status", Static).render()
+        )

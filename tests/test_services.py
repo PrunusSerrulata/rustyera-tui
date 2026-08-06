@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import blake3
+import pytest
 
 from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
 from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile
@@ -520,6 +521,91 @@ def test_configuration_update_requires_the_negotiated_tui_profile() -> None:
         assert "不支持 TUI" in str(error)
     else:
         raise AssertionError("an unsupported configuration profile was accepted")
+
+
+def test_packaged_configuration_commits_hot_changes_without_writing_project_file() -> None:
+    client, captured = client_with_capture()
+    client.bundle = SimpleNamespace(project_file=Path("game.reraproj"))
+    client.pending_configuration = None
+    digest = b"package-digest"
+    hot_entry = {
+        0: "UseMouse",
+        1: "UseMouse",
+        2: "UseMouse",
+        3: "YES",
+        4: 0,
+        5: [],
+        6: False,
+        7: 2,
+        8: "YES",
+        9: "YES",
+        10: 0,
+    }
+    client.configuration_snapshot = ConfigurationSnapshot.from_wire(
+        {0: 7, 1: digest, 2: [hot_entry], 3: False}
+    )
+
+    client.prepare_configuration_update([ConfigurationChange("UseMouse", "NO")])
+    pending = client.pending_configuration
+    assert isinstance(pending, PendingConfigurationPrepare)
+    assert pending.session_only
+    contents = "UseMouse:NO\n"
+    prepared_digest = blake3.blake3(contents.encode()).digest()
+    client._handle_configuration_prepared(
+        {0: 7, 1: digest, 2: contents, 3: False, 4: prepared_digest}, pending.message_id
+    )
+    assert captured[-1] == (26, {0: pending.message_id, 1: 1})
+    client._handle_configuration_committed(
+        {
+            0: {
+                0: 7,
+                1: prepared_digest,
+                2: [{**hot_entry, 3: "NO", 9: "NO"}],
+                3: False,
+            }
+        },
+        1,
+    )
+
+    events = []
+    while not client.events.empty():
+        events.append(client.events.get_nowait())
+    assert FrontendEvent("configuration_session_applied") in events
+    assert client.bundle.project_file == Path("game.reraproj")
+
+
+def test_packaged_configuration_rejects_restart_fixed_and_non_hot_changes() -> None:
+    client, captured = client_with_capture()
+    client.bundle = SimpleNamespace(project_file=Path("game.reraproj"))
+    client.pending_configuration = None
+    hot_entry = {
+        0: "UseMouse",
+        1: "UseMouse",
+        2: "UseMouse",
+        3: "YES",
+        4: 0,
+        5: [],
+        6: False,
+        7: 2,
+        8: "YES",
+        9: "YES",
+        10: 0,
+    }
+    restart_entry = {**hot_entry, 0: "AutoSave", 1: "AutoSave", 2: "AutoSave", 10: 1}
+    fixed_entry = {**hot_entry, 0: "BackColor", 1: "BackColor", 2: "BackColor", 6: True}
+    client.configuration_snapshot = ConfigurationSnapshot.from_wire(
+        {0: 8, 1: b"package", 2: [hot_entry, restart_entry, fixed_entry], 3: False}
+    )
+
+    with pytest.raises(PermissionError, match="仅支持当前会话"):
+        client.prepare_configuration_update([ConfigurationChange("UseMouse", "NO")], True)
+    with pytest.raises(PermissionError, match="仅支持当前会话"):
+        client.prepare_configuration_update([ConfigurationChange("AutoSave", "NO")])
+    with pytest.raises(PermissionError, match="仅支持当前会话"):
+        client.prepare_configuration_update([ConfigurationChange("BackColor", "1,2,3")])
+
+    assert captured == []
+    assert client.pending_configuration is None
 
 
 def test_prepared_configuration_writes_and_restarts_without_exposing_wire_maps(
