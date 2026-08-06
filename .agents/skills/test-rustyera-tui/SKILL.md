@@ -19,14 +19,8 @@ Read [test-cli.md](references/test-cli.md) before authoring or changing a scenar
   command by the remaining time.
 - Start each distinct full test suite at most once. After a failure is fixed, rerun only the
   directly affected node IDs, test files, or scenarios; never rerun the full suite in that task.
-- From launch through exit, every end-to-end or long-flow run must print a complete observable
-  snapshot every 5 seconds: all rendered interface elements, runtime state, wait, presentation,
-  output, statuses, watches, and logs. If an HTML client participates, include all current HTML
-  elements with their tags, attributes, text/value, and visibility. Ignore timestamps and other
-  reporting-only metadata when comparing snapshots. Two consecutive identical snapshots mean the
-  game is static and the test is stalled: terminate immediately and report an error.
 - At 60 minutes, terminate every test process and report the active command, exact scenario/step,
-  last complete snapshot, elapsed time, completed checks, and unverified checks.
+  last stable-wait observation, elapsed time, completed checks, and unverified checks.
 
 ## Prepare the run
 
@@ -65,10 +59,11 @@ NDJSON command on stdin.
 - Use `{"op":"stop"}` only after the goal is satisfied or continuing cannot add coverage.
 
 Prefer visible, valid choices. Never invent hidden state or bypass input validation. Continue until
-the machine-readable goal succeeds, the first differential failure occurs, two consecutive
-5-second snapshots are identical, or the hard step/time budget is exhausted. A budget exhaustion
-or identical snapshot is a failed test unless the scenario explicitly defines exploration-only
-acceptance; the task-wide 60-minute deadline is always a failure.
+the machine-readable goal succeeds, the first differential failure occurs, or the hard step/time
+budget is exhausted. TUI runs observe complete state at stable input waits by default; use periodic
+snapshots only when the user explicitly requests them. A budget exhaustion is a failed test unless
+the scenario explicitly defines exploration-only acceptance; the task-wide 60-minute deadline is
+always a failure.
 
 ## Interpret and report
 
