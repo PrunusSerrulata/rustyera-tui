@@ -3,6 +3,8 @@
 import platform
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 project_root = Path(SPEC).resolve().parent
 package_dir = project_root / "src" / "rustyera_tui"
 
@@ -29,7 +31,7 @@ a = Analysis(
     pathex=["src"],
     binaries=[(str(library), "rustyera_tui")],
     datas=[("src/rustyera_tui/app.tcss", "rustyera_tui")],
-    hiddenimports = [
+    hiddenimports = collect_submodules("textual.widgets") + [
         "rich",
         "rich.console",
         "rich.panel",
