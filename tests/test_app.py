@@ -674,7 +674,7 @@ async def test_vertical_scrollbar_gutter_does_not_create_transient_horizontal_ov
         assert projection[0] == 98
 
 
-async def test_viewport_update_always_scrolls_to_the_bottom(tmp_path: Path) -> None:
+async def test_viewport_follows_appended_history(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
@@ -694,10 +694,49 @@ async def test_viewport_update_always_scrolls_to_the_bottom(tmp_path: Path) -> N
         await pilot.pause()
         assert not viewport.is_vertical_scroll_end
 
-        await viewport.set_lines([*lines, DisplayLineModel(40, False, True, True, 0, ())])
+        await viewport.set_lines(
+            [*lines, DisplayLineModel(40, False, True, True, 0, ())]
+        )
         await pilot.pause()
         await pilot.pause()
         assert viewport.is_vertical_scroll_end
+
+
+async def test_viewport_preserves_scroll_for_equal_length_dynamic_tail_refresh(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    lines = [
+        DisplayLineModel(index, False, True, True, 0, (DisplaySegment(f"line {index}"),))
+        for index in range(40)
+    ]
+    async with app.run_test(size=(100, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines(lines)
+        await pilot.pause()
+        await pilot.pause()
+        viewport.scroll_to(y=5, animate=False)
+        await pilot.pause()
+        before = viewport.scroll_y
+        tail_widget = list(viewport.children)[-1]
+
+        replacement = DisplayLineModel(
+            100,
+            False,
+            True,
+            True,
+            0,
+            (DisplaySegment("animated frame"),),
+        )
+        await viewport.set_lines([*lines[:-1], replacement], changed_from=len(lines) - 1)
+        await pilot.pause()
+        await pilot.pause()
+
+        assert viewport.scroll_y == before
+        assert viewport.models[-1] == replacement
+        assert list(viewport.children)[-1] is tail_widget
 
 
 async def test_log_dialog_filters_entries_at_the_selected_threshold(tmp_path: Path) -> None:

@@ -506,6 +506,7 @@ class GameViewport(ScrollableContainer):
     ) -> bool:
         lines = _merge_save_delete_lines(lines)
         old = self.models
+        history_grew = len(lines) > len(old)
         children = list(self.children)
         if trimmed_prefix and not any(
             segment.right_edge for line in lines for segment in line.segments
@@ -544,9 +545,11 @@ class GameViewport(ScrollableContainer):
             if isinstance(child, GameLine):
                 child.set_layout_width(width)
         self._set_horizontal_overflow(self._content_overflows(width))
-        # Re-anchor after every presentation change so the next layout pass follows
-        # the newly appended content even when the user had scrolled into history.
-        self.anchor()
+        # Reference Emuera leaves the scrollbar unchanged when CLEARLINE removes a dynamic
+        # frame and the replacement restores the same line count. Follow genuinely appended
+        # history, but let equal-length tail replacement update the existing rows in place.
+        if history_grew:
+            self.anchor()
         return self._horizontal_overflow
 
 
