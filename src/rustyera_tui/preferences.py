@@ -17,12 +17,6 @@ def _field_id(code: str) -> str:
     return f"preference-{code.lower().replace('_', '-')}"
 
 
-class PreferenceCheckbox(Checkbox):
-    """A conventional check mark without Textual's permanent `X` glyph."""
-
-    BUTTON_INNER = "✓"
-
-
 class PreferenceField(Horizontal):
     def __init__(self, spec: FieldSpec, entry: ConfigurationEntry, read_only: bool) -> None:
         classes = f"preference-field preference-{spec.kind}"
@@ -34,21 +28,22 @@ class PreferenceField(Horizontal):
         self.control_disabled = read_only or entry.fixed
 
     def compose(self) -> ComposeResult:
-        yield Label(self.spec.label, markup=False, classes="preference-field-label")
         control_id = _field_id(self.spec.code)
         if self.spec.kind == "boolean":
-            yield PreferenceCheckbox(
-                "",
+            yield Checkbox(
+                self.spec.label,
                 value=self.entry.value == "YES",
                 compact=True,
-                classes="preference-checkbox",
                 id=control_id,
                 disabled=self.control_disabled,
             )
-        elif self.spec.kind == "integer":
+            return
+        yield Label(self.spec.label, markup=False, classes="preference-field-label")
+        if self.spec.kind == "integer":
             yield Input(
                 value=self.entry.value,
                 type="integer",
+                compact=True,
                 id=control_id,
                 disabled=self.control_disabled,
             )
@@ -57,6 +52,7 @@ class PreferenceField(Horizontal):
                 self.spec.choices,
                 value=self.entry.value,
                 allow_blank=False,
+                compact=True,
                 id=control_id,
                 disabled=self.control_disabled,
             )
@@ -65,6 +61,7 @@ class PreferenceField(Horizontal):
         else:
             yield Input(
                 value=self.entry.value,
+                compact=True,
                 id=control_id,
                 disabled=self.control_disabled,
             )
@@ -122,17 +119,28 @@ class PreferencesDialog(ModalScreen[None]):
                 yield Button(
                     "恢复本页默认",
                     id="preferences-reset",
+                    compact=True,
                     disabled=self.read_only,
                 )
                 yield Static(classes="preferences-action-spacer")
-                yield Button("应用", id="preferences-apply", disabled=self.read_only)
+                yield Button(
+                    "应用",
+                    id="preferences-apply",
+                    compact=True,
+                    disabled=self.read_only,
+                )
                 yield Button(
                     "应用并重启",
                     id="preferences-apply-restart",
                     variant="primary",
+                    compact=True,
                     disabled=self.read_only,
                 )
-                yield Button("关闭" if self.read_only else "取消", id="preferences-cancel")
+                yield Button(
+                    "关闭" if self.read_only else "取消",
+                    id="preferences-cancel",
+                    compact=True,
+                )
 
     def on_mount(self) -> None:
         self._update_zip_dependency()

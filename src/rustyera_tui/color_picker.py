@@ -55,7 +55,12 @@ class ColorPickerDialog(ModalScreen[str | None]):
                 yield Static("", id="color-preview")
             with Horizontal(classes="color-editor-row"):
                 yield Label("HEX", classes="color-editor-label")
-                yield Input(value=hex_color(self.rgb), id="color-hex", max_length=7)
+                yield Input(
+                    value=hex_color(self.rgb),
+                    id="color-hex",
+                    max_length=7,
+                    compact=True,
+                )
             for name, label, component in zip(
                 ("red", "green", "blue"),
                 ("红色", "绿色", "蓝色"),
@@ -64,20 +69,29 @@ class ColorPickerDialog(ModalScreen[str | None]):
             ):
                 with Horizontal(classes="color-editor-row"):
                     yield Label(label, classes="color-editor-label")
-                    yield Input(value=str(component), type="integer", id=f"color-{name}")
+                    yield Input(
+                        value=str(component),
+                        type="integer",
+                        id=f"color-{name}",
+                        compact=True,
+                    )
             yield Label("216 色网格", classes="color-grid-title")
             with Grid(id="color-grid"):
                 for red in self.LEVELS:
                     for green in self.LEVELS:
                         for blue in self.LEVELS:
                             color = hex_color((red, green, blue))
-                            button = Button(" ", id=f"color-cell-{red}-{green}-{blue}")
+                            button = Button(
+                                " ",
+                                id=f"color-cell-{red}-{green}-{blue}",
+                                compact=True,
+                            )
                             button.styles.background = color
                             yield button
             yield Static("", id="color-error", markup=False)
             with Horizontal(classes="dialog-buttons"):
-                yield Button("取消", id="color-cancel")
-                yield Button("确定", id="color-confirm", variant="primary")
+                yield Button("取消", id="color-cancel", compact=True)
+                yield Button("确定", id="color-confirm", variant="primary", compact=True)
 
     def on_mount(self) -> None:
         self._sync_fields()
@@ -170,7 +184,12 @@ class ColorField(Horizontal):
         swatch = Static(color, classes="color-swatch")
         swatch.styles.background = color
         yield swatch
-        yield Button("选择颜色…", id=f"{self.id}-choose", disabled=self.control_disabled)
+        yield Button(
+            "选择颜色…",
+            id=f"{self.id}-choose",
+            compact=True,
+            disabled=self.control_disabled,
+        )
 
     @property
     def value(self) -> str:

@@ -20,7 +20,7 @@ from rustyera_tui.presentation import (
     SeparatorLayout,
 )
 from rustyera_tui.color_picker import ColorField, ColorPickerDialog
-from rustyera_tui.preferences_schema import FIELDS, FieldSpec
+from rustyera_tui.preferences_schema import FIELDS, PAGES, FieldSpec
 from rustyera_tui.runtime import FrontendEvent, PresentationBatch, RuntimeFailure
 from rustyera_tui.widgets import GameLine, GameViewport
 from rustyera_tui.wire import variant
@@ -104,18 +104,39 @@ async def test_preferences_use_native_compact_controls_and_fit_the_terminal(
         app.push_screen(PreferencesDialog(snapshot, False))
         await pilot.pause()
         dialog = app.screen.query_one(".preferences-dialog")
-        assert (dialog.size.width, dialog.size.height) == (104, 30)
+        assert (dialog.size.width, dialog.size.height) == (104, 26)
 
-        for code, field in FIELDS.items():
-            selector = f"#preference-{code.lower().replace('_', '-')}"
-            control = app.screen.query_one(selector)
-            if field.kind == "boolean":
-                assert isinstance(control, Checkbox)
-                assert control.compact
-            elif field.kind == "integer":
-                assert isinstance(control, Input)
-                assert control.type == "integer"
+        tabs = app.screen.query_one("#preferences-tabs", TabbedContent)
+        for page_spec in PAGES:
+            tabs.active = f"preferences-{page_spec.id}"
+            await pilot.pause()
+            for code in page_spec.codes:
+                field = FIELDS[code]
+                selector = f"#preference-{code.lower().replace('_', '-')}"
+                control = app.screen.query_one(selector)
+                assert control.size.height == 1
+                if field.kind == "boolean":
+                    assert type(control) is Checkbox
+                    assert control.compact
+                    assert control.BUTTON_INNER == "X"
+                    assert control.label.plain == field.label
+                    assert not control.parent.query(".preference-field-label")
+                elif field.kind == "integer":
+                    assert isinstance(control, Input)
+                    assert control.type == "integer"
+                    assert control.compact
+                elif isinstance(control, (Input, Select)):
+                    assert control.compact
+                elif isinstance(control, ColorField):
+                    assert control.query_one(Button).size.height == 1
 
+        for button in app.screen.query(".preferences-dialog Button"):
+            assert button.styles.content_align == ("center", "middle")
+        for button in app.screen.query(".preferences-actions Button"):
+            assert button.size.height == 1
+
+        tabs.active = "preferences-interface"
+        await pilot.pause()
         use_mouse = app.screen.query_one("#preference-usemouse", Checkbox)
         original = use_mouse.value
         use_mouse.focus()
@@ -1560,8 +1581,15 @@ async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_v
         await pilot.pause(0.1)
         assert isinstance(app.screen, ColorPickerDialog)
         assert len(app.screen.query("#color-grid Button")) == 216
+        for input_control in app.screen.query(".color-picker-dialog Input"):
+            assert input_control.compact
+            assert input_control.size.height == 1
         for component in ("red", "green", "blue"):
             assert app.screen.query_one(f"#color-{component}", Input).type == "integer"
+        for button in app.screen.query(".color-picker-dialog Button"):
+            assert button.size.height == 1
+            assert button.styles.content_align == ("center", "middle")
+        assert app.screen.query_one(".color-picker-dialog .dialog-buttons").size.height == 1
         app.screen.query_one("#color-hex", Input).value = "#GGGGGG"
         await pilot.click("#color-confirm")
         await pilot.pause(0.1)
