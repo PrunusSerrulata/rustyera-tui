@@ -59,6 +59,113 @@ def test_worker_applies_backpressure_to_presentation_events() -> None:
     assert worker.events.maxsize == 4_096
 
 
+def test_startup_milestones_cover_waiting_external_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client.phase = 0
+    client.epoch = None
+    client.startup_attempt = 0
+    client.startup_scenario = "cold"
+    client.startup_active = False
+    client.startup_start_submitted = False
+    client.startup_first_phase_reported = False
+    client._presentation_boundary_dirty = False
+    commands: list[tuple[int, object]] = []
+    milestones: list[tuple[str, dict[str, object]]] = []
+    client.send_runtime = lambda tag, value: commands.append((tag, value))  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "rustyera_tui.runtime.emit_startup_milestone",
+        lambda event, **fields: milestones.append((event, fields)),
+    )
+
+    client.begin_startup_attempt(project_file=False)
+    client._submit_start({0: "new-game"})
+    client._handle_runtime(21, {0: 6, 2: 4}, None)
+
+    assert commands == [(20, {0: "new-game"})]
+    assert [event for event, _fields in milestones] == [
+        "attempt_started",
+        "start_submitted",
+        "first_game_phase",
+    ]
+    assert milestones[-1][1]["phase"] == 6
+    assert client.startup_active is False
+
+
+def test_terminal_runtime_phase_fails_active_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client.phase = 0
+    client.epoch = None
+    client.startup_attempt = 0
+    client.startup_scenario = "cold"
+    client.startup_active = False
+    client.startup_start_submitted = False
+    client.startup_first_phase_reported = False
+    client._presentation_boundary_dirty = False
+    milestones: list[str] = []
+    monkeypatch.setattr(
+        "rustyera_tui.runtime.emit_startup_milestone",
+        lambda event, **_fields: milestones.append(event),
+    )
+
+    client.begin_startup_attempt(project_file=True)
+    client._handle_runtime(21, {0: 11, 2: 2}, None)
+
+    assert milestones == ["attempt_started", "failed"]
+    assert client.startup_active is False
+
+
+def test_project_scan_failure_terminates_the_attempt_before_recreate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, object]] = []
+
+        def begin_startup_attempt(self, *, project_file: bool) -> None:
+            self.events.append(("begin", project_file))
+
+        def fail_startup(self, error: object) -> None:
+            self.events.append(("failed", str(error)))
+
+    worker = RuntimeWorker(None, None)
+    client = Client()
+    worker.client = client  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "rustyera_tui.worker.ProjectBundle.scan_quick",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("scan failed")),
+    )
+
+    worker._process_command(FrontendCommand("load_project", tmp_path))
+
+    assert client.events == [("begin", False), ("failed", "scan failed")]
+
+
+def test_project_file_read_failure_terminates_the_attempt(tmp_path: Path) -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, object]] = []
+
+        def begin_startup_attempt(self, *, project_file: bool) -> None:
+            self.events.append(("begin", project_file))
+
+        def fail_startup(self, error: object) -> None:
+            self.events.append(("failed", str(error)))
+
+    worker = RuntimeWorker(None, None)
+    client = Client()
+    worker.client = client  # type: ignore[assignment]
+
+    worker._process_command(FrontendCommand("load_project_file", tmp_path / "missing.reraproj"))
+
+    assert client.events[0] == ("begin", True)
+    assert client.events[1][0] == "failed"
+    assert "missing.reraproj" in str(client.events[1][1])
+
+
 def test_worker_delivers_presentation_and_wait_as_one_atomic_batch() -> None:
     client = object.__new__(RuntimeClient)
     client.events = queue.Queue()
@@ -164,8 +271,7 @@ def wait_for_input(worker: RuntimeWorker) -> dict[int, object]:
     event = wait_for(
         worker,
         lambda candidate: (
-            candidate.kind == "presentation_batch"
-            and candidate.value.active_wait is not None
+            candidate.kind == "presentation_batch" and candidate.value.active_wait is not None
         ),
     )
     return event.value.active_wait

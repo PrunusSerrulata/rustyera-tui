@@ -46,6 +46,7 @@ from .runtime_support import (
     log_event as log_event,
     runtime_log_level as runtime_log_level,
 )
+from .startup_telemetry import emit_startup_milestone
 from .runtime_types import (
     FrontendCommand as FrontendCommand,
     FrontendEvent as FrontendEvent,
@@ -188,6 +189,11 @@ class RuntimeClient:
         self.transient_close_pending: str | None = None
         self.last_time_advance_ns = 0
         self.shutting_down = False
+        self.startup_attempt = 0
+        self.startup_scenario = "cold"
+        self.startup_active = False
+        self.startup_start_submitted = False
+        self.startup_first_phase_reported = False
         self._pending_presentation_events: list[tuple[str, dict[int, Any]]] = []
         self._wait_event_dirty = False
         self._presentation_boundary_dirty = False
@@ -252,6 +258,8 @@ class RuntimeClient:
         allow_compiled_cache: bool = True,
         project_file_bytes: bytes | None = None,
     ) -> None:
+        if not self.startup_active:
+            self.begin_startup_attempt(project_file=bundle.project_file is not None)
         self.events.put(FrontendEvent("configuration_cleared"))
         self.events.put(FrontendEvent("status", "正在创建新的 Runtime session…"))
         self.abi.recreate_session()
@@ -262,6 +270,29 @@ class RuntimeClient:
         self.pending_project_file_bytes = project_file_bytes
         self.storage = self._storage_for_bundle(bundle)
         self._send_hello()
+
+    def begin_startup_attempt(self, *, project_file: bool) -> None:
+        self.startup_attempt += 1
+        self.startup_scenario = "project_file" if project_file else "cold"
+        self.startup_active = True
+        self.startup_start_submitted = False
+        self.startup_first_phase_reported = False
+        emit_startup_milestone(
+            "attempt_started",
+            attempt_id=self.startup_attempt,
+            scenario=self.startup_scenario,
+        )
+
+    def fail_startup(self, error: object) -> None:
+        if not self.startup_active:
+            return
+        emit_startup_milestone(
+            "failed",
+            attempt_id=self.startup_attempt,
+            scenario=self.startup_scenario,
+            error=str(error),
+        )
+        self.startup_active = False
 
     def _send_hello(self) -> None:
         service_capabilities = [
@@ -510,6 +541,7 @@ class RuntimeClient:
                     self._submit_project(None)
             return
         if tag == 2:
+            self.fail_startup(f"protocol version rejected: {value.get(1, '')}")
             self.events.put(FrontendEvent("runtime_error", f"协议版本被拒绝：{value.get(1, '')}"))
         elif tag == 11:  # ProjectLoadReport
             self._handle_project_report(value)
@@ -520,6 +552,22 @@ class RuntimeClient:
         elif tag == 21:
             self.phase = value[0]
             self.epoch = value[2]
+            if (
+                self.startup_active
+                and self.startup_start_submitted
+                and not self.startup_first_phase_reported
+                and self.phase in {4, 5, 6}
+            ):
+                self.startup_first_phase_reported = True
+                self.startup_active = False
+                emit_startup_milestone(
+                    "first_game_phase",
+                    attempt_id=self.startup_attempt,
+                    scenario=self.startup_scenario,
+                    phase=self.phase,
+                )
+            elif self.startup_active and self.phase in {10, 11}:
+                self.fail_startup(f"runtime entered terminal phase {self.phase}")
             if self.phase in {7, 9, 10, 11}:
                 self._presentation_boundary_dirty = True
             self.events.put(FrontendEvent("phase", self.phase))
@@ -759,6 +807,7 @@ class RuntimeClient:
             cache_hit = cache_hit or diagnostic.get(0) == "runtime.compiled_cache_hit"
         if report.get(3, False):
             if self.pending_bundle is None:
+                self.fail_startup("runtime requested source without a pending project")
                 self.events.put(FrontendEvent("error", "Runtime 请求源码，但没有待载入项目。"))
                 return
             self.events.put(FrontendEvent("status", "项目文件缓存未命中，正在读取项目源码…"))
@@ -766,6 +815,7 @@ class RuntimeClient:
             self._submit_project(None)
             return
         if not report[1]:
+            self.fail_startup("project load failed")
             self.reload_candidate = None
             self.events.put(FrontendEvent("runtime_error", "项目加载或热重载失败，请查看日志。"))
             return
@@ -785,6 +835,20 @@ class RuntimeClient:
             self.storage = self._storage_for_bundle(self.bundle)
         self.events.put(FrontendEvent("project_loaded", self.bundle.root if self.bundle else None))
         self._publish_configuration(report.get(4))
+        if self.startup_active:
+            self.startup_scenario = (
+                "project_file"
+                if self.bundle is not None and self.bundle.project_file is not None
+                else "warm"
+                if cache_hit
+                else "cold"
+            )
+            emit_startup_milestone(
+                "validation_complete",
+                attempt_id=self.startup_attempt,
+                scenario=self.startup_scenario,
+                cache_hit=cache_hit,
+            )
         if self.pending_restore is not None:
             _path, payload, purpose = self.pending_restore
             kind = 0 if purpose == "traditional_save" else 1
@@ -795,13 +859,24 @@ class RuntimeClient:
             self.cache_ready = False
             self.cache_preparation_started = False
             self.events.put(FrontendEvent("status", "项目文件缓存命中，正在进入标题画面…"))
-            self.send_runtime(20, self._new_game_start())
+            self._submit_start(self._new_game_start())
         else:
             self.cache_refresh_pending = True
             self.cache_preparation_started = False
             self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
             self.events.put(FrontendEvent("status", "项目编译完成，正在进入标题画面…"))
-            self.send_runtime(20, self._new_game_start())
+            self._submit_start(self._new_game_start())
+
+    def _submit_start(self, value: dict[int, Any]) -> None:
+        self.send_runtime(20, value)
+        if not getattr(self, "startup_active", False):
+            return
+        self.startup_start_submitted = True
+        emit_startup_milestone(
+            "start_submitted",
+            attempt_id=self.startup_attempt,
+            scenario=self.startup_scenario,
+        )
 
     def _publish_configuration(self, value: Any) -> ConfigurationSnapshot | None:
         if value is None:
@@ -851,7 +926,10 @@ class RuntimeClient:
         self, prepared: dict[int, Any], correlation_id: int | None
     ) -> None:
         pending = self.pending_configuration
-        if not isinstance(pending, PendingConfigurationPrepare) or correlation_id != pending.message_id:
+        if (
+            not isinstance(pending, PendingConfigurationPrepare)
+            or correlation_id != pending.message_id
+        ):
             self.events.put(log_event("忽略了非预期的配置保存响应", LogLevel.WARNING))
             return
         try:
@@ -1384,6 +1462,11 @@ class RuntimeClient:
         self.pending_cache_export_message = None
         self.cache_preparation_started = False
         if success and self.storage is not None:
+            emit_startup_milestone(
+                "cache_persisted",
+                attempt_id=self.startup_attempt,
+                scenario=self.startup_scenario,
+            )
             for obsolete in self.storage.obsolete_compiled_cache_paths():
                 try:
                     obsolete.unlink(missing_ok=True)
@@ -1398,7 +1481,7 @@ class RuntimeClient:
                     else "项目文件缓存保存失败，正在进入标题画面…",
                 )
             )
-            self.send_runtime(20, self._new_game_start())
+            self._submit_start(self._new_game_start())
         elif after == "reload":
             self.events.put(FrontendEvent("status", "脚本热重载完成。"))
         elif after == "background":
@@ -1428,10 +1511,10 @@ class RuntimeClient:
             self._submit_project(ready[0])
         elif purpose == "traditional_save":
             self.events.put(FrontendEvent("status", "传统存档传输完成，正在读档…"))
-            self.send_runtime(20, {0: variant(1, ready[0])})
+            self._submit_start({0: variant(1, ready[0])})
         else:
             self.events.put(FrontendEvent("status", "快照传输完成，正在恢复 VM…"))
-            self.send_runtime(20, {0: variant(2, ready[0])})
+            self._submit_start({0: variant(2, ready[0])})
         self.import_bytes = None
         self.import_transfer_id = None
         self.import_purpose = None

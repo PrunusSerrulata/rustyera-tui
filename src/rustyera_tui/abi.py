@@ -12,7 +12,7 @@ from .protocol_text import ERA_STATUSES, enum_text
 from .wire import decode
 
 ABI_MAJOR = 3
-ABI_MINOR = 2
+ABI_MINOR = 3
 
 STATUS_OK = 0
 STATUS_EMPTY = 1
@@ -213,6 +213,11 @@ class RuntimeAbi:
             if api.abi_version.minor >= 2 and api.reserved[1]
             else None
         )
+        self._decode_project_file_frontend = (
+            SessionDecodeProjectFile(api.reserved[2])
+            if api.abi_version.minor >= 3 and api.reserved[2]
+            else None
+        )
         self.debug_scope_mask = debug_scope_mask
         self.handle = EraSessionHandle()
         self.create_session()
@@ -284,12 +289,13 @@ class RuntimeAbi:
     def project_file_manifest(self, data: bytes) -> dict[int, object]:
         """Decode a validated project-file manifest through the core ABI."""
 
-        if self._decode_project_file is None:
+        decoder = getattr(self, "_decode_project_file_frontend", None) or self._decode_project_file
+        if decoder is None:
             raise AbiError("runtime ABI does not support RustyEra project files")
         buffer = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
         output = EraOwnedBuffer()
         header = _header(ctypes.sizeof(EraOwnedBuffer))
-        status = self._decode_project_file(
+        status = decoder(
             header,
             self.handle,
             EraByteSlice(ctypes.cast(buffer, ctypes.POINTER(ctypes.c_uint8)), len(data)),

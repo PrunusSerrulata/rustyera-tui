@@ -12,6 +12,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Button, Input, Rule, Static
 
 from .configuration import ConfigurationSnapshot
@@ -33,7 +34,7 @@ from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.1.0-alpha.1 (3e1143e9)"
+CORE_VERSION = "0.1.0-alpha.1 (dae0de19)"
 
 
 def frontend_version() -> str:
@@ -111,10 +112,12 @@ class RustyEraTui(App[None]):
         "正在读取项目文件",
         "正在整理项目文件",
         "正在加载项目数据",
-        "正在解析脚本文件",
-        "正在分析脚本函数",
+        "正在解析脚本",
+        "正在分析脚本",
         "正在编译脚本函数",
         "正在验证编译结果",
+        "正在整理编译结果",
+        "正在准备 Runtime 资源",
     )
 
     def __init__(
@@ -552,7 +555,12 @@ class RustyEraTui(App[None]):
         label.add_class(state_class)
 
     def _toggle_prompt_blink(self) -> None:
-        label = self.query_one("#prompt-label", Static)
+        try:
+            label = self.query_one("#prompt-label", Static)
+        except NoMatches:
+            # A scheduled timer may fire after Textual has removed the composed
+            # children while shutting down the app.
+            return
         if label.has_class("prompt-running"):
             label.toggle_class("prompt-running-bright")
         else:
@@ -706,7 +714,9 @@ class RustyEraTui(App[None]):
         if self.configuration_snapshot is None:
             self.notify("Runtime 尚未提供项目配置", severity="warning")
             return
-        self.push_screen(PreferencesDialog(self.configuration_snapshot, self.configuration_read_only))
+        self.push_screen(
+            PreferencesDialog(self.configuration_snapshot, self.configuration_read_only)
+        )
 
     def on_preferences_dialog_apply_requested(
         self, event: PreferencesDialog.ApplyRequested

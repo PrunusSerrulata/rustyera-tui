@@ -11,6 +11,7 @@ from .abi import RuntimeAbi
 from .log_model import LogLevel, LogMessage
 from .project import ProjectBundle
 from .runtime_types import FrontendCommand, FrontendEvent
+from .startup_telemetry import emit_startup_milestone
 
 if TYPE_CHECKING:
     from .runtime import RuntimeClient
@@ -79,6 +80,10 @@ class RuntimeWorker(threading.Thread):
                         continue
                     self._process_command(command)
         except Exception as error:  # noqa: BLE001 - worker must report all boundary failures
+            if self.client is not None:
+                self.client.fail_startup(error)
+            else:
+                emit_startup_milestone("failed", attempt_id=0, scenario="unknown", error=str(error))
             self.events.put(FrontendEvent("error", f"前端 Runtime worker 失败：{error}"))
         finally:
             if abi is not None:
@@ -119,11 +124,7 @@ class RuntimeWorker(threading.Thread):
                     if client.bundle.project_file is not None:
                         self._load_project_file(client.bundle.project_file)
                     else:
-                        client.recreate(
-                            ProjectBundle.scan_quick(
-                                client.bundle.root, 1, client._project_scan_progress
-                            )
-                        )
+                        self._load_project(client.bundle.root)
                 case "restart_recompile":
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
@@ -131,6 +132,7 @@ class RuntimeWorker(threading.Thread):
                         raise RuntimeError(
                             "a packaged project cannot be recompiled without sources"
                         )
+                    client.begin_startup_attempt(project_file=False)
                     client.recreate(
                         ProjectBundle.scan(client.bundle.root, 1, client._project_scan_progress),
                         allow_compiled_cache=False,
@@ -194,6 +196,7 @@ class RuntimeWorker(threading.Thread):
                 case _:
                     raise ValueError(f"unknown frontend command {command.kind}")
         except Exception as error:  # noqa: BLE001 - command boundary
+            client.fail_startup(error)
             if command.kind == "export_snapshot":
                 client.pending_export = None
                 client.pending_export_kind = None
@@ -212,6 +215,7 @@ class RuntimeWorker(threading.Thread):
     def _load_project(self, root: Path) -> None:
         if self.client is None:
             return
+        self.client.begin_startup_attempt(project_file=False)
         self.events.put(FrontendEvent("status", f"正在扫描 {root}…"))
         bundle = ProjectBundle.scan_quick(root, 1, self._emit_scan_progress)
         restore = None
@@ -225,6 +229,7 @@ class RuntimeWorker(threading.Thread):
     def _load_project_file(self, path: Path) -> None:
         if self.client is None:
             return
+        self.client.begin_startup_attempt(project_file=True)
         resolved = path.expanduser().resolve(strict=True)
         payload = resolved.read_bytes()
         manifest = self.client.abi.project_file_manifest(payload)

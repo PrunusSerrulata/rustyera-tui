@@ -87,6 +87,7 @@ class ProjectFile:
     content_hash: bytes | None
     content_size: int = 0
     source_path: Path | None = None
+    source_signature: tuple[int, int, int, int, int] | None = None
 
     def submitted(self) -> dict[int, Any]:
         if self.payload is None:
@@ -107,6 +108,7 @@ class ProjectBundle:
     revision: int
     files: dict[str, ProjectFile]
     project_file: Path | None = None
+    quick_scan_pending: bool = False
 
     @classmethod
     def from_project_file_manifest(
@@ -186,9 +188,11 @@ class ProjectBundle:
         if progress is not None:
             progress(0, 0)
         index_path = root / ".rustyera" / "cache" / "source-index-v1.json"
+        index_current = False
         try:
             stored = json.loads(index_path.read_text(encoding="utf-8"))
-            previous = stored.get("files", {}) if stored.get("version") == 1 else {}
+            index_current = stored.get("version") == 1 and isinstance(stored.get("files"), dict)
+            previous = stored["files"] if index_current else {}
         except (OSError, ValueError, TypeError):
             previous = {}
         files: dict[str, ProjectFile] = {}
@@ -204,15 +208,10 @@ class ProjectBundle:
         for index, (path, category) in enumerate(candidates, 1):
             relative = _normalize_relative_path(path.relative_to(root).as_posix())
             try:
-                stat = path.stat()
-                signature = [
-                    stat.st_size,
-                    stat.st_mtime_ns,
-                    stat.st_ctime_ns,
-                    getattr(stat, "st_dev", 0),
-                    getattr(stat, "st_ino", 0),
-                ]
+                source_signature = _source_signature(path)
+                signature = list(source_signature)
                 prior = previous.get(relative)
+                item: ProjectFile | None = None
                 if (
                     prior
                     and prior.get("signature") == signature
@@ -222,17 +221,28 @@ class ProjectBundle:
                     digest = bytes.fromhex(prior["hash"])
                     content_size = prior["size"]
                 else:
-                    raw = path.read_bytes()
-                    normalized = _normalized_project_bytes(raw, category)
-                    digest = blake3.blake3(normalized).digest()
-                    content_size = len(normalized)
-                files[relative] = ProjectFile(
+                    loaded = read_project_file(root, path, category)
+                    item = ProjectFile(
+                        loaded.relative_path,
+                        loaded.category,
+                        loaded.payload,
+                        loaded.content_hash,
+                        loaded.content_size,
+                        loaded.source_path,
+                        source_signature,
+                    )
+                    digest = item.content_hash
+                    if digest is None:
+                        raise ValueError(f"project file {relative} has no content hash")
+                    content_size = item.content_size
+                files[relative] = item or ProjectFile(
                     relative,
                     category,
                     None,
                     digest,
                     content_size,
                     source_path=path,
+                    source_signature=source_signature,
                 )
                 next_index[relative] = {
                     "category": category,
@@ -245,17 +255,36 @@ class ProjectBundle:
                 # Error payloads and malformed index entries need the normal scanner's
                 # precise diagnostic, so do not attempt a cache-only project load.
                 return cls.scan(root, revision, progress)
-        _write_source_index(index_path, {"version": 1, "files": next_index})
-        return cls(root=root, revision=revision, files=files)
+        if not index_current or previous != next_index:
+            _write_source_index(index_path, {"version": 1, "files": next_index})
+        return cls(root=root, revision=revision, files=files, quick_scan_pending=True)
 
     @property
     def is_materialized(self) -> bool:
-        return all(item.payload is not None for item in self.files.values())
+        return not self.quick_scan_pending and all(
+            item.payload is not None for item in self.files.values()
+        )
 
     def materialize(self, progress: ProjectScanProgress | None = None) -> ProjectBundle:
-        return (
-            self if self.is_materialized else ProjectBundle.scan(self.root, self.revision, progress)
-        )
+        if self.is_materialized:
+            return self
+        if progress is not None:
+            progress(0, len(self.files))
+        files: dict[str, ProjectFile] = {}
+        for index, item in enumerate(self.files.values(), 1):
+            materialized = item
+            source_path = materialized.source_path or (
+                self.root / PurePosixPath(materialized.relative_path)
+            )
+            try:
+                signature_matches = materialized.source_signature == _source_signature(source_path)
+            except OSError:
+                signature_matches = False
+            if materialized.payload is None or not signature_matches:
+                materialized = read_project_file(self.root, source_path, materialized.category)
+            files[materialized.relative_path] = materialized
+            _report_scan_progress(progress, index, len(self.files))
+        return ProjectBundle(self.root, self.revision, files, self.project_file)
 
     def identity(self) -> dict[int, Any]:
         hasher = blake3.blake3(derive_key_context="rustyera.project-source-identity.v1")
@@ -462,6 +491,17 @@ def _normalized_project_bytes(raw: bytes, category: int) -> bytes:
     if category == FILE_RESOURCE_MANIFEST:
         text = _normalize_resource_manifest_paths(text)
     return text.encode("utf-8")
+
+
+def _source_signature(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return (
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        getattr(stat, "st_dev", 0),
+        getattr(stat, "st_ino", 0),
+    )
 
 
 def _write_source_index(path: Path, value: dict[str, Any]) -> None:

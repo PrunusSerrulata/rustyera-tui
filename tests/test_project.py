@@ -5,6 +5,7 @@ import blake3
 import pytest
 
 from rustyera_tui.project import (
+    FILE_ERB,
     FILE_RESOURCE,
     FILE_RESOURCE_MANIFEST,
     IO_CONFLICT,
@@ -268,12 +269,47 @@ def test_quick_scan_reuses_stat_index_and_materializes_on_demand(
 
     monkeypatch.setattr(Path, "read_bytes", reject_source_read)
     repeated = ProjectBundle.scan_quick(tmp_path)
+    assert not repeated.is_materialized
     assert repeated.identity() == quick.identity()
     monkeypatch.undo()
 
-    materialized = quick.materialize()
+    materialized = repeated.materialize()
     assert materialized.is_materialized
     assert materialized.identity() == quick.identity()
+
+
+def test_quick_scan_rechecks_a_new_source_before_reusing_its_payload(tmp_path: Path) -> None:
+    source = tmp_path / "main.erb"
+    source.write_text("@OLD\nRETURN\n", encoding="utf-8")
+    quick = ProjectBundle.scan_quick(tmp_path)
+    old_identity = quick.identity()
+
+    source.write_text("@NEW\nRETURN\n", encoding="utf-8")
+    materialized = quick.materialize()
+
+    assert materialized.files["main.erb"].payload == variant(0, "@NEW\nRETURN\n")
+    assert materialized.identity() != old_identity
+
+
+def test_compact_project_file_manifest_keeps_identity_from_content_hash(tmp_path: Path) -> None:
+    project_file = tmp_path / "game.reraproj"
+    project_file.write_bytes(b"package")
+    digest = blake3.blake3(b"@SYSTEM_TITLE\nRETURN\n").digest()
+    compact = ProjectBundle.from_project_file_manifest(
+        project_file,
+        {0: 7, 1: [{0: "main.erb", 1: FILE_ERB, 2: variant(0, ""), 3: digest}]},
+    )
+    full = ProjectBundle(
+        tmp_path,
+        7,
+        {
+            "main.erb": ProjectFile(
+                "main.erb", FILE_ERB, variant(0, "@SYSTEM_TITLE\nRETURN\n"), digest
+            )
+        },
+    )
+
+    assert compact.identity() == full.identity()
 
 
 def test_project_identity_includes_io_error_message(tmp_path: Path) -> None:

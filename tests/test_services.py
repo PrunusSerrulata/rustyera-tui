@@ -174,6 +174,7 @@ def test_image_metadata_service_lazily_reads_quick_scanned_resource(tmp_path: Pa
     image_path = resources / "Rorona.webp"
     image_path.write_bytes(image)
     digest = blake3.blake3(image).digest()
+    ProjectBundle.scan_quick(tmp_path)
     client.pending_bundle = ProjectBundle.scan_quick(tmp_path)
     assert client.pending_bundle.files["resources/Rorona.webp"].payload is None
     client.bundle = None
