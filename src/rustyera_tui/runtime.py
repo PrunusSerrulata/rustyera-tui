@@ -519,7 +519,7 @@ class RuntimeClient:
                     project_file = self.pending_project_file_bytes
                     self.pending_project_file_bytes = None
                     self.events.put(FrontendEvent("status", "正在载入项目文件…"))
-                    self._begin_import(project_file, 2, "project_file")
+                    self._stage_project_cache(project_file, "project_file")
                     return
                 cache_path = (
                     self.storage.compiled_cache_path()
@@ -533,7 +533,7 @@ class RuntimeClient:
                     cache = None
                 if cache:
                     self.events.put(FrontendEvent("status", "正在载入项目文件缓存…"))
-                    self._begin_import(cache, 2, "project_cache")
+                    self._stage_project_cache(cache, "project_cache")
                 else:
                     self.pending_bundle = self.pending_bundle.materialize(
                         self._project_scan_progress
@@ -1031,6 +1031,14 @@ class RuntimeClient:
             62,
             {0: kind, 1: len(payload), 2: blake3.blake3(payload).digest()},
         )
+
+    def _stage_project_cache(self, payload: bytes, purpose: str) -> None:
+        stage = getattr(self.abi, "stage_compiled_cache", None)
+        transfer_id = stage(payload) if stage is not None else None
+        if transfer_id is None:
+            self._begin_import(payload, 2, purpose)
+            return
+        self._submit_project(transfer_id)
 
     def _refresh_compiled_cache(self, after: str) -> None:
         self.cache_refresh_pending = False

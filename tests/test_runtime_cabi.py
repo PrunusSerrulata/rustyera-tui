@@ -27,6 +27,44 @@ def test_default_drive_budget_keeps_the_caller_pump_cooperative() -> None:
     assert DEFAULT_MAXIMUM_VM_INSTRUCTIONS == 100_000
 
 
+def test_compiled_cache_uses_the_abi_staging_fast_path() -> None:
+    client = object.__new__(RuntimeClient)
+    staged: list[bytes] = []
+    submitted: list[int] = []
+    fallback: list[tuple[bytes, int, str]] = []
+    client.abi = type(
+        "Abi",
+        (),
+        {"stage_compiled_cache": lambda _self, payload: staged.append(payload) or 41},
+    )()
+    client._submit_project = submitted.append  # type: ignore[method-assign]
+    client._begin_import = lambda payload, kind, purpose: fallback.append(  # type: ignore[method-assign]
+        (payload, kind, purpose)
+    )
+
+    client._stage_project_cache(b"cache", "project_cache")
+
+    assert staged == [b"cache"]
+    assert submitted == [41]
+    assert fallback == []
+
+
+def test_compiled_cache_falls_back_to_protocol_import_for_an_older_abi() -> None:
+    client = object.__new__(RuntimeClient)
+    submitted: list[int] = []
+    fallback: list[tuple[bytes, int, str]] = []
+    client.abi = type("Abi", (), {"stage_compiled_cache": lambda _self, _payload: None})()
+    client._submit_project = submitted.append  # type: ignore[method-assign]
+    client._begin_import = lambda payload, kind, purpose: fallback.append(  # type: ignore[method-assign]
+        (payload, kind, purpose)
+    )
+
+    client._stage_project_cache(b"cache", "project_cache")
+
+    assert submitted == []
+    assert fallback == [(b"cache", 2, "project_cache")]
+
+
 def test_runtime_library_is_discovered_in_the_resource_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

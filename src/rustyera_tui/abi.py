@@ -12,7 +12,7 @@ from .protocol_text import ERA_STATUSES, enum_text
 from .wire import decode
 
 ABI_MAJOR = 3
-ABI_MINOR = 3
+ABI_MINOR = 4
 
 STATUS_OK = 0
 STATUS_EMPTY = 1
@@ -124,6 +124,13 @@ SessionDecodeProjectFile = ctypes.CFUNCTYPE(
     EraByteSlice,
     ctypes.POINTER(EraOwnedBuffer),
 )
+SessionStageCompiledCache = ctypes.CFUNCTYPE(
+    ctypes.c_uint32,
+    EraCallHeader,
+    EraSessionHandle,
+    EraByteSlice,
+    ctypes.POINTER(ctypes.c_uint64),
+)
 
 
 class EraRuntimeApi(ctypes.Structure):
@@ -216,6 +223,11 @@ class RuntimeAbi:
         self._decode_project_file_frontend = (
             SessionDecodeProjectFile(api.reserved[2])
             if api.abi_version.minor >= 3 and api.reserved[2]
+            else None
+        )
+        self._stage_compiled_cache = (
+            SessionStageCompiledCache(api.reserved[3])
+            if api.abi_version.minor >= 4 and api.reserved[3]
             else None
         )
         self.debug_scope_mask = debug_scope_mask
@@ -311,6 +323,27 @@ class RuntimeAbi:
         if not isinstance(decoded, dict):
             raise AbiError("runtime returned an invalid project-file manifest")
         return decoded
+
+    def stage_compiled_cache(self, data: bytes) -> int | None:
+        """Stage a contiguous cache without encoding protocol chunks when ABI 3.4 is available."""
+
+        stage = getattr(self, "_stage_compiled_cache", None)
+        if stage is None:
+            return None
+        # c_char_p retains the immutable bytes object for this synchronous call, avoiding a
+        # second Python-side copy before the C boundary makes its required owned copy.
+        buffer = ctypes.c_char_p(data)
+        transfer_id = ctypes.c_uint64()
+        status = stage(
+            _header(ctypes.sizeof(ctypes.c_uint64)),
+            self.handle,
+            EraByteSlice(ctypes.cast(buffer, ctypes.POINTER(ctypes.c_uint8)), len(data)),
+            ctypes.byref(transfer_id),
+        )
+        self._check(status, "session_stage_compiled_cache")
+        if transfer_id.value == 0:
+            raise AbiError("runtime returned an invalid compiled-cache transfer ID")
+        return transfer_id.value
 
     def last_error(self) -> str:
         if not self.handle.value:

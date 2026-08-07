@@ -54,3 +54,28 @@ def test_abi_32_falls_back_to_full_legacy_project_manifest() -> None:
 
     assert decoded == full
     assert legacy.calls == 1
+
+
+def test_abi_34_stages_a_contiguous_compiled_cache() -> None:
+    captured: list[bytes] = []
+
+    def stage(_header: Any, _handle: Any, input_value: Any, output: Any) -> int:
+        captured.append(ctypes.string_at(input_value.data, input_value.len))
+        ctypes.cast(output, ctypes.POINTER(ctypes.c_uint64)).contents.value = 27
+        return STATUS_OK
+
+    abi = RuntimeAbi.__new__(RuntimeAbi)
+    abi.handle = EraSessionHandle(1)
+    abi._stage_compiled_cache = stage
+    abi._check = lambda status, _operation: None if status == STATUS_OK else None
+
+    assert abi.stage_compiled_cache(b"contiguous-cache") == 27
+    assert captured == [b"contiguous-cache"]
+
+
+def test_abi_33_without_the_reserved_entry_reports_no_staging_support() -> None:
+    abi = RuntimeAbi.__new__(RuntimeAbi)
+    abi.handle = EraSessionHandle(1)
+    abi._stage_compiled_cache = None
+
+    assert abi.stage_compiled_cache(b"cache") is None
