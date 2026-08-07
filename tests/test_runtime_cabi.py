@@ -8,7 +8,7 @@ from typing import Callable
 import pytest
 
 from rustyera_tui.abi import DEFAULT_MAXIMUM_VM_INSTRUCTIONS, AbiError, discover_library
-from rustyera_tui.project import StorageBackend
+from rustyera_tui.project import ProjectBundle, StorageBackend
 from rustyera_tui.runtime import (
     FrontendCommand,
     FrontendEvent,
@@ -63,6 +63,81 @@ def test_compiled_cache_falls_back_to_protocol_import_for_an_older_abi() -> None
 
     assert submitted == []
     assert fallback == [(b"cache", 2, "project_cache")]
+
+
+def test_compiled_cache_file_uses_runtime_owned_staging_without_python_bytes() -> None:
+    client = object.__new__(RuntimeClient)
+    staged: list[Path] = []
+    submitted: list[int] = []
+    client.abi = type(
+        "Abi",
+        (),
+        {"stage_compiled_cache_file": lambda _self, path: staged.append(path) or 43},
+    )()
+    client._submit_project = submitted.append  # type: ignore[method-assign]
+
+    path = Path("cache-does-not-need-to-be-read-by-runtime-client")
+    client._stage_project_cache_file(path, "project_cache")
+
+    assert staged == [path]
+    assert submitted == [43]
+
+
+def test_compiled_cache_file_falls_back_to_bytes_for_abi_34(tmp_path: Path) -> None:
+    client = object.__new__(RuntimeClient)
+    path = tmp_path / "compiled-project.reraproj"
+    path.write_bytes(b"cache")
+    staged: list[bytes] = []
+    submitted: list[int] = []
+    client.abi = type(
+        "Abi",
+        (),
+        {
+            "stage_compiled_cache_file": lambda _self, _path: None,
+            "stage_compiled_cache": lambda _self, payload: staged.append(payload) or 44,
+        },
+    )()
+    client._submit_project = submitted.append  # type: ignore[method-assign]
+
+    client._stage_project_cache_file(path, "project_cache")
+
+    assert staged == [b"cache"]
+    assert submitted == [44]
+
+
+def test_compiled_cache_file_io_failure_falls_back_to_materialized_source(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "main.erb"
+    source.write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
+    bundle = ProjectBundle.scan_quick(tmp_path)
+    cache_path = StorageBackend(tmp_path).compiled_cache_path()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(b"cache")
+    client = object.__new__(RuntimeClient)
+    client.pending_bundle = bundle
+    client.storage = StorageBackend(tmp_path)
+    client.allow_compiled_cache_load = True
+    client.events = queue.Queue()
+
+    def fail_stage(_self: object, _path: Path) -> int:
+        raise OSError("short read")
+
+    client.abi = type(
+        "Abi",
+        (),
+        {"stage_compiled_cache_file": fail_stage},
+    )()
+    client._project_scan_progress = lambda _completed, _total: None  # type: ignore[method-assign]
+    submitted: list[int | None] = []
+    client._submit_project = submitted.append  # type: ignore[method-assign]
+
+    client._stage_persistent_cache_or_source()
+
+    assert client.pending_bundle.is_materialized
+    assert submitted == [None]
+    events = list(client.events.queue)
+    assert any(event.kind == "log" and "short read" in str(event.value) for event in events)
 
 
 def test_runtime_library_is_discovered_in_the_resource_directory(

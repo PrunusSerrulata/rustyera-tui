@@ -12,10 +12,16 @@ from .protocol_text import ERA_STATUSES, enum_text
 from .wire import decode
 
 ABI_MAJOR = 3
-ABI_MINOR = 4
+ABI_MINOR = 5
 
 STATUS_OK = 0
 STATUS_EMPTY = 1
+STATUS_BUSY = 2
+STATUS_INVALID_ARGUMENT = 3
+STATUS_ABI_MISMATCH = 4
+STATUS_INVALID_HANDLE = 5
+STATUS_RESOURCE_LIMIT = 6
+STATUS_INTERNAL_ERROR = 7
 DEFAULT_MAXIMUM_VM_INSTRUCTIONS = 100_000
 
 
@@ -131,6 +137,20 @@ SessionStageCompiledCache = ctypes.CFUNCTYPE(
     EraByteSlice,
     ctypes.POINTER(ctypes.c_uint64),
 )
+SessionAllocateCompiledCache = ctypes.CFUNCTYPE(
+    ctypes.c_uint32,
+    EraCallHeader,
+    EraSessionHandle,
+    ctypes.c_size_t,
+    ctypes.POINTER(EraOwnedBuffer),
+)
+SessionCommitCompiledCache = ctypes.CFUNCTYPE(
+    ctypes.c_uint32,
+    EraCallHeader,
+    EraSessionHandle,
+    EraOwnedBuffer,
+    ctypes.POINTER(ctypes.c_uint64),
+)
 
 
 class EraRuntimeApi(ctypes.Structure):
@@ -228,6 +248,16 @@ class RuntimeAbi:
         self._stage_compiled_cache = (
             SessionStageCompiledCache(api.reserved[3])
             if api.abi_version.minor >= 4 and api.reserved[3]
+            else None
+        )
+        self._allocate_compiled_cache = (
+            SessionAllocateCompiledCache(api.reserved[4])
+            if api.abi_version.minor >= 5 and api.reserved[4]
+            else None
+        )
+        self._commit_compiled_cache = (
+            SessionCommitCompiledCache(api.reserved[5])
+            if api.abi_version.minor >= 5 and api.reserved[5]
             else None
         )
         self.debug_scope_mask = debug_scope_mask
@@ -344,6 +374,66 @@ class RuntimeAbi:
         if transfer_id.value == 0:
             raise AbiError("runtime returned an invalid compiled-cache transfer ID")
         return transfer_id.value
+
+    def stage_compiled_cache_file(self, path: Path) -> int | None:
+        """Read a cache directly into Runtime-owned memory when ABI 3.5 is available."""
+
+        allocate = getattr(self, "_allocate_compiled_cache", None)
+        commit = getattr(self, "_commit_compiled_cache", None)
+        if allocate is None or commit is None:
+            return None
+        header = _header(ctypes.sizeof(EraOwnedBuffer))
+        output = EraOwnedBuffer()
+        with path.open("rb", buffering=0) as stream:
+            length = os.fstat(stream.fileno()).st_size
+            status = allocate(header, self.handle, length, ctypes.byref(output))
+            self._check(status, "session_allocate_compiled_cache")
+            committed = False
+            try:
+                if output.len != length:
+                    raise AbiError(
+                        "runtime returned a writable cache buffer with an unexpected length"
+                    )
+                if length:
+                    address = ctypes.cast(output.data, ctypes.c_void_p).value
+                    if address is None:
+                        raise AbiError("runtime returned a null writable cache buffer")
+                    array = (ctypes.c_uint8 * length).from_address(address)
+                    target = memoryview(array).cast("B")
+                    offset = 0
+                    while offset < length:
+                        read = stream.readinto(target[offset:])
+                        if not read:
+                            raise OSError("compiled project cache changed while being read")
+                        offset += read
+                    if stream.read(1):
+                        raise OSError("compiled project cache changed while being read")
+                transfer_id = ctypes.c_uint64()
+                status = commit(
+                    _header(ctypes.sizeof(ctypes.c_uint64)),
+                    self.handle,
+                    output,
+                    ctypes.byref(transfer_id),
+                )
+                # Shape/handle/header rejection leaves ownership with the caller. Once those
+                # checks pass, Runtime consumes the allocation even when staging itself fails.
+                committed = status in {
+                    STATUS_OK,
+                    STATUS_BUSY,
+                    STATUS_RESOURCE_LIMIT,
+                    STATUS_INTERNAL_ERROR,
+                }
+                self._check(status, "session_commit_compiled_cache")
+                if transfer_id.value == 0:
+                    raise AbiError("runtime returned an invalid compiled-cache transfer ID")
+                return transfer_id.value
+            finally:
+                if not committed:
+                    release_status = self._release(header, output)
+                    if release_status != STATUS_OK:
+                        raise AbiError(
+                            f"release_buffer failed with status {_status_text(release_status)}"
+                        )
 
     def last_error(self) -> str:
         if not self.handle.value:

@@ -312,6 +312,33 @@ def test_compact_project_file_manifest_keeps_identity_from_content_hash(tmp_path
     assert compact.identity() == full.identity()
 
 
+def test_project_identity_matches_the_cross_host_fixed_vector(tmp_path: Path) -> None:
+    entries = [
+        ("ERB/a.erb", 2, bytes([1]) * 32),
+        ("ERB/A.erb", 1, bytes([2]) * 32),
+        ("CSV/config.csv", 0, bytes(range(32))),
+        ("resources/icon.png", 4, bytes([255]) * 32),
+    ]
+
+    def bundle(items: list[tuple[str, int, bytes]]) -> ProjectBundle:
+        return ProjectBundle(
+            tmp_path,
+            7,
+            {
+                path: ProjectFile(path, category, variant(0, ""), digest)
+                for path, category, digest in items
+            },
+        )
+
+    left = bundle(entries)
+    right = bundle(list(reversed(entries)))
+
+    assert left.identity() == right.identity()
+    assert left.identity()[1] == bytes.fromhex(
+        "15d72199f2e33c429e0bd4185e3441a23c0650c14278d5760c5127d1a70e07ec"
+    )
+
+
 def test_project_identity_includes_io_error_message(tmp_path: Path) -> None:
     denied = ProjectBundle(
         tmp_path,

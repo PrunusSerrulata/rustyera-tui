@@ -521,24 +521,7 @@ class RuntimeClient:
                     self.events.put(FrontendEvent("status", "正在载入项目文件…"))
                     self._stage_project_cache(project_file, "project_file")
                     return
-                cache_path = (
-                    self.storage.compiled_cache_path()
-                    if self.storage and self.allow_compiled_cache_load
-                    else None
-                )
-                try:
-                    cache = cache_path.read_bytes() if cache_path is not None else None
-                except OSError as error:
-                    self.events.put(log_event(f"读取项目文件缓存失败：{error}", LogLevel.WARNING))
-                    cache = None
-                if cache:
-                    self.events.put(FrontendEvent("status", "正在载入项目文件缓存…"))
-                    self._stage_project_cache(cache, "project_cache")
-                else:
-                    self.pending_bundle = self.pending_bundle.materialize(
-                        self._project_scan_progress
-                    )
-                    self._submit_project(None)
+                self._stage_persistent_cache_or_source()
             return
         if tag == 2:
             self.fail_startup(f"protocol version rejected: {value.get(1, '')}")
@@ -1039,6 +1022,33 @@ class RuntimeClient:
             self._begin_import(payload, 2, purpose)
             return
         self._submit_project(transfer_id)
+
+    def _stage_project_cache_file(self, path: Path, purpose: str) -> None:
+        stage_file = getattr(self.abi, "stage_compiled_cache_file", None)
+        transfer_id = stage_file(path) if stage_file is not None else None
+        if transfer_id is None:
+            self._stage_project_cache(path.read_bytes(), purpose)
+            return
+        self._submit_project(transfer_id)
+
+    def _stage_persistent_cache_or_source(self) -> None:
+        cache_path = (
+            self.storage.compiled_cache_path()
+            if self.storage and self.allow_compiled_cache_load
+            else None
+        )
+        if cache_path is not None:
+            try:
+                if cache_path.stat().st_size > 0:
+                    self.events.put(FrontendEvent("status", "正在载入项目文件缓存…"))
+                    self._stage_project_cache_file(cache_path, "project_cache")
+                    return
+            except OSError as error:
+                self.events.put(log_event(f"读取项目文件缓存失败：{error}", LogLevel.WARNING))
+        if self.pending_bundle is None:
+            return
+        self.pending_bundle = self.pending_bundle.materialize(self._project_scan_progress)
+        self._submit_project(None)
 
     def _refresh_compiled_cache(self, after: str) -> None:
         self.cache_refresh_pending = False
