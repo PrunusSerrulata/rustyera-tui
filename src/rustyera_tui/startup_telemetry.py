@@ -28,8 +28,9 @@ def emit_startup_milestone(event: str, **fields: Any) -> None:
             **fields,
         }
         encoded = (json.dumps(payload, separators=(",", ":")) + "\n").encode()
+        fpathconf = getattr(os, "fpathconf", None)
         try:
-            pipe_buf = os.fpathconf(fd, "PC_PIPE_BUF")
+            pipe_buf = fpathconf(fd, "PC_PIPE_BUF") if fpathconf is not None else 512
         except (OSError, ValueError):
             pipe_buf = 512
         if len(encoded) > pipe_buf:

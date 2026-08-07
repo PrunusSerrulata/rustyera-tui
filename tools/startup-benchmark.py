@@ -7,7 +7,6 @@ import argparse
 import contextlib
 import json
 import os
-import pty
 import selectors
 import shutil
 import signal
@@ -17,6 +16,17 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+try:
+    import pty
+except ImportError:
+
+    class _UnavailablePty:
+        @staticmethod
+        def openpty() -> tuple[int, int]:
+            raise RuntimeError("startup benchmark requires a POSIX pseudo-terminal")
+
+    pty = _UnavailablePty()
 
 TELEMETRY_FD_ENV = "RUSTYERA_STARTUP_TELEMETRY_FD"
 

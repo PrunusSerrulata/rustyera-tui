@@ -22,7 +22,10 @@ def test_isolated_project_materializes_external_symlink(tmp_path: Path) -> None:
     external.write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
     source = tmp_path / "source"
     source.mkdir()
-    (source / "linked.erb").symlink_to(external)
+    try:
+        (source / "linked.erb").symlink_to(external)
+    except OSError as error:
+        pytest.skip(f"file symlinks are unavailable: {error}")
     destination = tmp_path / "isolated"
     destination.mkdir()
 

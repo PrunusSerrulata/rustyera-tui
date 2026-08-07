@@ -26,6 +26,12 @@ def process_is_alive(pid: int) -> bool:
         return True
     except ProcessLookupError:
         return False
+    except OSError:
+        if os.name == "nt":
+            # Windows can report invalid stale PIDs as generic WinErrors instead of
+            # ProcessLookupError (for example ERROR_BAD_FORMAT for a large PID).
+            return False
+        raise
     return True
 
 

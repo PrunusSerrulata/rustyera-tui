@@ -86,7 +86,7 @@ def test_project_scanners_submit_nested_sprite_manifests_and_images(tmp_path: Pa
     (tmp_path / "CSV" / "GAMEBASE.CSV").write_text("コード,1\n", encoding="utf-8")
     manifest = "\ufeff萝乐娜_泣,Rorona-portraits.webp,1040,1182,1000,1125\n"
     image = b"RIFF\x16\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00\x00\x00\x00\x00\xe7\x03\x00\x64\x04\x00"
-    (portraits / "Portraits.csv").write_text(manifest, encoding="utf-8")
+    (portraits / "Portraits.csv").write_bytes(manifest.encode("utf-8"))
     (portraits / "Rorona-portraits.webp").write_bytes(image)
 
     scanned = ProjectBundle.scan(tmp_path)
@@ -106,7 +106,7 @@ def test_project_scanners_normalize_resource_paths_and_manifests_to_nfc(tmp_path
     resources.mkdir()
     image_name = "CIOバニー巨.png"
     decomposed_name = unicodedata.normalize("NFD", image_name)
-    (resources / "sprites.csv").write_text(f"FACE,{decomposed_name}\n", encoding="utf-8")
+    (resources / "sprites.csv").write_bytes(f"FACE,{decomposed_name}\n".encode())
     (resources / decomposed_name).write_bytes(b"png")
 
     scanned = ProjectBundle.scan(tmp_path)
@@ -280,11 +280,11 @@ def test_quick_scan_reuses_stat_index_and_materializes_on_demand(
 
 def test_quick_scan_rechecks_a_new_source_before_reusing_its_payload(tmp_path: Path) -> None:
     source = tmp_path / "main.erb"
-    source.write_text("@OLD\nRETURN\n", encoding="utf-8")
+    source.write_bytes(b"@OLD\nRETURN\n")
     quick = ProjectBundle.scan_quick(tmp_path)
     old_identity = quick.identity()
 
-    source.write_text("@NEW\nRETURN\n", encoding="utf-8")
+    source.write_bytes(b"@NEW\nRETURN\n")
     materialized = quick.materialize()
 
     assert materialized.files["main.erb"].payload == variant(0, "@NEW\nRETURN\n")
