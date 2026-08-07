@@ -7,7 +7,16 @@ from typing import Any
 
 import pytest
 from rich.cells import cell_len
-from textual.widgets import Button, Checkbox, DataTable, Input, RichLog, Select, Static, TabbedContent
+from textual.widgets import (
+    Button,
+    Checkbox,
+    DataTable,
+    Input,
+    RichLog,
+    Select,
+    Static,
+    TabbedContent,
+)
 
 from rustyera_tui.app import CORE_VERSION, RustyEraTui
 from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
@@ -93,8 +102,7 @@ async def test_preferences_use_native_compact_controls_and_fit_the_terminal(
     tmp_path: Path,
 ) -> None:
     entries = [
-        configuration_entry(code, *configuration_value(field))
-        for code, field in FIELDS.items()
+        configuration_entry(code, *configuration_value(field)) for code, field in FIELDS.items()
     ]
     snapshot = ConfigurationSnapshot.from_wire({0: 1, 1: b"digest", 2: entries, 3: False})
     app = RustyEraTui(tmp_path, None)
@@ -238,8 +246,8 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         assert isinstance(app.screen, AboutDialog)
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
-        assert "前端版本：0.1.0a1" in contents
-        assert "core 版本：0.1.0-alpha.1 (3e1143e9)" in contents
+        assert "前端版本：0.2.0" in contents
+        assert "core 版本：0.2.0 (1b8be8fb)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 
@@ -694,9 +702,7 @@ async def test_viewport_follows_appended_history(tmp_path: Path) -> None:
         await pilot.pause()
         assert not viewport.is_vertical_scroll_end
 
-        await viewport.set_lines(
-            [*lines, DisplayLineModel(40, False, True, True, 0, ())]
-        )
+        await viewport.set_lines([*lines, DisplayLineModel(40, False, True, True, 0, ())])
         await pilot.pause()
         await pilot.pause()
         assert viewport.is_vertical_scroll_end
@@ -1596,9 +1602,7 @@ async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_v
             configuration_entry("UseMouse", "NO", 0),
             *entries[1:],
         ]
-        updated = ConfigurationSnapshot.from_wire(
-            {0: 9, 1: b"next", 2: updated_entries, 3: True}
-        )
+        updated = ConfigurationSnapshot.from_wire({0: 9, 1: b"next", 2: updated_entries, 3: True})
         worker.events.put(FrontendEvent("configuration", (updated, False)))
         await pilot.pause(0.1)
         assert isinstance(app.screen, PreferencesDialog)
