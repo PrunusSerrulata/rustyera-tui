@@ -21,9 +21,9 @@
 uv sync --locked
 ```
 
-从 [rustyera-core](https://github.com/PrunusSerrulata/rustyera) 的对应 release 获取当前
+从 [rustyera-core](https://github.com/PrunusSerrulata/rustyera-core) 的对应 release 获取当前
 平台动态库，或按 `rustyera-core.rev` 中的 revision 检出 core 并执行
-`cargo build -p era-runtime-capi --release`。发布流水线会自动完成后者。在四仓开发工作区
+`cargo build -p era-runtime-capi --release`。发布流水线会自动完成后者。在标准多仓开发工作区
 中使用 `just runtime` 构建兄弟 `rustyera-core`；该命令会在本地构建结束后恢复 core 的
 已提交 `Cargo.lock`，而在线 CI 继续从云端检出 `rustyera-core.rev` 并使用 `--locked`。
 
@@ -68,6 +68,10 @@ GlobalSave、Data、Log、snapshot、项目文件缓存和可写 Project overlay
 
 项目文件编码在短暂延迟后于后台启动，避免阻塞标题和第一天启动路径；完成后由前端原子
 写入。
+
+“文件”菜单可以导出当前项目文件以及导出或恢复 VM 快照。“设置”菜单编辑 runtime
+提供的当前项目配置：从源码目录启动时，可保存的设置会事务式写回项目配置；从
+`.reraproj` 启动时，只允许修改可在当前会话即时生效的设置。
 
 ## 展示范围
 
