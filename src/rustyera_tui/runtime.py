@@ -96,6 +96,14 @@ class DiagnosisExport:
     retry_after_ns: int = 0
 
 
+@dataclass(slots=True)
+class PendingGameInput:
+    wait: dict[int, Any]
+    intent: list[Any]
+    message_skip: bool
+    stale_retries: int = 0
+
+
 @dataclass(frozen=True, slots=True)
 class PendingConfigurationPrepare:
     message_id: int
@@ -198,9 +206,7 @@ class RuntimeClient:
         self._wait_event_dirty = False
         self._presentation_boundary_dirty = False
         self._projection_messages: set[int] = set()
-        self._input_messages: set[int] = set()
-        self._message_skip_active = False
-        self._message_skip_wait_id: int | None = None
+        self._input_messages: dict[int, PendingGameInput] = {}
         self._send_hello()
 
     def _project_scan_progress(self, completed: int, total: int) -> None:
@@ -234,8 +240,6 @@ class RuntimeClient:
         self._presentation_boundary_dirty = False
         self._projection_messages.clear()
         self._input_messages.clear()
-        self._message_skip_active = False
-        self._message_skip_wait_id = None
         self.pending_export = None
         self.pending_export_kind = None
         self.pending_export_message = None
@@ -400,6 +404,11 @@ class RuntimeClient:
         self._pending_presentation_events.clear()
         self._wait_event_dirty = False
         self._presentation_boundary_dirty = False
+        # Sample automatic time only when the next drive is about to start. The worker drains
+        # queued user commands before calling pump(), so a user action for the visible wait is
+        # submitted before this timer tick instead of racing a tick left queued by the prior
+        # presentation batch.
+        self._advance_deadline()
         drive_started = time.perf_counter()
         report = self.abi.drive()
         drive_ms = (time.perf_counter() - drive_started) * 1000
@@ -416,7 +425,6 @@ class RuntimeClient:
         # even when an earlier message in the same batch was emitted before the commit.
         if acknowledge_through is not None and self.session is not None:
             self.send_runtime(93, {0: acknowledge_through})
-        self._advance_deadline()
         pump_ms = (time.perf_counter() - pump_started) * 1000
         if (
             self.metrics_threshold_ms is not None
@@ -464,9 +472,7 @@ class RuntimeClient:
         # A single queue item prevents Textual from observing presentation and wait halves
         # from different runtime pumps. Intermediate running batches still update its staged
         # model, but only a stable boundary may become a visible frame.
-        render = self._presentation_boundary_dirty or (
-            self.active_wait is not None and not self._message_skip_active
-        )
+        render = self._presentation_boundary_dirty or self.active_wait is not None
         self.events.put(
             FrontendEvent(
                 "presentation_batch",
@@ -601,8 +607,6 @@ class RuntimeClient:
             self.events.put(FrontendEvent("shutdown_ready", value))
         elif tag == 92:
             self._presentation_boundary_dirty = True
-            self._message_skip_active = False
-            self._message_skip_wait_id = None
             origin = value.get(2) or {}
             source = origin.get(4) or {}
             failure = RuntimeFailure(
@@ -623,11 +627,15 @@ class RuntimeClient:
             projection_request = correlation_id in self._projection_messages
             if projection_request:
                 self._projection_messages.discard(correlation_id)
-            input_request = correlation_id in self._input_messages
-            if input_request:
-                self._input_messages.discard(correlation_id)
+            input_request = self._input_messages.pop(correlation_id, None)
+            stale_input = input_request is not None and rejection in {
+                "input wait identity is stale",
+                "no input is pending",
+            }
+            retried_input = stale_input and self._retry_stale_input(input_request)
+            if input_request is not None and not retried_input:
                 self.events.put(
-                    FrontendEvent("interaction_rejected", copy.deepcopy(self.active_wait))
+                    FrontendEvent("interaction_rejected", copy.deepcopy(input_request.wait))
                 )
             cache_export_rejection = correlation_id == self.pending_cache_export_message
             diagnosis_export_rejection = (
@@ -695,12 +703,16 @@ class RuntimeClient:
             # A presentation may advance after the frontend rendered an observation but
             # before the caller-pumped runtime handles it. This is a benign stale sample;
             # a later rendered revision will submit a replacement observation.
-            if not (
-                cache_export_rejection
-                or diagnosis_export_rejection
-                or project_file_export_rejection
-                or configuration_rejection
-            ) and not (projection_request and value.get(0) == 2 and stale_projection):
+            if (
+                not (
+                    cache_export_rejection
+                    or diagnosis_export_rejection
+                    or project_file_export_rejection
+                    or configuration_rejection
+                )
+                and not (projection_request and value.get(0) == 2 and stale_projection)
+                and not retried_input
+            ):
                 code = enum_text(value.get(0), COMMAND_ERROR_CODES, "CommandErrorCode")
                 self.events.put(FrontendEvent("runtime_error", f"命令被拒绝 [{code}]：{rejection}"))
         elif tag == 96:
@@ -1107,20 +1119,7 @@ class RuntimeClient:
         self._wait_event_dirty = True
 
     def _set_active_wait(self, wait: dict[int, Any] | None) -> None:
-        old_identity = (
-            (self.active_wait.get(0), self.active_wait.get(11)) if self.active_wait else None
-        )
-        new_identity = (wait.get(0), wait.get(11)) if wait else None
-        if old_identity != new_identity:
-            self._input_messages.clear()
         self.active_wait = wait
-        if not self._message_skip_active or wait is None:
-            return
-        if wait.get(1) != 0 or wait.get(4, False):
-            self._message_skip_active = False
-            self._message_skip_wait_id = None
-            return
-        self._submit_message_skip(wait)
 
     def _acknowledge_effects(self, batch: dict[int, Any]) -> None:
         # The TUI cannot play device effects. Reporting Unsupported is semantically different
@@ -1243,33 +1242,26 @@ class RuntimeClient:
                 return
         else:
             intent = variant(2, text)
-        self._message_skip_active = False
-        self._message_skip_wait_id = None
         self._submit_input(wait, intent)
 
     def activate(self, button_token: dict[int, int]) -> None:
         if self.phase == 7 or self.active_wait is None:
             return
-        self._message_skip_active = False
-        self._message_skip_wait_id = None
         self._submit_input(self.active_wait, variant(3, button_token))
 
     def skip_enter_waits(self) -> None:
         wait = self.active_wait
         if wait is None or wait.get(1) != 0 or wait.get(4, False):
             return
-        self._message_skip_active = True
-        self._submit_message_skip(wait)
-
-    def _submit_message_skip(self, wait: dict[int, Any]) -> None:
-        wait_id = wait[0]
-        if wait_id == self._message_skip_wait_id:
-            return
-        self._message_skip_wait_id = wait_id
         self._submit_input(wait, variant(0), message_skip=True)
 
     def _submit_input(
-        self, wait: dict[int, Any], intent: list[Any], *, message_skip: bool = False
+        self,
+        wait: dict[int, Any],
+        intent: list[Any],
+        *,
+        message_skip: bool = False,
+        stale_retries: int = 0,
     ) -> None:
         message_id = self.send_runtime(
             30,
@@ -1282,10 +1274,29 @@ class RuntimeClient:
             },
         )
         if len(self._input_messages) >= 256:
-            self._input_messages.clear()
-        self._input_messages.add(message_id)
+            self._input_messages.pop(next(iter(self._input_messages)))
+        self._input_messages[message_id] = PendingGameInput(
+            copy.deepcopy(wait), copy.deepcopy(intent), message_skip, stale_retries
+        )
         if self.single_step_enabled and self.stop_token is None:
             self.request_debug_action("pause_only")
+
+    def _retry_stale_input(self, request: PendingGameInput) -> bool:
+        wait = self.active_wait
+        if (
+            request.stale_retries != 0
+            or wait is None
+            or wait.get(1) != request.wait.get(1)
+            or (wait.get(0), wait.get(11)) == (request.wait.get(0), request.wait.get(11))
+        ):
+            return False
+        self._submit_input(
+            wait,
+            request.intent,
+            message_skip=request.message_skip,
+            stale_retries=1,
+        )
+        return True
 
     def input_undo(self, token: dict[int, Any] | None) -> None:
         if token is not None:

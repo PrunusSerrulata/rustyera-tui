@@ -34,7 +34,7 @@ from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.2.0 (608366eb)"
+CORE_VERSION = "0.2.0 (6142ff96)"
 
 
 def frontend_version() -> str:
@@ -904,8 +904,8 @@ class RustyEraTui(App[None]):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "prompt" or self._game_interactions_blocked():
             return
-        self.worker.send("submit_text", event.value)
-        event.input.value = ""
+        if self._submit_active_wait("submit_text", event.value):
+            event.input.value = ""
 
     def on_stack_dialog_ready(self, _event: StackDialog.Ready) -> None:
         if not self._debug_interactions_blocked():
@@ -946,6 +946,19 @@ class RustyEraTui(App[None]):
         self.query_one(GameViewport).disable_interactions()
         self.worker.send("activate", token)
 
+    def _submit_active_wait(self, command: str, value: Any) -> bool:
+        wait_identity = self._wait_identity(self.active_wait)
+        if (
+            self._game_interactions_blocked()
+            or wait_identity is None
+            or wait_identity == self._activated_wait
+        ):
+            return False
+        self._activated_wait = wait_identity
+        self.query_one(GameViewport).disable_interactions()
+        self.worker.send(command, value)
+        return True
+
     @staticmethod
     def _wait_identity(wait: dict[int, Any] | None) -> tuple[int, Any] | None:
         if wait is None:
@@ -958,7 +971,7 @@ class RustyEraTui(App[None]):
             and self.active_wait is not None
             and self.active_wait.get(1) == 0
         ):
-            self.worker.send("submit_text", "")
+            self._submit_active_wait("submit_text", "")
 
     def on_game_viewport_skip_enter_requested(
         self, _event: GameViewport.SkipEnterRequested
@@ -968,7 +981,7 @@ class RustyEraTui(App[None]):
             and self.active_wait is not None
             and self.active_wait.get(1) == 0
         ):
-            self.worker.send("skip_enter_waits")
+            self._submit_active_wait("skip_enter_waits", None)
 
     def on_game_viewport_horizontal_overflow_changed(
         self, event: GameViewport.HorizontalOverflowChanged
@@ -1045,8 +1058,8 @@ class RustyEraTui(App[None]):
         )
 
     def action_input_undo(self) -> None:
-        if not self._game_interactions_blocked() and self.input_undo_token is not None:
-            self.worker.send("input_undo", self.input_undo_token)
+        if self.input_undo_token is not None:
+            self._submit_active_wait("input_undo", self.input_undo_token)
 
     def action_debug_step(self) -> None:
         if (

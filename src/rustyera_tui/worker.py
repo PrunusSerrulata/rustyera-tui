@@ -110,6 +110,13 @@ class RuntimeWorker(threading.Thread):
         client = self.client
         if client is None:
             return
+        wait_bound_input = command.kind in {
+            "submit_text",
+            "skip_enter_waits",
+            "activate",
+            "input_undo",
+        }
+        submitted_wait = client.active_wait if wait_bound_input else None
         try:
             if command.kind in {"submit_text", "skip_enter_waits", "activate", "input_undo"}:
                 client.defer_compiled_cache_refresh()
@@ -197,6 +204,8 @@ class RuntimeWorker(threading.Thread):
                     raise ValueError(f"unknown frontend command {command.kind}")
         except Exception as error:  # noqa: BLE001 - command boundary
             client.fail_startup(error)
+            if wait_bound_input and submitted_wait is not None:
+                self.events.put(FrontendEvent("interaction_rejected", submitted_wait))
             if command.kind == "export_snapshot":
                 client.pending_export = None
                 client.pending_export_kind = None

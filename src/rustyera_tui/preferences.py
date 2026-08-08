@@ -253,9 +253,7 @@ class PreferencesDialog(ModalScreen[None]):
         self.query_one("#preferences-apply", Button).disabled = (
             self.busy or not self._draft_has_changes()
         )
-        self.query_one("#preferences-apply-restart", Button).disabled = (
-            self.busy or self.read_only
-        )
+        self.query_one("#preferences-apply-restart", Button).disabled = self.busy or self.read_only
 
     def set_busy(self, busy: bool) -> None:
         self.busy = busy

@@ -14,6 +14,7 @@ from rustyera_tui.presentation import ServicePresentationModel
 from rustyera_tui.runtime import (
     FrontendEvent,
     PendingConfigurationPrepare,
+    PendingGameInput,
     RuntimeClient,
     RuntimeFailure,
 )
@@ -30,9 +31,7 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client.session = {0: 1, 1: 2}
     client.active_wait = None
     client._projection_messages = set()
-    client._input_messages = set()
-    client._message_skip_active = False
-    client._message_skip_wait_id = None
+    client._input_messages = {}
     client.pending_cache_export_message = None
     client.pending_export_message = None
     client.pending_export_kind = None
@@ -345,7 +344,7 @@ def test_rejected_input_reports_the_still_active_wait_to_the_app() -> None:
     client, _captured = client_with_capture()
     wait = {0: 7, 1: 6, 11: {0: 1, 1: 2}}
     client.active_wait = wait
-    client._input_messages.add(23)
+    client._input_messages[23] = PendingGameInput(wait, variant(2, "bad"), False)
 
     client._handle_runtime(
         95,
@@ -358,6 +357,33 @@ def test_rejected_input_reports_the_still_active_wait_to_the_app() -> None:
     error = client.events.get_nowait()
     assert error.kind == "runtime_error"
     assert 23 not in client._input_messages
+
+
+def test_one_correlated_stale_input_retries_on_the_next_wait_of_the_same_kind() -> None:
+    client, captured = client_with_capture()
+    previous = {0: 7, 1: 2, 11: {0: 1, 1: 2}}
+    active = {0: 8, 1: 2, 11: {0: 1, 1: 3}}
+    client.active_wait = active
+    client._input_messages[23] = PendingGameInput(previous, variant(2, "412"), False)
+
+    client._handle_runtime(95, {0: 2, 1: "input wait identity is stale"}, 23)
+
+    assert captured == [
+        (
+            30,
+            {
+                0: 8,
+                1: {0: 1, 1: 3},
+                2: captured[0][1][2],
+                3: variant(2, "412"),
+                4: False,
+            },
+        )
+    ]
+    assert client.events.empty()
+    retried = next(iter(client._input_messages.values()))
+    assert retried.wait == active
+    assert retried.stale_retries == 1
 
 
 def test_fiber_pages_use_the_requested_cursor_and_protocol_maximum() -> None:
@@ -466,24 +492,20 @@ def test_debug_paused_client_does_not_submit_state_changing_gameplay_input() -> 
     assert "暂不提交游戏输入" in event.value
 
 
-def test_message_skip_submits_each_enter_wait_once_and_stops_at_forcewait() -> None:
+def test_message_skip_is_submitted_once_and_runtime_owns_the_continuation() -> None:
     client, captured = client_with_capture()
     first = {0: 10, 1: 0, 4: False, 11: {0: 1, 1: 10}}
-    second = {0: 11, 1: 0, 4: False, 11: {0: 1, 1: 11}}
-    force = {0: 12, 1: 0, 4: True, 11: {0: 1, 1: 12}}
     client._set_active_wait(first)
 
     client.skip_enter_waits()
     client._set_active_wait(first)
     client._set_active_wait(None)
-    client._set_active_wait(second)
-    client._set_active_wait(force)
+    client._set_active_wait({0: 11, 1: 0, 4: False, 11: {0: 1, 1: 11}})
 
     submissions = [value for tag, value in captured if tag == 30]
-    assert [submission[0] for submission in submissions] == [10, 11]
+    assert [submission[0] for submission in submissions] == [10]
     assert all(submission[3] == [0, []] for submission in submissions)
     assert all(submission[4] for submission in submissions)
-    assert not client._message_skip_active
 
 
 def test_configuration_update_uses_authoritative_snapshot_and_open_effect_is_supported() -> None:
@@ -630,9 +652,7 @@ def test_prepared_configuration_writes_and_restarts_without_exposing_wire_maps(
     )
 
     assert config.read_text(encoding="utf-8") == "FontSize:20\n"
-    client._handle_configuration_committed(
-        {0: {0: 1, 1: prepared_digest, 2: [], 3: True}}, 1
-    )
+    client._handle_configuration_committed({0: {0: 1, 1: prepared_digest, 2: [], 3: True}}, 1)
     assert len(recreated) == 1
     events = []
     while not client.events.empty():
@@ -657,9 +677,7 @@ def test_invalid_or_conflicting_prepared_configuration_keeps_session_alive(
     assert failure.kind == "configuration_save_failed"
     assert "保存偏好选项失败" in failure.value
     assert config.read_text(encoding="utf-8") == "FontSize:18\n"
-    client._handle_configuration_committed(
-        {0: {0: 1, 1: digest, 2: [], 3: False}}, 1
-    )
+    client._handle_configuration_committed({0: {0: 1, 1: digest, 2: [], 3: False}}, 1)
     assert client.pending_configuration is None
     assert client.events.get_nowait().kind == "configuration"
 

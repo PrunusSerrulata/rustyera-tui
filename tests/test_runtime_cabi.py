@@ -279,6 +279,33 @@ def test_project_file_read_failure_terminates_the_attempt(tmp_path: Path) -> Non
     assert "missing.reraproj" in str(client.events[1][1])
 
 
+def test_failed_wait_bound_worker_command_releases_the_app_input_gate() -> None:
+    wait = {0: 17, 1: 2, 11: {0: 1, 1: 4}}
+
+    class Client:
+        active_wait = wait
+
+        @staticmethod
+        def defer_compiled_cache_refresh() -> None:
+            pass
+
+        @staticmethod
+        def submit_text(_text: str) -> None:
+            raise RuntimeError("submission failed")
+
+        @staticmethod
+        def fail_startup(_error: object) -> None:
+            pass
+
+    worker = RuntimeWorker(None, None)
+    worker.client = Client()  # type: ignore[assignment]
+
+    worker._process_command(FrontendCommand("submit_text", "412"))
+
+    assert worker.events.get_nowait() == FrontendEvent("interaction_rejected", wait)
+    assert worker.events.get_nowait() == FrontendEvent("error", "submission failed")
+
+
 def test_worker_delivers_presentation_and_wait_as_one_atomic_batch() -> None:
     client = object.__new__(RuntimeClient)
     client.events = queue.Queue()
@@ -289,7 +316,6 @@ def test_worker_delivers_presentation_and_wait_as_one_atomic_batch() -> None:
     client._wait_event_dirty = True
     client._presentation_boundary_dirty = False
     client.active_wait = {0: 7, 1: 0, 11: {0: 1, 1: 9}}
-    client._message_skip_active = False
 
     client._flush_presentation_events()
 

@@ -247,7 +247,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.2.0" in contents
-        assert "core 版本：0.2.0 (608366eb)" in contents
+        assert "core 版本：0.2.0 (6142ff96)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 
@@ -291,10 +291,23 @@ async def test_prompt_submits_through_worker(tmp_path: Path) -> None:
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)) as pilot:
         prompt = app.query_one("#prompt")
+        app.active_wait = {0: 4, 1: 2, 11: {0: 1, 1: 4}}
         prompt.disabled = False
         prompt.focus()
         await pilot.press("1", "2", "enter")
         assert ("submit_text", "12") in worker.commands
+        await pilot.press("3", "enter")
+        assert worker.commands.count(("submit_text", "12")) == 1
+        assert not any(command == ("submit_text", "3") for command in worker.commands)
+        app._handle_worker_event(FrontendEvent("interaction_rejected", app.active_wait))
+        await pilot.press("4", "enter")
+        assert ("submit_text", "34") in worker.commands
+
+        app._handle_worker_event(FrontendEvent("interaction_rejected", app.active_wait))
+        app.input_undo_token = {0: 2, 1: 9}
+        app.action_input_undo()
+        app.action_input_undo()
+        assert worker.commands.count(("input_undo", {0: 2, 1: 9})) == 1
 
 
 async def test_project_progress_shows_real_completed_work(tmp_path: Path) -> None:
@@ -332,6 +345,7 @@ async def test_viewport_click_submits_only_a_plain_enter_wait(tmp_path: Path) ->
         await pilot.click("#game-viewport", offset=(10, 5))
         assert ("submit_text", "") in worker.commands
 
+        app._activated_wait = None
         await pilot.click("#game-viewport", offset=(10, 5), button=3)
         assert ("skip_enter_waits", None) in worker.commands
 

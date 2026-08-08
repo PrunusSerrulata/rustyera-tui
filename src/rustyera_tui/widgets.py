@@ -109,9 +109,7 @@ class GameLine(Static):
                 if index + 1 < len(parts):
                     rows.append([])
                     alignments.append(
-                        segment.alignment
-                        if segment.alignment is not None
-                        else self.line.alignment
+                        segment.alignment if segment.alignment is not None else self.line.alignment
                     )
 
         layouts: list[list[tuple[str, DisplaySegment, int | None]]] = []
@@ -164,9 +162,7 @@ class GameLine(Static):
                 cursor += width
             layouts.append(layout)
 
-        for row_index, (layout, alignment) in enumerate(
-            zip(layouts, alignments, strict=True)
-        ):
+        for row_index, (layout, alignment) in enumerate(zip(layouts, alignments, strict=True)):
             content_width = sum(cell_len(text) for text, _segment, _region in layout)
             available = max(0, render_width - content_width)
             alignment_padding = {0: 0, 1: available // 2, 2: available}.get(alignment, 0)
@@ -238,9 +234,7 @@ class GameLine(Static):
             self.tooltip = None
             return
         index = self._region_at(event.offset.x, event.offset.y)
-        if index is not None and (
-            not self.interactions_enabled or not self.regions[index].enabled
-        ):
+        if index is not None and (not self.interactions_enabled or not self.regions[index].enabled):
             index = None
         if index != self.hovered_region:
             self.hovered_region = index
@@ -268,9 +262,7 @@ class GameLine(Static):
             self.post_message(self.Activated(region.token, region.title))
 
 
-def _project_responsive_segments(
-    line: DisplayLineModel, width: int
-) -> tuple[DisplaySegment, ...]:
+def _project_responsive_segments(line: DisplayLineModel, width: int) -> tuple[DisplaySegment, ...]:
     if not line.layout:
         return line.segments
 
@@ -374,9 +366,7 @@ def _pad_column_cell(
     edge = result[edge_index]
     result[edge_index] = replace(
         edge,
-        text=(" " * padding + edge.text)
-        if alignment == 1
-        else (edge.text + " " * padding),
+        text=(" " * padding + edge.text) if alignment == 1 else (edge.text + " " * padding),
     )
     return result
 

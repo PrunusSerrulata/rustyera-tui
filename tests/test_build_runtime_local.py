@@ -44,7 +44,9 @@ def fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     return tui, core, fake_cargo
 
 
-def run_wrapper(tui: Path, fake_cargo: Path, exit_code: int = 0) -> subprocess.CompletedProcess[str]:
+def run_wrapper(
+    tui: Path, fake_cargo: Path, exit_code: int = 0
+) -> subprocess.CompletedProcess[str]:
     environment = {**os.environ, "RUSTYERA_CARGO": str(fake_cargo)}
     return subprocess.run(
         [sys.executable, tui / "scripts" / WRAPPER.name, "--", fake_cargo, str(exit_code)],
