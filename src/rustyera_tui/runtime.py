@@ -883,11 +883,17 @@ class RuntimeClient:
             self.events.put(FrontendEvent("error", f"Runtime 返回了无效的项目配置：{error}"))
             return None
         self.configuration_snapshot = snapshot
-        read_only = self.bundle is not None and self.bundle.project_file is not None
+        read_only = (
+            self.bundle is not None
+            and self.bundle.project_file is not None
+            and not self.abi.supports_project_configuration_updates
+        )
         if snapshot.generated_source is not None and self.bundle is not None and not read_only:
             try:
-                self.bundle.write_configuration(b"", snapshot.generated_source)
-            except (OSError, RuntimeError) as error:
+                self.bundle = self._write_configuration(
+                    self.bundle, b"", snapshot.generated_source
+                )
+            except (OSError, RuntimeError, UnicodeError, ValueError) as error:
                 self.configuration_snapshot = None
                 self.events.put(
                     FrontendEvent("error", f"迁移 reraconfig.toml 失败：{error}")
@@ -908,7 +914,10 @@ class RuntimeClient:
             raise RuntimeError("Runtime 尚未提供项目配置")
         if not self.configuration_profile_supported:
             raise RuntimeError("当前 Runtime 不支持 TUI 项目设置画像")
-        session_only = self.bundle.project_file is not None
+        session_only = (
+            self.bundle.project_file is not None
+            and not self.abi.supports_project_configuration_updates
+        )
         if session_only:
             entries = {entry.code.casefold(): entry for entry in snapshot.tui_entries}
             if restart or any(
@@ -953,9 +962,10 @@ class RuntimeClient:
                     raise PermissionError("项目文件仅支持当前会话内即时生效的设置")
                 candidate = None
             else:
-                self.bundle.write_configuration(value.expected_source_digest, value.contents)
-                candidate = ProjectBundle.scan_quick(
-                    self.bundle.root, 1, self._project_scan_progress
+                candidate = self._write_configuration(
+                    self.bundle,
+                    value.expected_source_digest,
+                    value.contents,
                 )
         except (OSError, RuntimeError, UnicodeError, ValueError) as error:
             message = f"保存偏好选项失败：{error}"
@@ -975,6 +985,21 @@ class RuntimeClient:
             pending.restart,
             PreparedConfigurationCommit(value, candidate),
         )
+
+    def _write_configuration(
+        self, bundle: ProjectBundle, expected_digest: bytes, contents: str
+    ) -> ProjectBundle:
+        if bundle.project_file is None:
+            bundle.write_configuration(expected_digest, contents)
+            return ProjectBundle.scan_quick(bundle.root, 1, self._project_scan_progress)
+        bundle.write_configuration(
+            expected_digest,
+            contents,
+            self.abi.prepare_project_configuration_update,
+        )
+        project_bytes = bundle.project_file.read_bytes()
+        manifest = self.abi.project_file_manifest(project_bytes)
+        return ProjectBundle.from_project_file_manifest(bundle.project_file, manifest)
 
     def _handle_configuration_committed(
         self, committed: dict[int, Any], correlation_id: int | None
@@ -1014,7 +1039,15 @@ class RuntimeClient:
         if outcome.candidate is None:
             raise RuntimeError("会话设置不能通过重启应用")
         try:
-            self.recreate(outcome.candidate)
+            project_file_bytes = (
+                outcome.candidate.project_file.read_bytes()
+                if outcome.candidate.project_file is not None
+                else None
+            )
+            if project_file_bytes is None:
+                self.recreate(outcome.candidate)
+            else:
+                self.recreate(outcome.candidate, project_file_bytes=project_file_bytes)
         except Exception as error:  # noqa: BLE001 - preserve the worker after a restart failure
             self.events.put(FrontendEvent("error", f"偏好选项已保存，但重启游戏失败：{error}"))
 
@@ -1054,6 +1087,10 @@ class RuntimeClient:
         self._submit_project(transfer_id)
 
     def _stage_persistent_cache_or_source(self) -> None:
+        if self.pending_bundle is not None and self.pending_bundle.project_file is not None:
+            self.events.put(FrontendEvent("status", "正在载入项目文件…"))
+            self._stage_project_cache_file(self.pending_bundle.project_file, "project_file")
+            return
         cache_path = (
             self.storage.compiled_cache_path()
             if self.storage and self.allow_compiled_cache_load

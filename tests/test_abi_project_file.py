@@ -68,6 +68,47 @@ def test_abi_32_falls_back_to_full_legacy_project_manifest() -> None:
     assert legacy.calls == 1
 
 
+def test_abi_36_returns_a_compact_project_configuration_update() -> None:
+    captured: list[tuple[bytes, bytes, bytes]] = []
+    buffers: list[Any] = []
+
+    def prepare(
+        _header: Any,
+        _handle: Any,
+        project: Any,
+        expected: Any,
+        contents: Any,
+        output: Any,
+    ) -> int:
+        captured.append(
+            (
+                ctypes.string_at(project.data, project.len),
+                ctypes.string_at(expected.data, expected.len),
+                ctypes.string_at(contents.data, contents.len),
+            )
+        )
+        payload = (7).to_bytes(8, "little") + b"record"
+        buffer = (ctypes.c_uint8 * len(payload)).from_buffer_copy(payload)
+        buffers.append(buffer)
+        owned = ctypes.cast(output, ctypes.POINTER(EraOwnedBuffer)).contents
+        owned.data = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_uint8))
+        owned.len = len(payload)
+        owned.token = 1
+        return STATUS_OK
+
+    abi = RuntimeAbi.__new__(RuntimeAbi)
+    abi.handle = EraSessionHandle(1)
+    abi._prepare_project_configuration_update = prepare
+    abi._release = lambda _header, _buffer: STATUS_OK
+
+    result = abi.prepare_project_configuration_update(
+        b"project", b"digest", "[audio]\nvolume = 42\n"
+    )
+
+    assert result == (7, b"record")
+    assert captured == [(b"project", b"digest", b"[audio]\nvolume = 42\n")]
+
+
 def test_abi_34_stages_a_contiguous_compiled_cache() -> None:
     captured: list[bytes] = []
 

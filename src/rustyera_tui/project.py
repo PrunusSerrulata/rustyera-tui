@@ -40,6 +40,7 @@ MAXIMUM_PROJECT_ENVELOPE_BYTES = 1024 * 1024 * 1024
 PROJECT_ENVELOPE_HEADROOM_BYTES = 1024 * 1024
 PROJECT_FILE_WIRE_OVERHEAD_BYTES = 256
 ProjectScanProgress = Callable[[int, int], None]
+ProjectConfigurationUpdate = Callable[[bytes, bytes, str], tuple[int, bytes]]
 
 
 def _report_scan_progress(progress: ProjectScanProgress | None, completed: int, total: int) -> None:
@@ -333,11 +334,36 @@ class ProjectBundle:
             )
         return requested_envelope, requested_payload
 
-    def write_configuration(self, expected_digest: bytes, contents: str) -> None:
-        """Atomically replace the editable root config after an optimistic-lock check."""
+    def write_configuration(
+        self,
+        expected_digest: bytes,
+        contents: str,
+        prepare_project_update: ProjectConfigurationUpdate | None = None,
+    ) -> None:
+        """Persist the root config after an optimistic-lock check."""
 
         if self.project_file is not None:
-            raise PermissionError("打包项目中的 reraconfig.toml 为只读")
+            if prepare_project_update is None:
+                raise PermissionError("当前 Runtime 不支持修改项目文件中的 reraconfig.toml")
+            with self.project_file.open("r+b") as stream:
+                project_bytes = stream.read()
+                project_digest = blake3.blake3(project_bytes).digest()
+                truncate_to, append = prepare_project_update(
+                    project_bytes, expected_digest, contents
+                )
+                if not 0 <= truncate_to <= len(project_bytes):
+                    raise RuntimeError("Runtime 返回了无效的项目配置更新位置")
+                stream.seek(0)
+                current_bytes = stream.read()
+                if blake3.blake3(current_bytes).digest() != project_digest:
+                    raise RuntimeError("项目文件已被其他程序修改，请重新打开偏好选项")
+                stream.truncate(truncate_to)
+                stream.seek(truncate_to)
+                if stream.write(append) != len(append):
+                    raise OSError("项目配置更新未能完整写入")
+                stream.flush()
+                os.fsync(stream.fileno())
+            return
         target = next(
             (
                 self.root / PurePosixPath(item.relative_path)

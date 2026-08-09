@@ -12,7 +12,7 @@ from .protocol_text import ERA_STATUSES, enum_text
 from .wire import decode
 
 ABI_MAJOR = 3
-ABI_MINOR = 5
+ABI_MINOR = 6
 
 STATUS_OK = 0
 STATUS_EMPTY = 1
@@ -151,6 +151,15 @@ SessionCommitCompiledCache = ctypes.CFUNCTYPE(
     EraOwnedBuffer,
     ctypes.POINTER(ctypes.c_uint64),
 )
+PrepareProjectConfigurationUpdate = ctypes.CFUNCTYPE(
+    ctypes.c_uint32,
+    EraCallHeader,
+    EraSessionHandle,
+    EraByteSlice,
+    EraByteSlice,
+    EraByteSlice,
+    ctypes.POINTER(EraOwnedBuffer),
+)
 
 
 class EraRuntimeApi(ctypes.Structure):
@@ -260,6 +269,11 @@ class RuntimeAbi:
             if api.abi_version.minor >= 5 and api.reserved[5]
             else None
         )
+        self._prepare_project_configuration_update = (
+            PrepareProjectConfigurationUpdate(api.reserved[6])
+            if api.abi_version.minor >= 6 and api.reserved[6]
+            else None
+        )
         self.debug_scope_mask = debug_scope_mask
         self.handle = EraSessionHandle()
         self.create_session()
@@ -353,6 +367,51 @@ class RuntimeAbi:
         if not isinstance(decoded, dict):
             raise AbiError("runtime returned an invalid project-file manifest")
         return decoded
+
+    @property
+    def supports_project_configuration_updates(self) -> bool:
+        """Return whether the loaded runtime can prepare append-only project edits."""
+
+        return self._prepare_project_configuration_update is not None
+
+    def prepare_project_configuration_update(
+        self, project_file: bytes, expected_digest: bytes, contents: str
+    ) -> tuple[int, bytes]:
+        """Validate a package and return its truncation offset and compact append record."""
+
+        prepare = self._prepare_project_configuration_update
+        if prepare is None:
+            raise AbiError("runtime ABI does not support writable RustyEra project files")
+        contents_bytes = contents.encode("utf-8")
+        project_buffer = ctypes.c_char_p(project_file)
+        expected_buffer = ctypes.c_char_p(expected_digest)
+        contents_buffer = ctypes.c_char_p(contents_bytes)
+        output = EraOwnedBuffer()
+        header = _header(ctypes.sizeof(EraOwnedBuffer))
+        status = prepare(
+            header,
+            self.handle,
+            EraByteSlice(
+                ctypes.cast(project_buffer, ctypes.POINTER(ctypes.c_uint8)), len(project_file)
+            ),
+            EraByteSlice(
+                ctypes.cast(expected_buffer, ctypes.POINTER(ctypes.c_uint8)), len(expected_digest)
+            ),
+            EraByteSlice(
+                ctypes.cast(contents_buffer, ctypes.POINTER(ctypes.c_uint8)), len(contents_bytes)
+            ),
+            ctypes.byref(output),
+        )
+        self._check(status, "prepare_project_configuration_update")
+        try:
+            encoded = ctypes.string_at(output.data, output.len)
+        finally:
+            release_status = self._release(header, output)
+            if release_status != STATUS_OK:
+                raise AbiError(f"release_buffer failed with status {_status_text(release_status)}")
+        if len(encoded) < 8:
+            raise AbiError("runtime returned an invalid project configuration update")
+        return int.from_bytes(encoded[:8], "little"), encoded[8:]
 
     def stage_compiled_cache(self, data: bytes) -> int | None:
         """Stage a contiguous cache without encoding protocol chunks when ABI 3.4 is available."""

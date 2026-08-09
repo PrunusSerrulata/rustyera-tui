@@ -487,10 +487,19 @@ def test_configuration_creation_is_idempotent_and_requires_utf8(tmp_path: Path) 
     assert unwrap_variant(invalid)[0] == 2
 
 
-def test_packaged_project_configuration_is_read_only(tmp_path: Path) -> None:
+def test_packaged_project_configuration_appends_the_runtime_update(tmp_path: Path) -> None:
     project_file = tmp_path / "game.reraproj"
-    project_file.write_bytes(b"placeholder")
+    project_file.write_bytes(b"base-incomplete")
     bundle = ProjectBundle(tmp_path, 1, {}, project_file)
+    captured: list[tuple[bytes, bytes, str]] = []
 
-    with pytest.raises(PermissionError, match="只读"):
-        bundle.write_configuration(b"", "FontSize:20\n")
+    def prepare(project: bytes, expected: bytes, contents: str) -> tuple[int, bytes]:
+        captured.append((project, expected, contents))
+        return 4, b"journal"
+
+    bundle.write_configuration(b"digest", "[display]\nfont_size = 20\n", prepare)
+
+    assert captured == [
+        (b"base-incomplete", b"digest", "[display]\nfont_size = 20\n")
+    ]
+    assert project_file.read_bytes() == b"basejournal"

@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import blake3
-import pytest
 
 from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
 from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile
@@ -37,6 +36,11 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client.pending_export_kind = None
     client.pending_diagnosis = None
     client.configuration_profile_supported = True
+    client.abi = SimpleNamespace(
+        supports_project_configuration_updates=True,
+        prepare_project_configuration_update=lambda *_args: (0, b""),
+        project_file_manifest=lambda _bytes: {0: 1, 1: []},
+    )
     client.single_step_enabled = False
     captured: list[tuple[int, Any]] = []
     client.send_runtime = (  # type: ignore[method-assign]
@@ -554,9 +558,12 @@ def test_configuration_update_requires_the_negotiated_tui_profile() -> None:
         raise AssertionError("an unsupported configuration profile was accepted")
 
 
-def test_packaged_configuration_commits_hot_changes_without_writing_project_file() -> None:
+def test_packaged_configuration_commits_through_the_append_update(tmp_path: Path) -> None:
     client, captured = client_with_capture()
-    client.bundle = SimpleNamespace(project_file=Path("game.reraproj"))
+    project_file = tmp_path / "game.reraproj"
+    project_file.write_bytes(b"base")
+    bundle = ProjectBundle(tmp_path, 7, {}, project_file)
+    client.bundle = bundle
     client.pending_configuration = None
     digest = b"package-digest"
     hot_entry = {
@@ -579,9 +586,13 @@ def test_packaged_configuration_commits_hot_changes_without_writing_project_file
     client.prepare_configuration_update([ConfigurationChange("UseMouse", "NO")])
     pending = client.pending_configuration
     assert isinstance(pending, PendingConfigurationPrepare)
-    assert pending.session_only
     contents = "UseMouse:NO\n"
     prepared_digest = blake3.blake3(contents.encode()).digest()
+    client.abi.prepare_project_configuration_update = lambda *_args: (4, b"journal")
+    client.abi.project_file_manifest = lambda _bytes: {
+        0: 7,
+        1: [{0: "reraconfig.toml", 1: 5, 2: variant(0, contents), 3: prepared_digest}],
+    }
     client._handle_configuration_prepared(
         {0: 7, 1: digest, 2: contents, 3: False, 4: prepared_digest}, pending.message_id
     )
@@ -601,13 +612,26 @@ def test_packaged_configuration_commits_hot_changes_without_writing_project_file
     events = []
     while not client.events.empty():
         events.append(client.events.get_nowait())
-    assert FrontendEvent("configuration_session_applied") in events
-    assert client.bundle.project_file == Path("game.reraproj")
+    assert FrontendEvent("configuration_saved", (False, False)) in events
+    assert project_file.read_bytes() == b"basejournal"
+    assert client.bundle is not bundle
+    assert client.bundle.identity() != bundle.identity()
 
 
-def test_packaged_configuration_rejects_restart_fixed_and_non_hot_changes() -> None:
+def test_packaged_configuration_restarts_with_the_updated_identity(tmp_path: Path) -> None:
     client, captured = client_with_capture()
-    client.bundle = SimpleNamespace(project_file=Path("game.reraproj"))
+    project_file = tmp_path / "game.reraproj"
+    project_file.write_bytes(b"base")
+    old_source = "[save]\nauto_save = true\n"
+    old_digest = blake3.blake3(old_source.encode()).digest()
+    bundle = ProjectBundle.from_project_file_manifest(
+        project_file,
+        {
+            0: 8,
+            1: [{0: "reraconfig.toml", 1: 5, 2: variant(0, old_source), 3: old_digest}],
+        },
+    )
+    client.bundle = bundle
     client.pending_configuration = None
     hot_entry = {
         0: "UseMouse",
@@ -625,18 +649,37 @@ def test_packaged_configuration_rejects_restart_fixed_and_non_hot_changes() -> N
     restart_entry = {**hot_entry, 0: "AutoSave", 1: "AutoSave", 2: "AutoSave", 10: 1}
     fixed_entry = {**hot_entry, 0: "BackColor", 1: "BackColor", 2: "BackColor", 6: True}
     client.configuration_snapshot = ConfigurationSnapshot.from_wire(
-        {0: 8, 1: b"package", 2: [hot_entry, restart_entry, fixed_entry], 3: False}
+        {0: 8, 1: old_digest, 2: [hot_entry, restart_entry, fixed_entry], 3: False}
     )
 
-    with pytest.raises(PermissionError, match="仅支持当前会话"):
-        client.prepare_configuration_update([ConfigurationChange("UseMouse", "NO")], True)
-    with pytest.raises(PermissionError, match="仅支持当前会话"):
-        client.prepare_configuration_update([ConfigurationChange("AutoSave", "NO")])
-    with pytest.raises(PermissionError, match="仅支持当前会话"):
-        client.prepare_configuration_update([ConfigurationChange("BackColor", "1,2,3")])
+    client.prepare_configuration_update([ConfigurationChange("AutoSave", "NO")], True)
+    assert captured[0][0] == 24
+    pending = client.pending_configuration
+    assert isinstance(pending, PendingConfigurationPrepare)
+    contents = "[save]\nauto_save = false\n"
+    prepared_digest = blake3.blake3(contents.encode()).digest()
+    client.abi.prepare_project_configuration_update = lambda *_args: (4, b"journal")
+    client.abi.project_file_manifest = lambda _bytes: {
+        0: 8,
+        1: [{0: "reraconfig.toml", 1: 5, 2: variant(0, contents), 3: prepared_digest}],
+    }
+    recreated: list[tuple[ProjectBundle, bytes | None]] = []
 
-    assert captured == []
-    assert client.pending_configuration is None
+    def recreate(candidate: ProjectBundle, **options: Any) -> None:
+        recreated.append((candidate, options.get("project_file_bytes")))
+
+    client.recreate = recreate  # type: ignore[method-assign]
+    client._handle_configuration_prepared(
+        {0: 8, 1: old_digest, 2: contents, 3: True, 4: prepared_digest}, pending.message_id
+    )
+    client._handle_configuration_committed(
+        {0: {0: 8, 1: prepared_digest, 2: [restart_entry], 3: False}}, 1
+    )
+
+    assert len(recreated) == 1
+    candidate, submitted_project = recreated[0]
+    assert candidate.identity() != bundle.identity()
+    assert submitted_project == b"basejournal"
 
 
 def test_prepared_configuration_writes_and_restarts_without_exposing_wire_maps(

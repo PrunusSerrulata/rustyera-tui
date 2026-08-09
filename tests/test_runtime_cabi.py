@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import queue
+import shutil
 import time
 from pathlib import Path
 from typing import Callable
 
 import pytest
 
-from rustyera_tui.abi import DEFAULT_MAXIMUM_VM_INSTRUCTIONS, AbiError, discover_library
+from rustyera_tui.abi import DEFAULT_MAXIMUM_VM_INSTRUCTIONS, AbiError, RuntimeAbi, discover_library
 from rustyera_tui.project import ProjectBundle, StorageBackend
 from rustyera_tui.runtime import (
     FrontendCommand,
@@ -506,6 +507,58 @@ def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
     finally:
         second.stop()
         second.join(timeout=5)
+
+
+@pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
+def test_real_c_abi_appends_and_reopens_packaged_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr("rustyera_tui.runtime.COMPILED_CACHE_PERSIST_DELAY_NS", 0)
+    project = tmp_path / "minimal"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "minimal", project)
+    cache_path = StorageBackend(project).compiled_cache_path()
+    source_worker = RuntimeWorker(RUNTIME_LIBRARY, project)
+    source_worker.start()
+    try:
+        wait_for(source_worker, lambda event: event.kind == "project_loaded")
+        wait_for_input(source_worker)
+        wait_for_path(source_worker, cache_path)
+    finally:
+        source_worker.stop()
+        source_worker.join(timeout=5)
+
+    project_file = tmp_path / "minimal.reraproj"
+    original = cache_path.read_bytes()
+    project_file.write_bytes(original)
+    abi = RuntimeAbi(RUNTIME_LIBRARY, resource_directory=project)
+    try:
+        manifest = abi.project_file_manifest(original)
+        bundle = ProjectBundle.from_project_file_manifest(project_file, manifest)
+        bundle.write_configuration(
+            b"",
+            "[text]\nreplace_full_width_spaces = true\n"
+            'character_width_mode = "ambiguous_wide"\n',
+            abi.prepare_project_configuration_update,
+        )
+    finally:
+        abi.destroy_session()
+
+    updated = project_file.read_bytes()
+    assert updated.startswith(original)
+    assert 0 < len(updated) - len(original) < 1024
+    packaged_worker = RuntimeWorker(RUNTIME_LIBRARY, None, initial_project_file=project_file)
+    packaged_worker.start()
+    try:
+        configuration = wait_for(packaged_worker, lambda event: event.kind == "configuration")
+        snapshot, read_only = configuration.value
+        assert read_only is False
+        assert snapshot.effective_value("ReplaceFullWidthSpaces", "NO") == "YES"
+        assert snapshot.effective_value("CharacterWidthMode", "AUTOMATIC") == "AMBIGUOUS_WIDE"
+        wait_for_input(packaged_worker)
+    finally:
+        packaged_worker.stop()
+        packaged_worker.join(timeout=5)
 
 
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
