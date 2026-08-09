@@ -167,6 +167,7 @@ class RustyEraTui(App[None]):
         self.stack_dialog: StackDialog | None = None
         self.console_dialog: DebugConsoleDialog | None = None
         self.fatal_dialog: FatalErrorDialog | None = None
+        self.progress_loss_dialog: ConfirmDialog | None = None
         self.fault_logs = ""
         self.project_progress_active = False
         self.project_progress_message = ""
@@ -277,6 +278,8 @@ class RustyEraTui(App[None]):
             if not prompt.value:
                 prompt.value = value
         elif kind == "phase":
+            if int(value) != self.runtime_phase:
+                self._cancel_progress_loss_confirmation()
             self.runtime_phase = int(value)
             if self.runtime_phase != 7:
                 self.debug_paused = False
@@ -375,6 +378,7 @@ class RustyEraTui(App[None]):
                 self._queue_local_presentation_render()
                 self._refresh_interaction_lock()
         elif kind == "runtime_fault":
+            self._cancel_progress_loss_confirmation()
             self.snapshot_exporting = False
             self.active_wait = None
             self._activated_wait = None
@@ -409,6 +413,7 @@ class RustyEraTui(App[None]):
             if self.exit_pending:
                 self.exit()
         elif kind == "worker_stopped":
+            self._cancel_progress_loss_confirmation()
             self._finish_project_progress()
             if self.snapshot_exporting:
                 self.snapshot_exporting = False
@@ -450,6 +455,7 @@ class RustyEraTui(App[None]):
             self.query_one("#prompt", Input).placeholder = message
 
     def _begin_project_progress(self, message: str) -> None:
+        self._cancel_progress_loss_confirmation()
         self.project_progress_active = True
         self.project_progress_message = message
         if self.is_mounted:
@@ -695,9 +701,9 @@ class RustyEraTui(App[None]):
             self.notify("文件导出完成前不能执行此操作", severity="warning")
             return
         if item_id == "file-restart":
-            self.worker.send("restart")
+            self._confirm_progress_loss("restart", "重新开始游戏", "重新开始")
         elif item_id == "file-title":
-            self.worker.send("return_title")
+            self._confirm_progress_loss("return_title", "返回标题", "返回标题")
         elif item_id == "file-preferences":
             self.action_preferences()
         elif item_id == "file-reload-all":
@@ -721,6 +727,51 @@ class RustyEraTui(App[None]):
             self._choose_path("恢复 VM 快照", "file", "restore_snapshot")
         elif item_id == "file-exit":
             self.action_request_quit()
+
+    def _confirm_progress_loss(
+        self, command: str, action_description: str, confirm_label: str
+    ) -> None:
+        dialog = ConfirmDialog(
+            action_description,
+            f"{action_description}可能会丢失尚未保存的游戏进度。\n确定要继续吗？",
+            confirm_label,
+        )
+        expected_phase = self.runtime_phase
+        self.progress_loss_dialog = dialog
+        self.push_screen(
+            dialog,
+            lambda confirmed: self._complete_progress_loss_confirmation(
+                dialog, expected_phase, command, confirmed
+            ),
+        )
+
+    def _complete_progress_loss_confirmation(
+        self,
+        dialog: ConfirmDialog,
+        expected_phase: int,
+        command: str,
+        confirmed: bool,
+    ) -> None:
+        if self.progress_loss_dialog is dialog:
+            self.progress_loss_dialog = None
+        if self.is_mounted:
+            self.query_one("#menu-file", Button).focus()
+        if (
+            confirmed
+            and self.runtime_phase == expected_phase
+            and self._runtime_menu_actions_available()
+            and self.blocking_error is None
+            and not self.project_progress_active
+        ):
+            self.worker.send(command)
+
+    def _cancel_progress_loss_confirmation(self) -> None:
+        dialog = self.progress_loss_dialog
+        if dialog is None:
+            return
+        self.progress_loss_dialog = None
+        if dialog.is_mounted:
+            dialog.dismiss(False)
 
     def action_preferences(self) -> None:
         if self.configuration_snapshot is None:

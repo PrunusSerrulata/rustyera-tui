@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from rich.cells import cell_len
+from textual import events
 from textual.widgets import (
     Button,
     Checkbox,
@@ -20,7 +21,13 @@ from textual.widgets import (
 
 from rustyera_tui.app import CORE_VERSION, RustyEraTui
 from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
-from rustyera_tui.dialogs import AboutDialog, FatalErrorDialog, PathDialog, PreferencesDialog
+from rustyera_tui.dialogs import (
+    AboutDialog,
+    ConfirmDialog,
+    FatalErrorDialog,
+    PathDialog,
+    PreferencesDialog,
+)
 from rustyera_tui.log_model import LogLevel, LogMessage
 from rustyera_tui.presentation import (
     ColumnCellLayout,
@@ -219,6 +226,49 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         assert app.query_one("#menu-file").styles.content_align[0] == "left"
 
 
+async def test_restart_and_return_to_title_require_confirmation(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        worker.events.put(FrontendEvent("phase", 4))
+        await pilot.pause()
+
+        await pilot.click("#menu-file")
+        await pilot.click("#file-restart")
+        worker.events.put(FrontendEvent("phase", 5))
+        await pilot.pause()
+        assert not isinstance(app.screen, ConfirmDialog)
+        assert ("restart", None) not in worker.commands
+        assert app.focused is app.query_one("#menu-file", Button)
+
+        for item_id, title, command in (
+            ("file-restart", "重新开始游戏", "restart"),
+            ("file-title", "返回标题", "return_title"),
+        ):
+            await pilot.click("#menu-file")
+            await pilot.click(f"#{item_id}")
+            assert isinstance(app.screen, ConfirmDialog)
+            assert str(app.screen.query_one(".dialog-title").render()) == title
+            assert "可能会丢失尚未保存的游戏进度" in str(
+                app.screen.query_one("#confirm-message", Static).render()
+            )
+            assert (command, None) not in worker.commands
+
+            await pilot.click("#confirm-cancel")
+            await pilot.pause()
+            assert (command, None) not in worker.commands
+            assert app.focused is app.query_one("#menu-file", Button)
+
+            await pilot.click("#menu-file")
+            await pilot.click(f"#{item_id}")
+            await pilot.click("#confirm-accept")
+            await pilot.pause()
+            assert (command, None) in worker.commands
+            assert app.focused is app.query_one("#menu-file", Button)
+
+
 async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
@@ -300,10 +350,12 @@ async def test_prompt_submits_through_worker(tmp_path: Path) -> None:
         assert worker.commands.count(("submit_text", "12")) == 1
         assert not any(command == ("submit_text", "3") for command in worker.commands)
         app._handle_worker_event(FrontendEvent("interaction_rejected", app.active_wait))
+        await pilot.pause()
         await pilot.press("4", "enter")
-        assert ("submit_text", "34") in worker.commands
+        assert ("submit_text", "4") in worker.commands
 
         app._handle_worker_event(FrontendEvent("interaction_rejected", app.active_wait))
+        await pilot.pause(0.1)
         app.input_undo_token = {0: 2, 1: 9}
         app.action_input_undo()
         app.action_input_undo()
@@ -341,56 +393,68 @@ async def test_viewport_and_keyboard_submit_message_waits_once(tmp_path: Path) -
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)) as pilot:
-        app.active_wait = {0: 7, 1: 0}
+        def input_commands() -> list[tuple[str, Any]]:
+            return [command for command in worker.commands if command[0] != "projection"]
+
+        async def set_wait(wait: dict[int, Any]) -> None:
+            worker.events.put(FrontendEvent("wait", wait))
+            await pilot.pause(0.1)
+            worker.commands.clear()
+
+        await set_wait({0: 7, 1: 0})
         await pilot.click("#game-viewport", offset=(10, 5))
-        assert ("submit_text", "") in worker.commands
+        assert input_commands() == [("submit_text", "")]
 
-        app._activated_wait = None
+        await set_wait({0: 8, 1: 0})
         await pilot.click("#game-viewport", offset=(10, 5), button=3)
-        assert ("skip_message_waits", None) in worker.commands
+        assert input_commands() == [("skip_message_waits", None)]
 
-        worker.commands.clear()
-        app._activated_wait = None
-        app.active_wait = {0: 8, 1: 1}
+        await set_wait({0: 9, 1: 1})
         await pilot.click("#game-viewport", offset=(10, 5))
-        assert worker.commands == [("submit_text", "")]
+        assert input_commands() == [("submit_text", "")]
 
-        worker.commands.clear()
-        app._activated_wait = None
+        await set_wait({0: 10, 1: 1})
         await pilot.click("#game-viewport", offset=(10, 5), button=3)
-        assert worker.commands == [("skip_message_waits", None)]
+        assert input_commands() == [("skip_message_waits", None)]
 
-        worker.commands.clear()
-        app._activated_wait = None
-        await pilot.press("space")
-        assert worker.commands == [("submit_text", " ")]
-
-        worker.commands.clear()
-        app._activated_wait = None
-        app.active_wait = {0: 9, 1: 1, 11: {0: 2, 1: 9}}
-        await pilot.press("space")
-        await pilot.click("#game-viewport", offset=(10, 5))
+        await set_wait({0: 13, 1: 1, 4: True, 11: {0: 2, 1: 13}})
         await pilot.click("#game-viewport", offset=(10, 5), button=3)
-        app.query_one("#prompt", Input).focus()
-        await pilot.press("enter")
-        assert worker.commands == [("submit_text", " ")]
-
-        worker.commands.clear()
-        app._activated_wait = None
-        app.active_wait = {0: 10, 1: 1, 4: True, 11: {0: 2, 1: 10}}
-        await pilot.click("#game-viewport", offset=(10, 5), button=3)
-        assert worker.commands == []
+        assert input_commands() == []
         assert app._activated_wait is None
         await pilot.click("#game-viewport", offset=(10, 5))
-        assert worker.commands == [("submit_text", "")]
+        assert input_commands() == [("submit_text", "")]
 
-        worker.commands.clear()
-        app._activated_wait = None
-        app.active_wait = {0: 11, 1: 2}
+        await set_wait({0: 14, 1: 2})
         await pilot.click("#game-viewport", offset=(10, 5))
         await pilot.click("#game-viewport", offset=(10, 5), button=3)
-        assert ("submit_text", "") not in worker.commands
-        assert ("skip_message_waits", None) not in worker.commands
+        assert input_commands() == []
+
+    keyboard_app = RustyEraTui(tmp_path, None)
+    keyboard_worker = FakeWorker()
+    keyboard_app.worker = keyboard_worker  # type: ignore[assignment]
+    async with keyboard_app.run_test(size=(100, 30)) as pilot:
+        keyboard_worker.events.put(
+            FrontendEvent("wait", {0: 15, 1: 1, 11: {0: 2, 1: 15}})
+        )
+        await pilot.pause(0.1)
+        keyboard_worker.commands.clear()
+        prompt = keyboard_app.query_one("#prompt", Input)
+        prompt.focus()
+        assert not prompt.disabled
+        assert keyboard_app.focused is prompt
+
+        keyboard_app.on_key(events.Key("a", "a"))
+        assert [
+            command for command in keyboard_worker.commands if command[0] != "projection"
+        ] == [("submit_text", "a")]
+        await pilot.click("#game-viewport", offset=(10, 5))
+        await pilot.click("#game-viewport", offset=(10, 5), button=3)
+        keyboard_app.query_one("#prompt", Input).focus()
+        await pilot.press("enter")
+
+        assert [
+            command for command in keyboard_worker.commands if command[0] != "projection"
+        ] == [("submit_text", "a")]
 
 
 async def test_game_any_key_does_not_cross_an_application_dialog(tmp_path: Path) -> None:
