@@ -1271,6 +1271,7 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         assert not any(kind == "activate" for kind, _value in worker.commands)
 
         app._handle_worker_event(FrontendEvent("interaction_rejected", wait))
+        await pilot.pause(0.1)
         assert game_line.regions[0].enabled
         assert app.query_one(GameViewport).interactions_enabled
         assert await pilot.click(".game-line", offset=(1, 0))
@@ -1300,6 +1301,43 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         assert game_line.hovered_region is None
         assert await pilot.click(".game-line", offset=(1, 0))
         assert not any(kind == "activate" for kind, _value in worker.commands)
+
+        current_token = {0: 4, 1: 11}
+        current_button = variant(
+            1,
+            [variant(0, "当前地图", style, None)],
+            current_token,
+            "当前地图",
+            None,
+            variant(0, 1),
+            1,
+            True,
+        )
+        current_line = {
+            0: 1,
+            1: False,
+            2: True,
+            3: True,
+            4: 0,
+            5: [current_button],
+        }
+        next_wait = {0: 2, 1: 6, 11: {0: 1, 1: 3}}
+        worker.commands.clear()
+        worker.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(
+                    None,
+                    {0: 2, 1: 3, 2: [variant(7, 1, current_line)]},
+                    next_wait,
+                    True,
+                ),
+            )
+        )
+        await pilot.pause(0.1)
+        assert game_line.regions[0].enabled
+        assert await pilot.click(".game-line", offset=(1, 0))
+        assert ("activate", current_token) in worker.commands
 
 
 async def test_save_delete_button_requires_confirmation(tmp_path: Path) -> None:

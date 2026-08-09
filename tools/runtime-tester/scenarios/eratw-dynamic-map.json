@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/eraTW",
+  "mode": "fixed",
+  "start": {
+    "type": "traditional_save",
+    "path": "../../../../games/eraTW/sav/save17.sav"
+  },
+  "inputs": [120],
+  "goal": {
+    "output_contains": ["■博麗神社", "可以对自宅进行設定。要住在哪里呢？"]
+  },
+  "limits": {
+    "max_steps": 30,
+    "timeout_seconds": 900
+  }
+}

@@ -43,6 +43,10 @@ class PresentationModel:
     maximum_physical_lines: int = VIEWPORT_BUFFER_LINES
     changed_from: int | None = 0
     trimmed_prefix: int = 0
+    _button_generation: int | None = field(default=None, init=False, repr=False)
+    _retired_button_tokens: set[tuple[int, int]] = field(
+        default_factory=set, init=False, repr=False
+    )
     # Runtime TrimLines counts canonical rows that may already be outside this viewport.
     _hidden_prefix: int = field(default=0, init=False, repr=False)
     _line_indices: dict[int, int] = field(default_factory=dict, init=False, repr=False)
@@ -50,8 +54,12 @@ class PresentationModel:
     def apply_snapshot(self, snapshot: dict[int, Any]) -> None:
         self.revision = snapshot[0]
         self.title = snapshot[1]
+        # Snapshots carry each button's authoritative enabled state, but not the
+        # current BREAKBUTTON generation. Wait for a generation delta before
+        # filtering later partial line updates locally.
+        self._button_generation = None
         history = snapshot[2]
-        self.lines = [parse_line(line) for line in history.get(0, [])]
+        self.lines = [self._prepare_line(parse_line(line)) for line in history.get(0, [])]
         self._hidden_prefix = 0
         self._apply_settings(snapshot.get(6))
         self._trim_viewport_lines()
@@ -69,7 +77,7 @@ class PresentationModel:
             tag, fields = unwrap_variant(operation)
             if tag == 0:
                 self._mark_changed(len(self.lines))
-                line = parse_line(fields[0])
+                line = self._prepare_line(parse_line(fields[0]))
                 self._line_indices[line.line_id] = len(self.lines)
                 self.lines.append(line)
             elif tag == 1:
@@ -94,7 +102,7 @@ class PresentationModel:
                 self.input_wait = fields[0] if fields else None
             elif tag == 7:
                 line_id, replacement = fields
-                parsed = parse_line(replacement)
+                parsed = self._prepare_line(parse_line(replacement))
                 index = self._line_indices.get(line_id)
                 if index is not None:
                     self._mark_changed(index)
@@ -105,7 +113,8 @@ class PresentationModel:
             elif tag == 8:
                 self._apply_settings(fields[0])
             elif tag == 13:
-                self._disable_old_buttons(fields[0])
+                self._button_generation = int(fields[0])
+                self._disable_old_buttons(self._button_generation)
             elif tag == 14:
                 requested = fields[0]
                 hidden = min(requested, self._hidden_prefix)
@@ -160,15 +169,91 @@ class PresentationModel:
 
     def _disable_old_buttons(self, generation: int) -> None:
         for index, line in enumerate(self.lines):
+            updated = self._line_for_button_generation(line, generation)
+            if updated != line:
+                self._mark_changed(index)
+                self.lines[index] = updated
+
+    def _line_for_current_button_generation(self, line: DisplayLineModel) -> DisplayLineModel:
+        if self._button_generation is None:
+            return line
+        return self._line_for_button_generation(line, self._button_generation)
+
+    def _prepare_line(self, line: DisplayLineModel) -> DisplayLineModel:
+        line = self._line_for_current_button_generation(line)
+        segments = tuple(
+            replace(segment, enabled=False)
+            if segment.enabled
+            and self._token_identity(segment.token) in self._retired_button_tokens
+            else segment
+            for segment in line.segments
+        )
+        return replace(line, segments=segments) if segments != line.segments else line
+
+    @staticmethod
+    def _line_for_button_generation(
+        line: DisplayLineModel, generation: int
+    ) -> DisplayLineModel:
+        segments = tuple(
+            replace(segment, enabled=False)
+            if segment.enabled
+            and segment.generation is not None
+            and segment.generation != generation
+            else segment
+            for segment in line.segments
+        )
+        return replace(line, segments=segments) if segments != line.segments else line
+
+    def retire_enabled_buttons(self) -> set[tuple[int, int]]:
+        """Retire buttons visible when the frontend submits the active wait."""
+
+        tokens = {
+            identity
+            for line in self.lines
+            for segment in line.segments
+            if segment.enabled
+            and (identity := self._token_identity(segment.token)) is not None
+        }
+        if not tokens:
+            return tokens
+        self._retired_button_tokens.update(tokens)
+        self._set_button_tokens_enabled(tokens, False)
+        return tokens
+
+    def restore_buttons(self, tokens: set[tuple[int, int]]) -> None:
+        """Restore a retired submission after the runtime rejects that interaction."""
+
+        if not tokens:
+            return
+        self._retired_button_tokens.difference_update(tokens)
+        self._set_button_tokens_enabled(tokens, True)
+
+    def _set_button_tokens_enabled(
+        self, tokens: set[tuple[int, int]], enabled: bool
+    ) -> None:
+        for index, line in enumerate(self.lines):
             segments = tuple(
-                replace(segment, enabled=False)
-                if segment.generation is not None and segment.generation != generation
+                replace(segment, enabled=enabled)
+                if self._token_identity(segment.token) in tokens
+                and segment.enabled != enabled
+                and (
+                    not enabled
+                    or self._button_generation is None
+                    or segment.generation is None
+                    or segment.generation == self._button_generation
+                )
                 else segment
                 for segment in line.segments
             )
             if segments != line.segments:
                 self._mark_changed(index)
                 self.lines[index] = replace(line, segments=segments)
+
+    @staticmethod
+    def _token_identity(token: dict[int, int] | None) -> tuple[int, int] | None:
+        if token is None:
+            return None
+        return int(token[0]), int(token[1])
 
     def has_enabled_button(self, token: dict[int, int]) -> bool:
         """Return whether the current projection still exposes an activatable token."""

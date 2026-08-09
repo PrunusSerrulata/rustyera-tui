@@ -145,6 +145,7 @@ class RustyEraTui(App[None]):
         self.presentation = PresentationModel()
         self.active_wait: dict[int, Any] | None = None
         self._activated_wait: tuple[int, Any] | None = None
+        self._pending_retired_buttons: set[tuple[int, int]] = set()
         self.blocking_error: str | None = None
         self.input_undo_token: dict[int, Any] | None = None
         self.logs: list[LogEntry] = []
@@ -368,7 +369,10 @@ class RustyEraTui(App[None]):
             self.notify(str(value), title="RustyEra", severity="error", timeout=8)
         elif kind == "interaction_rejected":
             if self._wait_identity(value) == self._activated_wait:
+                self.presentation.restore_buttons(self._pending_retired_buttons)
+                self._pending_retired_buttons.clear()
                 self._activated_wait = None
+                self._queue_local_presentation_render()
                 self._refresh_interaction_lock()
         elif kind == "runtime_fault":
             self.snapshot_exporting = False
@@ -423,6 +427,7 @@ class RustyEraTui(App[None]):
     def _set_active_wait(self, value: dict[int, Any] | None) -> None:
         wait_identity = self._wait_identity(value)
         if wait_identity != self._wait_identity(self.active_wait):
+            self._pending_retired_buttons.clear()
             self._activated_wait = None
         self.active_wait = value
         self._update_prompt()
@@ -611,6 +616,12 @@ class RustyEraTui(App[None]):
         self.presentation_rendering = False
         self._update_prompt()
         self._refresh_interaction_lock()
+
+    def _queue_local_presentation_render(self) -> None:
+        if not self._presentation_dirty:
+            self._begin_presentation_render()
+        self._presentation_dirty = True
+        self._presentation_commit_ready = True
 
     def _set_debug_enabled(self, enabled: bool) -> None:
         self.debug_enabled = enabled
@@ -959,6 +970,8 @@ class RustyEraTui(App[None]):
         ):
             return
         self._activated_wait = wait_identity
+        self._pending_retired_buttons = self.presentation.retire_enabled_buttons()
+        self._queue_local_presentation_render()
         self.query_one(GameViewport).disable_interactions()
         self.worker.send("activate", token)
 
@@ -971,6 +984,8 @@ class RustyEraTui(App[None]):
         ):
             return False
         self._activated_wait = wait_identity
+        self._pending_retired_buttons = self.presentation.retire_enabled_buttons()
+        self._queue_local_presentation_render()
         self.query_one(GameViewport).disable_interactions()
         self.worker.send(command, value)
         return True

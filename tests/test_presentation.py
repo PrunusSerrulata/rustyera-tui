@@ -328,6 +328,73 @@ def test_button_generation_delta_disables_every_old_button_segment() -> None:
     assert not segment.enabled
 
 
+def test_partial_line_updates_keep_current_buttons_and_retire_late_old_buttons() -> None:
+    model = PresentationModel()
+    model.apply_snapshot(snapshot())
+
+    model.apply_delta(
+        {
+            0: 1,
+            1: 2,
+            2: [
+                variant(13, 1),
+                variant(7, 1, line(1, "current map", generation=1)),
+                variant(0, line(2, "late history", generation=0)),
+            ],
+        }
+    )
+
+    current, stale = (item.segments[0] for item in model.lines)
+    assert current.enabled
+    assert current.generation == 1
+    assert not stale.enabled
+    assert stale.generation == 0
+
+
+def test_snapshot_forgets_local_button_generation_before_later_partial_updates() -> None:
+    model = PresentationModel()
+    model.apply_snapshot(snapshot())
+    model.apply_delta({0: 1, 1: 2, 2: [variant(13, 1)]})
+
+    resynchronized = snapshot()
+    resynchronized[0] = 3
+    resynchronized[2] = {0: [line(1, "snapshot", generation=2)], 1: []}
+    model.apply_snapshot(resynchronized)
+    model.apply_delta(
+        {
+            0: 3,
+            1: 4,
+            2: [
+                variant(7, 1, line(1, "replacement", generation=2)),
+                variant(0, line(2, "append", generation=2)),
+            ],
+        }
+    )
+
+    assert all(
+        segment.enabled for item in model.lines for segment in item.segments
+    )
+
+
+def test_submitted_buttons_retire_while_later_partial_updates_stay_enabled() -> None:
+    model = PresentationModel()
+    model.apply_snapshot(snapshot())
+
+    retired = model.retire_enabled_buttons()
+    model.apply_delta({0: 1, 1: 2, 2: [variant(0, line(2, "dynamic map"))]})
+
+    assert not model.lines[0].segments[0].enabled
+    assert model.lines[1].segments[0].enabled
+
+    resynchronized = snapshot()
+    resynchronized[0] = 3
+    model.apply_snapshot(resynchronized)
+    assert not model.lines[0].segments[0].enabled
+
+    model.restore_buttons(retired)
+    assert model.lines[0].segments[0].enabled
+
+
 def test_line_index_stays_valid_across_replace_delete_and_append() -> None:
     model = PresentationModel()
     model.apply_snapshot(snapshot())
