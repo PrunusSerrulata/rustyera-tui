@@ -399,6 +399,8 @@ def _segment_columns(segment: DisplaySegment) -> int:
 def _terminal_segment_text(segment: DisplaySegment) -> str:
     if segment.logical_columns is None or "\n" in segment.text:
         return segment.text
+    if segment.logical_columns == 0 and segment.text.isspace():
+        return ""
     padding = max(0, segment.logical_columns - cell_len(segment.text))
     return segment.text + " " * padding
 
