@@ -46,6 +46,11 @@ WARNING_CHOICES = (
     ("每文件一次", "ONCE"),
     ("立即显示", "DISPLAY"),
 )
+CHARACTER_WIDTH_CHOICES = (
+    ("自动", "AUTOMATIC"),
+    ("模糊字符按窄字符", "AMBIGUOUS_NARROW"),
+    ("模糊字符按宽字符", "AMBIGUOUS_WIDE"),
+)
 
 PAGES = (
     PageSpec(
@@ -67,6 +72,23 @@ PAGES = (
             GroupSpec(
                 "历史与缓冲",
                 (FieldSpec("MaxLog", "历史日志行数", "integer", 500),),
+            ),
+            GroupSpec(
+                "文本显示",
+                (
+                    FieldSpec(
+                        "ReplaceFullWidthSpaces",
+                        "以两个半角空格替代全角空格",
+                        wide=True,
+                    ),
+                    FieldSpec(
+                        "CharacterWidthMode",
+                        "字符列宽计算模式",
+                        "select",
+                        choices=CHARACTER_WIDTH_CHOICES,
+                        wide=True,
+                    ),
+                ),
             ),
             GroupSpec(
                 "PRINTC 与换行",

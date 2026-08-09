@@ -1,4 +1,4 @@
-"""Typed frontend projection of the public emuera.config wire contract."""
+"""Typed frontend projection of the public reraconfig.toml wire contract."""
 
 from __future__ import annotations
 
@@ -76,6 +76,7 @@ class ConfigurationSnapshot:
     source_digest: bytes
     entries: tuple[ConfigurationEntry, ...]
     restart_pending: bool
+    generated_source: str | None
 
     @classmethod
     def from_wire(cls, value: Any) -> ConfigurationSnapshot:
@@ -85,17 +86,21 @@ class ConfigurationSnapshot:
         digest = value.get(1)
         entries = value.get(2)
         restart_pending = value.get(3)
+        generated_source = value.get(4)
         if not isinstance(revision, int) or not isinstance(digest, bytes):
             raise ValueError("configuration snapshot has invalid identity")
         if not isinstance(entries, list):
             raise ValueError("configuration snapshot has invalid entries")
         if not isinstance(restart_pending, bool):
             raise ValueError("configuration snapshot has invalid restart status")
+        if generated_source is not None and not isinstance(generated_source, str):
+            raise ValueError("configuration snapshot has invalid generated source")
         return cls(
             revision,
             digest,
             tuple(ConfigurationEntry.from_wire(item) for item in entries),
             restart_pending,
+            generated_source,
         )
 
     @property

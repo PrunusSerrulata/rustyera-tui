@@ -884,6 +884,15 @@ class RuntimeClient:
             return None
         self.configuration_snapshot = snapshot
         read_only = self.bundle is not None and self.bundle.project_file is not None
+        if snapshot.generated_source is not None and self.bundle is not None and not read_only:
+            try:
+                self.bundle.write_configuration(b"", snapshot.generated_source)
+            except (OSError, RuntimeError) as error:
+                self.configuration_snapshot = None
+                self.events.put(
+                    FrontendEvent("error", f"迁移 reraconfig.toml 失败：{error}")
+                )
+                return None
         self.events.put(FrontendEvent("configuration", (snapshot, read_only)))
         return snapshot
 

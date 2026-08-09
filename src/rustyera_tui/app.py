@@ -35,7 +35,7 @@ from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.3.0 (2b3395b3)"
+CORE_VERSION = "0.3.0 (8d8d2560)"
 
 
 def frontend_version() -> str:
@@ -799,6 +799,9 @@ class RustyEraTui(App[None]):
         screen.query_one("#menu-bar").display = True
         viewport = screen.query_one(GameViewport)
         viewport.set_mouse_enabled(snapshot.effective_value("UseMouse", "YES") == "YES")
+        viewport.set_replace_full_width_spaces(
+            snapshot.effective_value("ReplaceFullWidthSpaces", "NO") == "YES"
+        )
 
     def _reset_client_preferences(self) -> None:
         if not self.is_mounted:
@@ -807,6 +810,7 @@ class RustyEraTui(App[None]):
         screen.query_one("#menu-bar").display = True
         viewport = screen.query_one(GameViewport)
         viewport.set_mouse_enabled(True)
+        viewport.set_replace_full_width_spaces(False)
 
     def _choose_path(self, title: str, mode: str, command: str) -> None:
         initial = self.project or Path.cwd()

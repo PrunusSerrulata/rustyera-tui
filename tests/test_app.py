@@ -64,8 +64,8 @@ class FakeWorker:
         del timeout
 
 
-def test_project_settings_schema_contains_exactly_38_visible_fields() -> None:
-    assert len(FIELDS) == 38
+def test_project_settings_schema_contains_exactly_40_visible_fields() -> None:
+    assert len(FIELDS) == 40
 
 
 def configuration_entry(
@@ -103,6 +103,12 @@ def configuration_value(field: FieldSpec) -> tuple[str, int]:
     if field.kind == "color":
         return "0,0,0", 4
     return "", 2
+
+
+def test_tui_adds_only_the_two_requested_text_settings() -> None:
+    assert "ReplaceFullWidthSpaces" in FIELDS
+    assert "CharacterWidthMode" in FIELDS
+    assert "AudioVolume" not in FIELDS
 
 
 async def test_preferences_use_native_compact_controls_and_fit_the_terminal(
@@ -297,7 +303,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.3.0" in contents
-        assert "core 版本：0.3.0 (2b3395b3)" in contents
+        assert "core 版本：0.3.0 (8d8d2560)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 
@@ -792,6 +798,26 @@ async def test_runtime_text_columns_control_terminal_advance(tmp_path: Path) -> 
         assert rendered == "AB■ - "
         assert rendered[:2] == "AB"
         assert cell_len(rendered[:2]) == cell_len(rendered[2:4]) == cell_len(rendered[4:]) == 2
+
+
+async def test_full_width_space_replacement_hotly_rerenders_existing_and_new_lines(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+    first = DisplayLineModel(1, False, True, True, 0, (DisplaySegment("A　B"),))
+    second = DisplayLineModel(2, False, True, True, 0, (DisplaySegment("C　D"),))
+    async with app.run_test(size=(40, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([first])
+        viewport.set_replace_full_width_spaces(True)
+        await pilot.pause()
+        assert app.query_one(GameLine).render().plain == "A  B"
+        assert first.segments[0].text == "A　B"
+
+        await viewport.set_lines([first, second])
+        await pilot.pause()
+        assert [line.render().plain for line in app.query(GameLine)] == ["A  B", "C  D"]
 
 
 async def test_vertical_scrollbar_gutter_does_not_create_transient_horizontal_overflow(

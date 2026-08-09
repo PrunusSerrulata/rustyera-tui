@@ -461,17 +461,30 @@ def test_storage_defaults_to_the_project_directory(
 
 
 def test_configuration_write_is_atomic_and_detects_external_changes(tmp_path: Path) -> None:
-    config = tmp_path / "emuera.config"
-    config.write_text("FontSize:18\n", encoding="utf-8")
+    config = tmp_path / "reraconfig.toml"
+    config.write_text("[display]\nfont_size = 18\n", encoding="utf-8")
     bundle = ProjectBundle.scan(tmp_path)
-    digest = bundle.files["emuera.config"].content_hash
+    digest = bundle.files["reraconfig.toml"].content_hash
     assert digest is not None
 
-    bundle.write_configuration(digest, "FontSize:20\n")
-    assert config.read_text(encoding="utf-8") == "FontSize:20\n"
+    bundle.write_configuration(digest, "[display]\nfont_size = 20\n")
+    assert config.read_text(encoding="utf-8") == "[display]\nfont_size = 20\n"
 
     with pytest.raises(RuntimeError, match="其他程序修改"):
-        bundle.write_configuration(digest, "FontSize:22\n")
+        bundle.write_configuration(digest, "[display]\nfont_size = 22\n")
+
+
+def test_configuration_creation_is_idempotent_and_requires_utf8(tmp_path: Path) -> None:
+    bundle = ProjectBundle.scan(tmp_path)
+    contents = "[meta]\nschema_version = 1\n"
+    bundle.write_configuration(b"", contents)
+    bundle.write_configuration(b"", contents.replace("\n", "\r\n"))
+    assert (tmp_path / "reraconfig.toml").read_text(encoding="utf-8") == contents
+
+    (tmp_path / "reraconfig.toml").write_bytes(b"\x81")
+    invalid = ProjectBundle.scan(tmp_path).files["reraconfig.toml"].payload
+    assert invalid is not None
+    assert unwrap_variant(invalid)[0] == 2
 
 
 def test_packaged_project_configuration_is_read_only(tmp_path: Path) -> None:

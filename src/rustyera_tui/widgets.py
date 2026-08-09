@@ -65,6 +65,7 @@ class GameLine(Static):
         self.hovered_region: int | None = None
         self.interactions_enabled = True
         self.mouse_enabled = True
+        self.replace_full_width_spaces = False
         self.button_focus = DEFAULT_BUTTON_FOCUS
         self.layout_width: int | None = None
         self._projected_width: int | None = None
@@ -100,7 +101,10 @@ class GameLine(Static):
         rows: list[list[tuple[str, DisplaySegment]]] = [[]]
         alignments = [self.line.alignment]
         for segment in self._segments_for_width(render_width):
-            parts = _terminal_segment_text(segment).split("\n")
+            text = _terminal_segment_text(segment)
+            if self.replace_full_width_spaces:
+                text = text.replace("　", "  ")
+            parts = text.split("\n")
             for index, part in enumerate(parts):
                 if segment.alignment is not None:
                     alignments[-1] = segment.alignment
@@ -198,6 +202,12 @@ class GameLine(Static):
     def set_button_focus(self, color: str) -> None:
         if self.button_focus != color:
             self.button_focus = color
+            if self.is_mounted:
+                self._render_line()
+
+    def set_replace_full_width_spaces(self, enabled: bool) -> None:
+        if self.replace_full_width_spaces != enabled:
+            self.replace_full_width_spaces = enabled
             if self.is_mounted:
                 self._render_line()
 
@@ -424,6 +434,7 @@ class GameViewport(ScrollableContainer):
         self.models: list[DisplayLineModel] = []
         self.interactions_enabled = True
         self.mouse_enabled = True
+        self.replace_full_width_spaces = False
         self.presentation_background = "#000000"
         self.button_focus = DEFAULT_BUTTON_FOCUS
         self._horizontal_overflow = False
@@ -474,11 +485,18 @@ class GameViewport(ScrollableContainer):
             if isinstance(child, GameLine):
                 child.mouse_enabled = enabled
 
+    def set_replace_full_width_spaces(self, enabled: bool) -> None:
+        self.replace_full_width_spaces = enabled
+        for child in self.children:
+            if isinstance(child, GameLine):
+                child.set_replace_full_width_spaces(enabled)
+
     def _line_widget(self, line: DisplayLineModel) -> GameLine:
         widget = GameLine(line)
         widget.layout_width = self.content_width
         widget.interactions_enabled = self.interactions_enabled
         widget.mouse_enabled = self.mouse_enabled
+        widget.replace_full_width_spaces = self.replace_full_width_spaces
         widget.button_focus = self.button_focus
         widget.styles.background = self.presentation_background
         return widget

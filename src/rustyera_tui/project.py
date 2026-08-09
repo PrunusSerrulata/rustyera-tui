@@ -53,9 +53,11 @@ def _report_scan_progress(progress: ProjectScanProgress | None, completed: int, 
         progress(completed, total)
 
 
-def _decode_project_source(raw: bytes) -> str:
+def _decode_project_source(raw: bytes, *, strict_utf8: bool = False) -> str:
     """Normalize a project source file to UTF-8 text at the frontend boundary."""
 
+    if strict_utf8:
+        return raw.decode("utf-8-sig")
     try:
         return raw.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -70,6 +72,9 @@ def _decode_project_source(raw: bytes) -> str:
 
 
 def classify_path(path: Path | PurePosixPath) -> int | None:
+    name = path.name.casefold()
+    if name in {"reraconfig.toml", "setting.json"}:
+        return FILE_CONFIGURATION
     suffix = path.suffix.casefold()
     return {
         ".csv": FILE_CSV,
@@ -332,23 +337,29 @@ class ProjectBundle:
         """Atomically replace the editable root config after an optimistic-lock check."""
 
         if self.project_file is not None:
-            raise PermissionError("打包项目中的 emuera.config 为只读")
+            raise PermissionError("打包项目中的 reraconfig.toml 为只读")
         target = next(
             (
                 self.root / PurePosixPath(item.relative_path)
                 for item in self.files.values()
                 if item.category == FILE_CONFIGURATION
                 and "/" not in item.relative_path
-                and item.relative_path.casefold() == "emuera.config"
+                and item.relative_path.casefold() == "reraconfig.toml"
             ),
-            self.root / "emuera.config",
+            self.root / "reraconfig.toml",
         )
         try:
-            current = blake3.blake3(_decode_project_source(target.read_bytes()).encode()).digest()
+            text = _decode_project_source(target.read_bytes(), strict_utf8=True)
+            normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+            current = blake3.blake3(normalized.encode()).digest()
         except FileNotFoundError:
             current = b""
+        requested = contents.replace("\r\n", "\n").replace("\r", "\n")
+        requested_digest = blake3.blake3(requested.encode()).digest()
+        if not expected_digest and current == requested_digest:
+            return
         if current != expected_digest:
-            raise RuntimeError("emuera.config 已被其他程序修改，请重新打开偏好选项")
+            raise RuntimeError("reraconfig.toml 已被其他程序修改，请重新打开偏好选项")
         _atomic_write_text(target, contents)
 
     def resource_bytes(self, resource_id: str, content_digest: bytes) -> bytes:
@@ -414,7 +425,7 @@ class ProjectBundle:
             raise ValueError("the script file must be inside the active project") from error
         category = _classify_project_path(self.root, lexical, _canonical_source_roots(self.root))
         if category not in (FILE_CSV, FILE_ERH, FILE_ERB, FILE_CONFIGURATION):
-            raise ValueError("only .csv, .erh, .erb, and .config files can be reloaded")
+            raise ValueError("only project source and configuration files can be reloaded")
         item = read_project_file(self.root, lexical, category)
         candidate = ProjectBundle(self.root, self.revision + 1, dict(self.files))
         candidate.files[relative] = item
@@ -449,7 +460,9 @@ def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
                 len(raw),
                 path,
             )
-        text = _decode_project_source(raw)
+        text = _decode_project_source(
+            raw, strict_utf8=relative.casefold() == "reraconfig.toml"
+        )
         if category == FILE_RESOURCE_MANIFEST:
             text = _normalize_resource_manifest_paths(text)
         normalized = text.encode("utf-8")
@@ -521,8 +534,10 @@ def _atomic_write_text(path: Path, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(contents)
+        native_contents = contents.replace("\r\n", "\n").replace("\r", "\n")
+        native_contents = native_contents.replace("\n", os.linesep)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            stream.write(native_contents)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)

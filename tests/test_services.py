@@ -642,10 +642,10 @@ def test_packaged_configuration_rejects_restart_fixed_and_non_hot_changes() -> N
 def test_prepared_configuration_writes_and_restarts_without_exposing_wire_maps(
     tmp_path: Path,
 ) -> None:
-    config = tmp_path / "emuera.config"
-    config.write_text("FontSize:18\n", encoding="utf-8")
+    config = tmp_path / "reraconfig.toml"
+    config.write_text("[text]\nfont_size = 18\n", encoding="utf-8")
     bundle = ProjectBundle.scan(tmp_path)
-    digest = bundle.files["emuera.config"].content_hash
+    digest = bundle.files["reraconfig.toml"].content_hash
     assert digest is not None
     client, _captured = client_with_capture()
     client.bundle = bundle
@@ -653,13 +653,13 @@ def test_prepared_configuration_writes_and_restarts_without_exposing_wire_maps(
     recreated: list[ProjectBundle] = []
     client.recreate = recreated.append  # type: ignore[method-assign]
 
-    contents = "FontSize:20\n"
+    contents = "[text]\nfont_size = 20\n"
     prepared_digest = blake3.blake3(contents.encode()).digest()
     client._handle_configuration_prepared(
         {0: 1, 1: digest, 2: contents, 3: False, 4: prepared_digest}, 7
     )
 
-    assert config.read_text(encoding="utf-8") == "FontSize:20\n"
+    assert config.read_text(encoding="utf-8") == "[text]\nfont_size = 20\n"
     client._handle_configuration_committed({0: {0: 1, 1: prepared_digest, 2: [], 3: True}}, 1)
     assert len(recreated) == 1
     events = []
@@ -668,13 +668,25 @@ def test_prepared_configuration_writes_and_restarts_without_exposing_wire_maps(
     assert FrontendEvent("configuration_saved", (True, True)) in events
 
 
+def test_generated_reraconfig_is_persisted_idempotently(tmp_path: Path) -> None:
+    client, _captured = client_with_capture()
+    client.bundle = ProjectBundle.scan(tmp_path)
+    client.configuration_snapshot = None
+    generated = "[meta]\nschema_version = 1\n"
+    wire = {0: 1, 1: blake3.blake3(generated.encode()).digest(), 2: [], 3: False, 4: generated}
+
+    assert client._publish_configuration(wire) is not None
+    assert client._publish_configuration(wire) is not None
+    assert (tmp_path / "reraconfig.toml").read_text(encoding="utf-8") == generated
+
+
 def test_invalid_or_conflicting_prepared_configuration_keeps_session_alive(
     tmp_path: Path,
 ) -> None:
-    config = tmp_path / "emuera.config"
-    config.write_text("FontSize:18\n", encoding="utf-8")
+    config = tmp_path / "reraconfig.toml"
+    config.write_text("[text]\nfont_size = 18\n", encoding="utf-8")
     bundle = ProjectBundle.scan(tmp_path)
-    digest = bundle.files["emuera.config"].content_hash
+    digest = bundle.files["reraconfig.toml"].content_hash
     assert digest is not None
     client, _captured = client_with_capture()
     client.bundle = bundle
@@ -684,14 +696,14 @@ def test_invalid_or_conflicting_prepared_configuration_keeps_session_alive(
     failure = client.events.get_nowait()
     assert failure.kind == "configuration_save_failed"
     assert "保存偏好选项失败" in failure.value
-    assert config.read_text(encoding="utf-8") == "FontSize:18\n"
+    assert config.read_text(encoding="utf-8") == "[text]\nfont_size = 18\n"
     client._handle_configuration_committed({0: {0: 1, 1: digest, 2: [], 3: False}}, 1)
     assert client.pending_configuration is None
     assert client.events.get_nowait().kind == "configuration"
 
-    config.write_text("FontSize:19\n", encoding="utf-8")
+    config.write_text("[text]\nfont_size = 19\n", encoding="utf-8")
     client.pending_configuration = PendingConfigurationPrepare(8, 1, digest, False)
-    contents = "FontSize:20\n"
+    contents = "[text]\nfont_size = 20\n"
     client._handle_configuration_prepared(
         {
             0: 1,
@@ -705,21 +717,21 @@ def test_invalid_or_conflicting_prepared_configuration_keeps_session_alive(
     conflict = client.events.get_nowait()
     assert conflict.kind == "configuration_save_failed"
     assert "其他程序修改" in conflict.value
-    assert config.read_text(encoding="utf-8") == "FontSize:19\n"
+    assert config.read_text(encoding="utf-8") == "[text]\nfont_size = 19\n"
 
 
 def test_invalid_committed_configuration_stops_the_success_path(tmp_path: Path) -> None:
-    config = tmp_path / "emuera.config"
-    config.write_text("UseMouse:YES\n", encoding="utf-8")
+    config = tmp_path / "reraconfig.toml"
+    config.write_text("[interaction]\nuse_mouse = true\n", encoding="utf-8")
     bundle = ProjectBundle.scan(tmp_path)
-    digest = bundle.files["emuera.config"].content_hash
+    digest = bundle.files["reraconfig.toml"].content_hash
     assert digest is not None
     client, _captured = client_with_capture()
     client.bundle = bundle
     client.pending_configuration = PendingConfigurationPrepare(7, 1, digest, True)
     recreated: list[ProjectBundle] = []
     client.recreate = recreated.append  # type: ignore[method-assign]
-    contents = "UseMouse:NO\n"
+    contents = "[interaction]\nuse_mouse = false\n"
     client._handle_configuration_prepared(
         {
             0: 1,
