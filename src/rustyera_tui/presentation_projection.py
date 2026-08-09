@@ -58,7 +58,7 @@ def _escape_html(text: str) -> str:
 
 def plain_run(run: list[Any]) -> str:
     tag, fields = unwrap_variant(run)
-    if tag == 0:
+    if tag in (0, 8):
         return fields[0]
     if tag == 1:
         return "".join(plain_run(child) for child in fields[0])
@@ -71,7 +71,8 @@ def plain_run(run: list[Any]) -> str:
     if tag == 5:
         content, alignment, preferred_columns = fields
         text = "".join(plain_run(child) for child in content)
-        padding = " " * max(0, preferred_columns - cell_len(text))
+        width = sum(_plain_run_columns(child) for child in content)
+        padding = " " * max(0, preferred_columns - width)
         return f"{padding}{text}" if alignment == 1 else f"{text}{padding}"
     if tag == 6:
         pattern = fields[0] or "-"
@@ -84,6 +85,19 @@ def plain_run(run: list[Any]) -> str:
         columns = max(1, round(raw / (1000 if width_tag == 0 else 100)))
         return " " * columns
     return f"[未支持的显示片段 {tag}]"
+
+
+def _plain_run_columns(run: list[Any]) -> int:
+    tag, fields = unwrap_variant(run)
+    if tag == 8:
+        return max(0, int(fields[3]))
+    if tag == 0:
+        return cell_len(fields[0])
+    if tag == 1:
+        return sum(_plain_run_columns(child) for child in fields[0])
+    if tag == 5:
+        return sum(_plain_run_columns(child) for child in fields[0])
+    return cell_len(plain_run(run))
 
 
 def color_hex(color: dict[int, int] | None) -> str:
@@ -135,11 +149,12 @@ def parse_line(line: dict[int, Any]) -> DisplayLineModel:
 
 def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[DisplaySegment]:
     tag, fields = unwrap_variant(run)
-    if tag == 0:  # Text
+    if tag in (0, 8):  # Canonical text or runtime-owned frontend text layout
         text, style = fields[0], parse_style(fields[1])
         return [
             DisplaySegment(
                 text=text,
+                logical_columns=max(0, int(fields[3])) if tag == 8 else None,
                 style=style,
                 token=inherited.token if inherited else None,
                 enabled=inherited.enabled if inherited else True,
@@ -190,16 +205,24 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
         nested: list[DisplaySegment] = []
         for child in content:
             nested.extend(parse_run(child, inherited))
-        plain = "".join(part.text for part in nested)
-        padding = max(0, preferred_columns - cell_len(plain))
+        width = sum(_segment_columns(part) for part in nested)
+        padding = max(0, preferred_columns - width)
         if padding:
             edge = nested[0 if alignment == 1 else -1] if nested else None
             if edge is None:
-                nested = [DisplaySegment(" " * padding)]
+                nested = [DisplaySegment(" " * padding, logical_columns=padding)]
             elif alignment == 1:
-                nested[0] = replace(edge, text=" " * padding + edge.text)
+                nested[0] = replace(
+                    edge,
+                    text=" " * padding + edge.text,
+                    logical_columns=_segment_columns(edge) + padding,
+                )
             else:
-                nested[-1] = replace(edge, text=edge.text + " " * padding)
+                nested[-1] = replace(
+                    edge,
+                    text=edge.text + " " * padding,
+                    logical_columns=_segment_columns(edge) + padding,
+                )
         return nested
     if tag == 6:  # Width-independent separator
         pattern = fields[0] or "-"
@@ -216,12 +239,18 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
 
 def _run_has_system_text_key(run: list[Any], key: int) -> bool:
     tag, fields = unwrap_variant(run)
-    if tag == 0:
+    if tag in (0, 8):
         reference = fields[2] if len(fields) > 2 else None
         return isinstance(reference, dict) and reference.get(0) == key
     if tag in (1, 5):
         return any(_run_has_system_text_key(child, key) for child in fields[0])
     return False
+
+
+def _segment_columns(segment: DisplaySegment) -> int:
+    if segment.logical_columns is not None and "\n" not in segment.text:
+        return segment.logical_columns
+    return cell_len(segment.text)
 
 
 def parse_html_document(

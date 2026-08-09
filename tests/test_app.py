@@ -247,7 +247,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.2.0" in contents
-        assert "core 版本：0.2.0 (6142ff96)" in contents
+        assert "core 版本：0.2.0 (bc381494)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 
@@ -700,6 +700,31 @@ async def test_semantic_separator_tracks_the_viewport_without_wrapping_plain_tex
         await pilot.resize_terminal(37, 30)
         assert cell_len(game_line.render().plain) == viewport.content_width == 35
         assert not viewport.show_horizontal_scrollbar
+
+
+async def test_runtime_text_columns_supplement_terminal_ambiguous_width(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+    line = DisplayLineModel(
+        1,
+        False,
+        True,
+        True,
+        0,
+        (
+            DisplaySegment("■", logical_columns=2),
+            DisplaySegment("- ", logical_columns=2),
+        ),
+    )
+    async with app.run_test(size=(40, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([line])
+        await pilot.pause()
+        rendered = app.query_one(GameLine).render().plain
+
+        assert line.segments[0].text == "■"
+        assert rendered == "■ - "
+        assert cell_len(rendered[:2]) == cell_len(rendered[2:]) == 2
 
 
 async def test_vertical_scrollbar_gutter_does_not_create_transient_horizontal_overflow(

@@ -67,6 +67,41 @@ def test_snapshot_preserves_color_and_button_token() -> None:
     assert model.lines[0].segments[0].token == {0: 1, 1: 1}
 
 
+def test_runtime_text_layout_keeps_service_text_raw_and_columns_recursive() -> None:
+    token = {0: 3, 1: 4}
+    button = variant(
+        1,
+        [variant(8, "■", style(color(255, 255, 255)), None, 2)],
+        token,
+        None,
+        None,
+        variant(0, 1),
+        0,
+        True,
+    )
+    raw = {
+        0: 1,
+        1: False,
+        2: True,
+        3: True,
+        4: 0,
+        5: [
+            variant(5, [button], 0, 2),
+            variant(8, "……", style(color(255, 255, 255)), None, 4),
+        ],
+    }
+
+    parsed = parse_line(raw)
+
+    assert [(segment.text, segment.logical_columns) for segment in parsed.segments] == [
+        ("■", 2),
+        ("……", 4),
+    ]
+    assert parsed.segments[0].token == token
+    assert plain_line(raw) == "■……"
+    assert html_printed_str([raw], 0) == "<p align='left'><nobr>■……</nobr></p>"
+
+
 def test_tui_table_width_policy_uses_the_game_menu_bounds() -> None:
     assert MIN_TABLE_COLUMN_WIDTH == 16
     assert MAX_TABLE_COLUMN_WIDTH == 24

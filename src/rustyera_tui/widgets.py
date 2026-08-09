@@ -100,7 +100,7 @@ class GameLine(Static):
         rows: list[list[tuple[str, DisplaySegment]]] = [[]]
         alignments = [self.line.alignment]
         for segment in self._segments_for_width(render_width):
-            parts = segment.text.split("\n")
+            parts = _terminal_segment_text(segment).split("\n")
             for index, part in enumerate(parts):
                 if segment.alignment is not None:
                     alignments[-1] = segment.alignment
@@ -343,7 +343,7 @@ def _project_column_group(
             cell.alignment,
             column_width,
         )
-        content_width = sum(cell_len(segment.text) for segment in content)
+        content_width = sum(_segment_columns(segment) for segment in content)
         result.extend(content)
         cursor += content_width
         cells_on_row += 1
@@ -356,17 +356,18 @@ def _pad_column_cell(
     column_width: int,
 ) -> list[DisplaySegment]:
     result = list(content)
-    content_width = sum(cell_len(segment.text) for segment in result)
+    content_width = sum(_segment_columns(segment) for segment in result)
     padding = max(0, column_width - content_width)
     if not padding:
         return result
     if not result:
-        return [DisplaySegment(" " * padding)]
+        return [DisplaySegment(" " * padding, logical_columns=padding)]
     edge_index = 0 if alignment == 1 else -1
     edge = result[edge_index]
     result[edge_index] = replace(
         edge,
         text=(" " * padding + edge.text) if alignment == 1 else (edge.text + " " * padding),
+        logical_columns=_segment_columns(edge) + padding,
     )
     return result
 
@@ -382,11 +383,24 @@ def _last_row_width(segments: list[DisplaySegment]) -> int:
     width = 0
     for segment in reversed(segments):
         if "\n" not in segment.text:
-            width += cell_len(segment.text)
+            width += _segment_columns(segment)
             continue
         width += cell_len(segment.text.rsplit("\n", 1)[-1])
         break
     return width
+
+
+def _segment_columns(segment: DisplaySegment) -> int:
+    if segment.logical_columns is not None and "\n" not in segment.text:
+        return segment.logical_columns
+    return cell_len(segment.text)
+
+
+def _terminal_segment_text(segment: DisplaySegment) -> str:
+    if segment.logical_columns is None or "\n" in segment.text:
+        return segment.text
+    padding = max(0, segment.logical_columns - cell_len(segment.text))
+    return segment.text + " " * padding
 
 
 class GameViewport(ScrollableContainer):
@@ -549,7 +563,7 @@ def _projected_line_width(line: DisplayLineModel, width: int) -> int:
     widest = 0
     current = 0
     for segment in _project_responsive_segments(line, width):
-        parts = segment.text.split("\n")
+        parts = _terminal_segment_text(segment).split("\n")
         for index, part in enumerate(parts):
             current += cell_len(part)
             if index + 1 < len(parts):

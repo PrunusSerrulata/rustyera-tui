@@ -31,6 +31,7 @@ class DisplaySegment:
     generation: int | None = None
     alignment: int | None = None
     right_edge: bool = False
+    logical_columns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
