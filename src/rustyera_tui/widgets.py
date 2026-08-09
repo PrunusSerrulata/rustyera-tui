@@ -393,10 +393,10 @@ class GameViewport(ScrollableContainer):
     """Incrementally reconcile presentation lines while retaining scroll position."""
 
     class ContinueRequested(Message):
-        """A non-button viewport click may satisfy a pure Enter wait."""
+        """A non-button viewport click may satisfy an Enter or AnyKey wait."""
 
-    class SkipEnterRequested(Message):
-        """A secondary click requests continuous message-skip for Enter waits."""
+    class SkipMessageRequested(Message):
+        """A secondary click requests continuous skipping for a message wait."""
 
     class HorizontalOverflowChanged(Message):
         def __init__(self, visible: bool) -> None:
@@ -438,7 +438,7 @@ class GameViewport(ScrollableContainer):
         if event.button == 1:
             self.post_message(self.ContinueRequested())
         elif event.button == 3:
-            self.post_message(self.SkipEnterRequested())
+            self.post_message(self.SkipMessageRequested())
 
     def disable_interactions(self) -> None:
         self.interactions_enabled = False

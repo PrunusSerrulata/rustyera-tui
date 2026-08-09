@@ -112,13 +112,13 @@ class RuntimeWorker(threading.Thread):
             return
         wait_bound_input = command.kind in {
             "submit_text",
-            "skip_enter_waits",
+            "skip_message_waits",
             "activate",
             "input_undo",
         }
         submitted_wait = client.active_wait if wait_bound_input else None
         try:
-            if command.kind in {"submit_text", "skip_enter_waits", "activate", "input_undo"}:
+            if command.kind in {"submit_text", "skip_message_waits", "activate", "input_undo"}:
                 client.defer_compiled_cache_refresh()
             match command.kind:
                 case "load_project":
@@ -157,8 +157,8 @@ class RuntimeWorker(threading.Thread):
                     client.reload_file(Path(command.value))
                 case "submit_text":
                     client.submit_text(str(command.value))
-                case "skip_enter_waits":
-                    client.skip_enter_waits()
+                case "skip_message_waits":
+                    client.skip_message_waits()
                 case "activate":
                     client.activate(command.value)
                 case "input_undo":

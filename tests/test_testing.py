@@ -89,6 +89,24 @@ def test_scenario_rejects_snapshot_without_path(tmp_path: Path) -> None:
         Scenario.load(path)
 
 
+def test_scenario_accepts_rust_only_message_skip_action(tmp_path: Path) -> None:
+    project = tmp_path / "game"
+    project.mkdir()
+    path = tmp_path / "scenario.json"
+    write_scenario(path, project, inputs=[{"action": "skip_message"}])
+
+    assert Scenario.load(path).inputs == ({"action": "skip_message"},)
+
+    write_scenario(
+        path,
+        project,
+        inputs=[{"action": "skip_message"}],
+        comparison={"reference": True},
+    )
+    with pytest.raises(TestDriverError, match="cannot be compared"):
+        Scenario.load(path)
+
+
 def test_reference_commands_are_accepted_as_quoted_command_lines() -> None:
     parsed = build_parser().parse_args(
         [

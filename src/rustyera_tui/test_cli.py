@@ -171,11 +171,14 @@ def execute(args: argparse.Namespace) -> int:
                 return 0
             wait_kind = decorated["rust"]["wait"]["kind"]
             value: str | None = "" if wait_kind == 0 else None
+            input_action = "input"
             source = "automatic_enter" if value is not None else "fixed"
             while value is None and input_index < len(scenario.inputs):
                 item = scenario.inputs[input_index]
                 input_index += 1
                 value = _step_value(item, decorated["rust"])
+                if value is not None:
+                    input_action = str(item.get("action", "input"))
             if value is None and args.command == "serve":
                 request_line = sys.stdin.readline()
                 if not request_line:
@@ -215,8 +218,19 @@ def execute(args: argparse.Namespace) -> int:
                     status = "goal_not_met"
                 trace.emit({"type": "result", "status": status, "trace": str(trace_path)})
                 return 0 if status == "passed" else 2 if status == "input_exhausted" else 1
-            trace.emit({"type": "input", "step": step + 1, "source": source, "value": value})
-            rust.submit(value)
+            trace.emit(
+                {
+                    "type": "input",
+                    "step": step + 1,
+                    "source": source,
+                    "action": input_action,
+                    "value": value,
+                }
+            )
+            if input_action == "skip_message":
+                rust.skip_message()
+            else:
+                rust.submit(value)
             reference_observation = reference.step(value, scenario.watches) if reference else None
             step += 1
             rust_observation = rust.wait_observation(deadline)

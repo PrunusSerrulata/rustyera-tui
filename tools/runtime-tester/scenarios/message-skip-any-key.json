@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/message_skip",
+  "mode": "fixed",
+  "seed": 1126218542,
+  "inputs": [{ "action": "skip_message" }],
+  "goal": {
+    "output_contains": ["after-any-key", "before-skip-barrier"],
+    "wait_kind": 0
+  },
+  "limits": { "max_steps": 4, "timeout_seconds": 60 }
+}

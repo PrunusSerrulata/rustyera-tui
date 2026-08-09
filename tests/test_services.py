@@ -492,12 +492,12 @@ def test_debug_paused_client_does_not_submit_state_changing_gameplay_input() -> 
     assert "暂不提交游戏输入" in event.value
 
 
-def test_message_skip_is_submitted_once_and_runtime_owns_the_continuation() -> None:
+def test_message_skip_accepts_enter_and_any_key_waits_once() -> None:
     client, captured = client_with_capture()
     first = {0: 10, 1: 0, 4: False, 11: {0: 1, 1: 10}}
     client._set_active_wait(first)
 
-    client.skip_enter_waits()
+    client.skip_message_waits()
     client._set_active_wait(first)
     client._set_active_wait(None)
     client._set_active_wait({0: 11, 1: 0, 4: False, 11: {0: 1, 1: 11}})
@@ -506,6 +506,14 @@ def test_message_skip_is_submitted_once_and_runtime_owns_the_continuation() -> N
     assert [submission[0] for submission in submissions] == [10]
     assert all(submission[3] == [0, []] for submission in submissions)
     assert all(submission[4] for submission in submissions)
+
+    captured.clear()
+    client._set_active_wait({0: 12, 1: 1, 4: False, 11: {0: 1, 1: 12}})
+    client.skip_message_waits()
+    any_key = [value for tag, value in captured if tag == 30]
+    assert len(any_key) == 1
+    assert any_key[0][3] == [1, ["\n"]]
+    assert any_key[0][4] is True
 
 
 def test_configuration_update_uses_authoritative_snapshot_and_open_effect_is_supported() -> None:

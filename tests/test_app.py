@@ -336,7 +336,7 @@ async def test_project_progress_shows_real_completed_work(tmp_path: Path) -> Non
         assert prompt.placeholder == "Runtime 正在运行…"
 
 
-async def test_viewport_click_submits_only_a_plain_enter_wait(tmp_path: Path) -> None:
+async def test_viewport_and_keyboard_submit_message_waits_once(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
@@ -347,14 +347,64 @@ async def test_viewport_click_submits_only_a_plain_enter_wait(tmp_path: Path) ->
 
         app._activated_wait = None
         await pilot.click("#game-viewport", offset=(10, 5), button=3)
-        assert ("skip_enter_waits", None) in worker.commands
+        assert ("skip_message_waits", None) in worker.commands
 
         worker.commands.clear()
-        app.active_wait = {0: 8, 1: 2}
+        app._activated_wait = None
+        app.active_wait = {0: 8, 1: 1}
+        await pilot.click("#game-viewport", offset=(10, 5))
+        assert worker.commands == [("submit_text", "")]
+
+        worker.commands.clear()
+        app._activated_wait = None
+        await pilot.click("#game-viewport", offset=(10, 5), button=3)
+        assert worker.commands == [("skip_message_waits", None)]
+
+        worker.commands.clear()
+        app._activated_wait = None
+        await pilot.press("space")
+        assert worker.commands == [("submit_text", " ")]
+
+        worker.commands.clear()
+        app._activated_wait = None
+        app.active_wait = {0: 9, 1: 1, 11: {0: 2, 1: 9}}
+        await pilot.press("space")
+        await pilot.click("#game-viewport", offset=(10, 5))
+        await pilot.click("#game-viewport", offset=(10, 5), button=3)
+        app.query_one("#prompt", Input).focus()
+        await pilot.press("enter")
+        assert worker.commands == [("submit_text", " ")]
+
+        worker.commands.clear()
+        app._activated_wait = None
+        app.active_wait = {0: 10, 1: 1, 4: True, 11: {0: 2, 1: 10}}
+        await pilot.click("#game-viewport", offset=(10, 5), button=3)
+        assert worker.commands == []
+        assert app._activated_wait is None
+        await pilot.click("#game-viewport", offset=(10, 5))
+        assert worker.commands == [("submit_text", "")]
+
+        worker.commands.clear()
+        app._activated_wait = None
+        app.active_wait = {0: 11, 1: 2}
         await pilot.click("#game-viewport", offset=(10, 5))
         await pilot.click("#game-viewport", offset=(10, 5), button=3)
         assert ("submit_text", "") not in worker.commands
-        assert ("skip_enter_waits", None) not in worker.commands
+        assert ("skip_message_waits", None) not in worker.commands
+
+
+async def test_game_any_key_does_not_cross_an_application_dialog(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.active_wait = {0: 7, 1: 1, 11: {0: 1, 1: 7}}
+        app.push_screen(AboutDialog("test", CORE_VERSION))
+        await pilot.pause()
+
+        await pilot.press("space")
+
+        assert worker.commands == []
 
 
 async def test_horizontal_scrollbar_replaces_the_prompt_separator(tmp_path: Path) -> None:
@@ -1201,7 +1251,7 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         worker.commands.clear()
         app.active_wait = {0: 7, 1: 0}
         assert await pilot.click(".game-line", offset=(1, 0), button=3)
-        assert ("skip_enter_waits", None) in worker.commands
+        assert ("skip_message_waits", None) in worker.commands
         assert not any(kind == "activate" for kind, _value in worker.commands)
 
         worker.commands.clear()
@@ -1342,11 +1392,11 @@ async def test_snapshot_export_locks_gameplay_and_uses_a_timestamped_name(
         assert prompt.placeholder == "VM 快照导出中……"
         assert not viewport.interactions_enabled
         app.on_game_viewport_continue_requested(None)  # type: ignore[arg-type]
-        app.on_game_viewport_skip_enter_requested(None)  # type: ignore[arg-type]
+        app.on_game_viewport_skip_message_requested(None)  # type: ignore[arg-type]
         app.action_input_undo()
         assert ("export_snapshot", (target, "normal")) in worker.commands
         assert not any(
-            kind in ("submit_text", "skip_enter_waits", "input_undo")
+            kind in ("submit_text", "skip_message_waits", "input_undo")
             for kind, _value in worker.commands
         )
 

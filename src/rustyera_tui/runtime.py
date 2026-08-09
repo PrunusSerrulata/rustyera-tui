@@ -25,6 +25,7 @@ from .configuration import (
 )
 from .diagnosis import diagnosis_project_name, write_diagnosis_archive
 from .image_metadata import decode_image_metadata
+from .input_policy import is_message_skip_wait, is_message_wait, message_wait_intent
 from .log_model import LogLevel
 from .presentation import (
     ServicePresentationModel,
@@ -1219,10 +1220,8 @@ class RuntimeClient:
             self.events.put(log_event("当前没有可提交的输入等待。", LogLevel.WARNING))
             return
         kind = wait[1]
-        if kind == 0:
-            intent = variant(0)
-        elif kind == 1:
-            intent = variant(1, text or "\n")
+        if is_message_wait(wait):
+            intent = message_wait_intent(wait, text or "\n")
         elif kind in (2, 3, 5, 6, 7):
             intent = variant(2, text)
         elif kind == 4:
@@ -1249,11 +1248,12 @@ class RuntimeClient:
             return
         self._submit_input(self.active_wait, variant(3, button_token))
 
-    def skip_enter_waits(self) -> None:
+    def skip_message_waits(self) -> None:
         wait = self.active_wait
-        if wait is None or wait.get(1) != 0 or wait.get(4, False):
+        if not is_message_skip_wait(wait):
             return
-        self._submit_input(wait, variant(0), message_skip=True)
+        intent = message_wait_intent(wait)
+        self._submit_input(wait, intent, message_skip=True)
 
     def _submit_input(
         self,

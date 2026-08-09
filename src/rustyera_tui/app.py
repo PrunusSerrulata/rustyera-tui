@@ -29,6 +29,7 @@ from .dialogs import (
     VariableRefresh,
 )
 from .diagnosis import diagnosis_default_path, diagnosis_project_name
+from .input_policy import is_message_skip_wait, is_message_wait
 from .log_model import LogEntry, LogLevel, LogMessage, format_log_entries, make_log_entry
 from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
@@ -907,6 +908,21 @@ class RustyEraTui(App[None]):
         if self._submit_active_wait("submit_text", event.value):
             event.input.value = ""
 
+    def on_key(self, event: events.Key) -> None:
+        if (
+            len(self.screen_stack) != 1
+            or self._game_interactions_blocked()
+            or self.active_wait is None
+            or not is_message_wait(self.active_wait)
+            or self.active_wait.get(1) != 1
+            or event.key in {"alt", "ctrl", "meta", "shift", "super"}
+            or "+" in event.key
+        ):
+            return
+        if self._submit_active_wait("submit_text", event.character or ""):
+            event.prevent_default()
+            event.stop()
+
     def on_stack_dialog_ready(self, _event: StackDialog.Ready) -> None:
         if not self._debug_interactions_blocked():
             self.worker.send("debug_action", ("fibers", None))
@@ -969,19 +985,19 @@ class RustyEraTui(App[None]):
         if (
             not self._game_interactions_blocked()
             and self.active_wait is not None
-            and self.active_wait.get(1) == 0
+            and is_message_wait(self.active_wait)
         ):
             self._submit_active_wait("submit_text", "")
 
-    def on_game_viewport_skip_enter_requested(
-        self, _event: GameViewport.SkipEnterRequested
+    def on_game_viewport_skip_message_requested(
+        self, _event: GameViewport.SkipMessageRequested
     ) -> None:
         if (
             not self._game_interactions_blocked()
             and self.active_wait is not None
-            and self.active_wait.get(1) == 0
+            and is_message_skip_wait(self.active_wait)
         ):
-            self._submit_active_wait("skip_enter_waits", None)
+            self._submit_active_wait("skip_message_waits", None)
 
     def on_game_viewport_horizontal_overflow_changed(
         self, event: GameViewport.HorizontalOverflowChanged

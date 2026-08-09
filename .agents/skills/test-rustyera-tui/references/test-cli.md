@@ -10,7 +10,9 @@ Use JSON `schema_version: 1`.
 - `seed`: Optional non-negative signed 32-bit integer. When absent, the driver generates a random
   seed and records it. It applies only to `new_game`.
 - `inputs`: Fixed prefix. An item is a string/integer or `{ "value": ..., "when": {
-  "output_contains": ... } }`.
+  "output_contains": ... } }`. Use `{ "action": "skip_message" }` to submit the visible
+  Enter/AnyKey wait with continuous message skipping in Rust-only scenarios; reference comparison
+  is unavailable for that frontend gesture.
 - `watches`: Debug expressions evaluated at stable waits on Rust and with reference `watch`.
 - `goal`: AND-combined `output_contains`, `wait_kind`, `termination`, `watch_equals`,
   `line_count_lte`, and `status_contains` assertions.
