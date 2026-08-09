@@ -247,7 +247,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.2.0" in contents
-        assert "core 版本：0.2.0 (bc381494)" in contents
+        assert "core 版本：0.2.0 (e968fe62)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 
