@@ -526,7 +526,10 @@ def test_storage_enforces_revision_preconditions_and_lists_root(tmp_path: Path) 
     assert chunk_fields[:3] == [b"t", 0, False]
 
 
-def test_data_storage_reads_and_lists_packaged_project_files(tmp_path: Path) -> None:
+@pytest.mark.parametrize("namespace", [0, 3])
+def test_project_data_storage_fallbacks_preserve_private_writes(
+    tmp_path: Path, namespace: int
+) -> None:
     project = tmp_path / "game"
     xml = project / "XML"
     xml.mkdir(parents=True)
@@ -534,12 +537,33 @@ def test_data_storage_reads_and_lists_packaged_project_files(tmp_path: Path) -> 
     skill.write_text("<skilldef />", encoding="utf-8")
     backend = StorageBackend(project, data_root=tmp_path / "frontend-data")
 
-    read = backend.handle({0: 1, 1: 3, 2: "XML/SKILL_LIFE.xml", 3: variant(0), 4: ""})
+    read = backend.handle({0: 1, 1: namespace, 2: "XML/SKILL_LIFE.xml", 3: variant(0), 4: ""})
     assert unwrap_variant(read[1])[1][0] == b"<skilldef />"
 
-    listed = backend.handle({0: 2, 1: 3, 2: "XML", 3: variant(2, "SKILL*.xml", False), 4: ""})
+    listed = backend.handle(
+        {0: 2, 1: namespace, 2: "XML", 3: variant(2, "SKILL*.xml", False), 4: ""}
+    )
     entries = unwrap_variant(listed[1])[1][0]
     assert [entry[0] for entry in entries] == ["XML/SKILL_LIFE.xml"]
+
+    private_skill = backend._namespace_root(namespace) / "XML" / "SKILL_LIFE.xml"
+    private_skill.parent.mkdir(parents=True)
+    private_skill.write_text("<private />", encoding="utf-8")
+    override = backend.handle({0: 3, 1: namespace, 2: "XML/SKILL_LIFE.xml", 3: variant(0), 4: ""})
+    assert unwrap_variant(override[1])[1][0] == b"<private />"
+
+    written = backend.handle(
+        {
+            0: 4,
+            1: namespace,
+            2: "XML/SKILL_LIFE.xml",
+            3: variant(1, b"<written />", True, variant(0)),
+            4: "write-private",
+        }
+    )
+    assert unwrap_variant(written[1])[0] == 1
+    assert private_skill.read_bytes() == b"<written />"
+    assert skill.read_bytes() == b"<skilldef />"
 
 
 def test_storage_defaults_to_the_project_directory(
