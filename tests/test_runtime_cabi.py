@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import queue
 import shutil
+import tarfile
 import time
 from pathlib import Path
 from typing import Callable
 
 import pytest
+import zstandard
 
 from rustyera_tui.abi import DEFAULT_MAXIMUM_VM_INSTRUCTIONS, AbiError, RuntimeAbi, discover_library
 from rustyera_tui.project import ProjectBundle, StorageBackend
@@ -565,6 +567,45 @@ def test_real_c_abi_exports_appends_and_reopens_packaged_configuration(
     finally:
         packaged_worker.stop()
         packaged_worker.join(timeout=5)
+
+
+@pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
+def test_real_c_abi_diagnosis_contains_a_parseable_full_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "minimal"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "minimal", project)
+    target = tmp_path / "minimal-diagnosis.tar.zst"
+    worker = RuntimeWorker(RUNTIME_LIBRARY, project)
+    worker.start()
+    try:
+        wait_for(worker, lambda event: event.kind == "project_loaded")
+        wait_for_input(worker)
+        worker.send("export_diagnosis", (target, "complete log\n", "minimal"))
+        finished = wait_for(worker, lambda event: event.kind == "diagnosis_export_finished")
+        assert finished.value == (True, str(target))
+        wait_for_path(worker, target)
+    finally:
+        worker.stop()
+        worker.join(timeout=5)
+
+    with target.open("rb") as compressed:
+        with zstandard.ZstdDecompressor().stream_reader(compressed) as stream:
+            with tarfile.open(fileobj=stream, mode="r|") as archive:
+                project_file = next(
+                    archive.extractfile(member).read()
+                    for member in archive
+                    if member.isfile() and member.name.endswith(".reraproj")
+                )
+    assert project_file.startswith(b"RERAPROJ")
+    abi = RuntimeAbi(RUNTIME_LIBRARY, resource_directory=project)
+    try:
+        manifest = abi.project_file_manifest(project_file)
+    finally:
+        abi.destroy_session()
+    assert manifest[0] == 1
+    assert manifest[1]
 
 
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")

@@ -40,7 +40,7 @@ def write_diagnosis_archive(
     project_name: str,
     snapshot: bytes,
     logs: str,
-    compiled_artifact: bytes,
+    project_file: bytes,
     exported_at: datetime | None = None,
 ) -> None:
     """Atomically write a zstd-compressed tar archive without exposing partial output."""
@@ -53,7 +53,7 @@ def write_diagnosis_archive(
     members = (
         ("runtime.snapshot", snapshot),
         ("runtime.log", logs.encode("utf-8")),
-        (f"{project_name}.reraproj", compiled_artifact),
+        (f"{project_name}.reraproj", project_file),
     )
     try:
         with os.fdopen(descriptor, "wb") as output:

@@ -92,7 +92,7 @@ class DiagnosisExport:
     project_name: str
     logs: str
     snapshot: bytes | None = None
-    compiled_artifact: bytes | None = None
+    project_file: bytes | None = None
     stage: str = "snapshot"
     retry_after_ns: int = 0
 
@@ -735,7 +735,7 @@ class RuntimeClient:
                 self.pending_export_message = None
                 if stage == 4 and value.get(0) == 0 and self.pending_diagnosis is not None:
                     self.pending_export_kind = None
-                    self.pending_diagnosis.stage = "artifact_wait"
+                    self.pending_diagnosis.stage = "project_wait"
                     self.pending_diagnosis.retry_after_ns = (
                         time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
                     )
@@ -1246,11 +1246,11 @@ class RuntimeClient:
             if self.pending_diagnosis.stage == "export_wait" and self.pending_export is None:
                 self._start_diagnosis_snapshot_export()
             elif (
-                self.pending_diagnosis.stage == "artifact_wait"
+                self.pending_diagnosis.stage == "project_wait"
                 and self.pending_export is None
                 and time.monotonic_ns() >= self.pending_diagnosis.retry_after_ns
             ):
-                self._start_diagnosis_artifact_export()
+                self._request_diagnosis_project_export()
             return
         if (
             self.cache_refresh_pending
@@ -1522,11 +1522,18 @@ class RuntimeClient:
             self.cache_preparation_started = False
             self.cache_refresh_pending = True
             self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
+        self._stage_full_project_manifest(cancelled)
+        self.full_project_export = FullProjectExport(path, AtomicExportStream.open(path))
+        self._request_project_file_export()
+
+    def _stage_full_project_manifest(
+        self, cancelled: Callable[[], bool] | None = None
+    ) -> None:
+        if self.bundle is None:
+            raise RuntimeError("no project is active")
         if self.bundle.project_file is None:
             full_bundle = self.bundle.materialize(self._project_scan_progress, cancelled)
             self.send_runtime(70, {0: full_bundle.manifest()})
-        self.full_project_export = FullProjectExport(path, AtomicExportStream.open(path))
-        self._request_project_file_export()
 
     def _request_project_file_export(self) -> None:
         export = self.full_project_export
@@ -1637,18 +1644,18 @@ class RuntimeClient:
             if self.pending_diagnosis is None:
                 raise RuntimeError("diagnosis export state is missing")
             self.pending_diagnosis.snapshot = bytes(data)
-            self._start_diagnosis_artifact_export()
+            self._start_diagnosis_project_export()
         elif export_kind == 4:
             if self.pending_diagnosis is None:
                 raise RuntimeError("diagnosis export state is missing")
-            self.pending_diagnosis.compiled_artifact = bytes(data)
+            self.pending_diagnosis.project_file = bytes(data)
             try:
                 write_diagnosis_archive(
                     self.pending_diagnosis.target,
                     project_name=self.pending_diagnosis.project_name,
                     snapshot=self.pending_diagnosis.snapshot or b"",
                     logs=self.pending_diagnosis.logs,
-                    compiled_artifact=self.pending_diagnosis.compiled_artifact,
+                    project_file=self.pending_diagnosis.project_file,
                 )
             except Exception as error:  # noqa: BLE001 - report filesystem/compression failures
                 self._finish_diagnosis_export(False, str(error))
@@ -1660,14 +1667,25 @@ class RuntimeClient:
             self.events.put(FrontendEvent("snapshot_export_finished", True))
             self.events.put(FrontendEvent("status", f"VM 快照已导出到 {path}"))
 
-    def _start_diagnosis_artifact_export(self) -> None:
+    def _start_diagnosis_project_export(self) -> None:
         diagnosis = self.pending_diagnosis
         if diagnosis is None:
             return
-        diagnosis.stage = "artifact"
+        try:
+            self._stage_full_project_manifest()
+        except Exception as error:  # noqa: BLE001 - report project scan failures to the UI
+            self._finish_diagnosis_export(False, str(error))
+            return
+        diagnosis.stage = "project"
+        self._request_diagnosis_project_export()
+
+    def _request_diagnosis_project_export(self) -> None:
+        diagnosis = self.pending_diagnosis
+        if diagnosis is None:
+            return
         self.pending_export = (diagnosis.target, bytearray(), None)
         self.pending_export_kind = 4
-        self.pending_export_message = self.send_runtime(60, {0: 2, 1: 0})
+        self.pending_export_message = self.send_runtime(60, {0: 3, 1: 0})
 
     def _finish_diagnosis_export(self, success: bool, message: str) -> None:
         self.pending_export = None

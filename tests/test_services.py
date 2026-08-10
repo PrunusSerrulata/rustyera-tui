@@ -423,6 +423,94 @@ def test_diagnosis_export_waits_for_an_existing_state_transfer(tmp_path: Path) -
     assert client.pending_diagnosis.stage == "snapshot"
 
 
+def test_diagnosis_exports_a_full_project_and_retries_without_rescanning(
+    tmp_path: Path,
+) -> None:
+    client, captured = client_with_capture()
+    manifest = {0: 1, 1: []}
+    materializations = 0
+
+    def materialize(_progress: object, _cancelled: object) -> SimpleNamespace:
+        nonlocal materializations
+        materializations += 1
+        return SimpleNamespace(manifest=lambda: manifest)
+
+    client.bundle = SimpleNamespace(project_file=None, materialize=materialize)
+    target = tmp_path / "diagnosis.tar.zst"
+    snapshot = b"snapshot"
+    project_file = b"RERAPROJproject"
+
+    client.export_diagnosis(target, "complete log\n", "diagnosis fixture")
+    snapshot_descriptor = {
+        0: 11,
+        1: 3,
+        2: len(snapshot),
+        3: blake3.blake3(snapshot).digest(),
+    }
+    client.pending_export = (target, bytearray(), snapshot_descriptor)
+    client._handle_export_chunk({0: 11, 1: 0, 2: snapshot, 3: True})
+
+    assert materializations == 1
+    assert captured[-2:] == [(70, {0: manifest}), (60, {0: 3, 1: 0})]
+    assert client.pending_diagnosis is not None
+    assert client.pending_diagnosis.stage == "project"
+
+    client._handle_runtime(95, {0: 0, 1: "full project preparation started"}, 1)
+    assert client.pending_diagnosis is not None
+    assert client.pending_diagnosis.stage == "project_wait"
+    client.pending_diagnosis.retry_after_ns = 0
+    client.maybe_refresh_compiled_cache()
+
+    assert materializations == 1
+    assert captured[-1] == (60, {0: 3, 1: 0})
+    project_descriptor = {
+        0: 12,
+        1: 3,
+        2: len(project_file),
+        3: blake3.blake3(project_file).digest(),
+    }
+    client.pending_export = (target, bytearray(), project_descriptor)
+    client._handle_export_chunk({0: 12, 1: 0, 2: project_file, 3: True})
+
+    assert target.exists()
+    assert client.pending_diagnosis is None
+    assert client.pending_export_kind is None
+    assert client.events.get_nowait() == FrontendEvent(
+        "diagnosis_export_finished", (True, str(target))
+    )
+
+
+def test_diagnosis_project_scan_failure_releases_the_export_state(tmp_path: Path) -> None:
+    client, _captured = client_with_capture()
+
+    def fail_materialize(_progress: object, _cancelled: object) -> None:
+        raise OSError("scan failed")
+
+    client.bundle = SimpleNamespace(
+        project_file=None,
+        materialize=fail_materialize,
+    )
+    target = tmp_path / "diagnosis.tar.zst"
+    snapshot = b"snapshot"
+
+    client.export_diagnosis(target, "complete log\n", "diagnosis fixture")
+    descriptor = {
+        0: 11,
+        1: 3,
+        2: len(snapshot),
+        3: blake3.blake3(snapshot).digest(),
+    }
+    client.pending_export = (target, bytearray(), descriptor)
+    client._handle_export_chunk({0: 11, 1: 0, 2: snapshot, 3: True})
+
+    assert client.pending_diagnosis is None
+    assert client.pending_export is None
+    assert client.pending_export_kind is None
+    assert client.events.get_nowait() == FrontendEvent(
+        "diagnosis_export_finished", (False, "scan failed")
+    )
+
+
 def test_rejected_input_reports_the_still_active_wait_to_the_app() -> None:
     client, _captured = client_with_capture()
     wait = {0: 7, 1: 6, 11: {0: 1, 1: 2}}

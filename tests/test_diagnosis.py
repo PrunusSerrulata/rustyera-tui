@@ -24,7 +24,7 @@ def test_diagnosis_archive_has_the_required_named_payloads(tmp_path: Path) -> No
         project_name="eraThe World",
         snapshot=b"snapshot",
         logs="first\nlast\n",
-        compiled_artifact=b"artifact",
+        project_file=b"RERAPROJartifact",
         exported_at=datetime(2026, 7, 26, 14, 5, 6),
     )
 
@@ -39,7 +39,7 @@ def test_diagnosis_archive_has_the_required_named_payloads(tmp_path: Path) -> No
     assert members == {
         "runtime.snapshot": b"snapshot",
         "runtime.log": b"first\nlast\n",
-        "eraThe World.reraproj": b"artifact",
+        "eraThe World.reraproj": b"RERAPROJartifact",
     }
 
 
