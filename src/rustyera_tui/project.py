@@ -35,6 +35,7 @@ FILE_CONFIGURATION = 5
 
 RESOURCE_IMAGE_SUFFIXES = frozenset({".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"})
 RESOURCE_AUDIO_SUFFIXES = frozenset({".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"})
+RESOURCE_FONT_SUFFIXES = frozenset({".otf", ".ttc", ".ttf", ".woff", ".woff2"})
 DEFAULT_MAXIMUM_ENVELOPE_BYTES = 128 * 1024 * 1024
 DEFAULT_MAXIMUM_PAYLOAD_BYTES = 127 * 1024 * 1024
 MAXIMUM_PROJECT_ENVELOPE_BYTES = 1024 * 1024 * 1024
@@ -622,6 +623,8 @@ def _classify_project_path(root: Path, path: Path, canonical_roots: frozenset[st
         return None
     if first == "sound":
         return FILE_RESOURCE if path.suffix.lower() in RESOURCE_AUDIO_SUFFIXES else None
+    if first == "font":
+        return FILE_RESOURCE if path.suffix.lower() in RESOURCE_FONT_SUFFIXES else None
     category = classify_path(path)
     if category is None:
         return None

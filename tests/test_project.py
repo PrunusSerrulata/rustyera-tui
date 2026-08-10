@@ -129,12 +129,40 @@ def test_project_scanners_include_only_audio_from_the_sound_directory(tmp_path: 
     assert quick.materialize().identity() == scanned.identity()
 
 
+def test_project_scanners_include_supported_fonts_as_binary_resources(tmp_path: Path) -> None:
+    fonts = tmp_path / "FoNt"
+    fonts.mkdir()
+    for name in (
+        "regular.ttf",
+        "display.otf",
+        "collection.ttc",
+        "web.woff",
+        "web2.woff2",
+    ):
+        (fonts / name).write_bytes(name.encode())
+    (fonts / "license.txt").write_text("not packaged", encoding="utf-8")
+
+    scanned = ProjectBundle.scan(tmp_path)
+    quick = ProjectBundle.scan_quick(tmp_path)
+
+    assert list(scanned.files) == [
+        "FoNt/collection.ttc",
+        "FoNt/display.otf",
+        "FoNt/regular.ttf",
+        "FoNt/web.woff",
+        "FoNt/web2.woff2",
+    ]
+    assert all(file.category == FILE_RESOURCE for file in scanned.files.values())
+    assert quick.materialize().manifest() == scanned.manifest()
+
+
 def test_project_scanners_share_the_cross_frontend_cache_contract(tmp_path: Path) -> None:
     resources = tmp_path / "resources"
     sound = tmp_path / "sound"
+    fonts = tmp_path / "font"
     nested = tmp_path / "sub"
     private = tmp_path / ".RUSTYERA" / "cache"
-    for directory in (resources, sound, nested, private):
+    for directory in (resources, sound, fonts, nested, private):
         directory.mkdir(parents=True)
     decomposed = "e\u0301.png"
     (resources / decomposed).write_bytes(b"png")
@@ -146,6 +174,7 @@ def test_project_scanners_share_the_cross_frontend_cache_contract(tmp_path: Path
     )
     (resources / "sprites.csv").write_text(manifest, encoding="utf-8", newline="")
     (sound / "theme.MP3").write_bytes(b"audio")
+    (fonts / "Project.ttf").write_bytes(b"font")
     (sound / "ignored.erb").write_text("@IGNORED", encoding="utf-8")
     (private / "ignored.erb").write_text("@PRIVATE", encoding="utf-8")
     (tmp_path / "reraconfig.toml").write_text("[display]\nfont_size = 20\n", encoding="utf-8")
@@ -154,8 +183,10 @@ def test_project_scanners_share_the_cross_frontend_cache_contract(tmp_path: Path
     (tmp_path / "z.erb").write_text("@ASCII\nRETURN\n", encoding="utf-8")
 
     scanned = ProjectBundle.scan(tmp_path)
+    quick = ProjectBundle.scan_quick(tmp_path)
 
     assert list(scanned.files) == [
+        "font/Project.ttf",
         "reraconfig.toml",
         "resources/sprites.csv",
         "resources/é.png",
@@ -164,15 +195,17 @@ def test_project_scanners_share_the_cross_frontend_cache_contract(tmp_path: Path
         "z.erb",
         "é.erb",
     ]
-    assert [file.category for file in scanned.files.values()] == [5, 3, 4, 4, 5, 2, 2]
+    assert [file.category for file in scanned.files.values()] == [4, 5, 3, 4, 4, 5, 2, 2]
     assert scanned.files["resources/sprites.csv"].payload == variant(
         0,
         "FACE, \té.png \t\r\nANIME, \tAnImE\t \nNOTE,\u00a0é.png\u00a0\rMETA,a\u0085b",
     )
     assert scanned.files["sub/reraconfig.toml"].payload == variant(0, "あ\n")
     assert scanned.identity()[1].hex() == (
-        "50fbe8e1e7ad5492e29fab4b229ad35d31ccde47f9c078df86c1ee5c30ed7255"
+        "2554d3820c88d26cf3ddd33ba9896e9cc6397ce28669772cd0abd60539b2ae2b"
     )
+    assert quick.identity() == scanned.identity()
+    assert quick.materialize().identity() == scanned.identity()
 
 
 def test_project_scanners_normalize_resource_paths_and_manifests_to_nfc(tmp_path: Path) -> None:
