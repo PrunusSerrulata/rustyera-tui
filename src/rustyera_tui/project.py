@@ -382,7 +382,7 @@ class ProjectBundle:
             current = b""
         requested = contents.replace("\r\n", "\n").replace("\r", "\n")
         requested_digest = blake3.blake3(requested.encode()).digest()
-        if not expected_digest and current == requested_digest:
+        if current == requested_digest:
             return
         if current != expected_digest:
             raise RuntimeError("reraconfig.toml 已被其他程序修改，请重新打开偏好选项")

@@ -35,6 +35,9 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client.pending_export_message = None
     client.pending_export_kind = None
     client.pending_diagnosis = None
+    client.pending_start_after_configuration = None
+    client.pending_restore = None
+    client.new_game_seed = None
     client.configuration_profile_supported = True
     client.abi = SimpleNamespace(
         supports_project_configuration_updates=True,
@@ -712,15 +715,56 @@ def test_prepared_configuration_writes_and_restarts_without_exposing_wire_maps(
 
 
 def test_generated_reraconfig_is_persisted_idempotently(tmp_path: Path) -> None:
-    client, _captured = client_with_capture()
+    client, captured = client_with_capture()
     client.bundle = ProjectBundle.scan(tmp_path)
     client.configuration_snapshot = None
-    generated = "[meta]\nschema_version = 1\n"
-    wire = {0: 1, 1: blake3.blake3(generated.encode()).digest(), 2: [], 3: False, 4: generated}
+    client.pending_configuration = None
+    generated = "[meta]\nschema_version = 2\n"
+    wire = {0: 1, 1: b"", 2: [], 3: False, 4: generated}
 
     assert client._publish_configuration(wire) is not None
     assert client._publish_configuration(wire) is not None
     assert (tmp_path / "reraconfig.toml").read_text(encoding="utf-8") == generated
+    assert [command for command in captured if command[0] == 24] == [(24, {0: 1, 1: b"", 2: []})]
+
+
+def test_upgraded_reraconfig_uses_the_original_source_digest(tmp_path: Path) -> None:
+    original = "[meta]\nschema_version = 1\n[text]\nfont_size = 20\n"
+    generated = "[meta]\nschema_version = 2\n[text]\nfont_size = 20\n"
+    (tmp_path / "reraconfig.toml").write_text(original, encoding="utf-8")
+    client, captured = client_with_capture()
+    client.bundle = ProjectBundle.scan(tmp_path)
+    client.pending_configuration = None
+    wire = {
+        0: 1,
+        1: blake3.blake3(original.encode()).digest(),
+        2: [],
+        3: False,
+        4: generated,
+    }
+
+    assert client._publish_configuration(wire) is not None
+    assert (tmp_path / "reraconfig.toml").read_text(encoding="utf-8") == generated
+    pending = client.pending_configuration
+    assert isinstance(pending, PendingConfigurationPrepare)
+    assert pending.automatic
+    generated_digest = blake3.blake3(generated.encode()).digest()
+    client._handle_configuration_prepared(
+        {0: 1, 1: pending.source_digest, 2: generated, 3: False, 4: generated_digest},
+        pending.message_id,
+    )
+    client.pending_start_after_configuration = False
+    client._handle_configuration_committed(
+        {0: {0: 1, 1: generated_digest, 2: [], 3: False, 4: None}},
+        1,
+    )
+    assert captured[-1] == (20, {0: variant(0, None)})
+
+    client.prepare_configuration_update([ConfigurationChange("FontSize", "22")])
+    assert captured[-1] == (
+        24,
+        {0: 1, 1: generated_digest, 2: [{0: "FontSize", 1: "22"}]},
+    )
 
 
 def test_invalid_or_conflicting_prepared_configuration_keeps_session_alive(

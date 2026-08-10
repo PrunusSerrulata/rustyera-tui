@@ -64,8 +64,8 @@ class FakeWorker:
         del timeout
 
 
-def test_project_settings_schema_contains_exactly_40_visible_fields() -> None:
-    assert len(FIELDS) == 40
+def test_project_settings_schema_contains_exactly_39_visible_fields() -> None:
+    assert len(FIELDS) == 39
 
 
 def configuration_entry(
@@ -303,7 +303,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.3.0" in contents
-        assert "core 版本：0.3.0 (ca7b14a3)" in contents
+        assert "core 版本：0.3.0 (0e83e76f)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 

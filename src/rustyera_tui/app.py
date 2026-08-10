@@ -35,7 +35,7 @@ from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.3.0 (ca7b14a3)"
+CORE_VERSION = "0.3.0 (0e83e76f)"
 
 
 def frontend_version() -> str:

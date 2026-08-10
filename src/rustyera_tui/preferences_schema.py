@@ -241,10 +241,6 @@ PAGES = (
                     FieldSpec("ZipSaveData", "压缩二进制存档"),
                 ),
             ),
-            GroupSpec(
-                "配置文件输出",
-                (FieldSpec("EnglishConfigOutput", "用英文键名保存 CONFIG 文件"),),
-            ),
         ),
         True,
     ),

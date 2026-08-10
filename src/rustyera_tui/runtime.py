@@ -112,6 +112,7 @@ class PendingConfigurationPrepare:
     source_digest: bytes
     restart: bool
     session_only: bool = False
+    automatic: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +132,7 @@ class PendingConfigurationFinalize:
     preparation_message_id: int
     restart: bool
     outcome: PreparedConfigurationCommit | PreparedConfigurationAbort
+    automatic: bool = False
 
 
 class RuntimeClient:
@@ -182,6 +184,7 @@ class RuntimeClient:
         self.pending_configuration: (
             PendingConfigurationPrepare | PendingConfigurationFinalize | None
         ) = None
+        self.pending_start_after_configuration: bool | None = None
         self.configuration_snapshot: ConfigurationSnapshot | None = None
         self.configuration_profile_supported = False
         self.project_file_export_retry_after_ns = 0
@@ -252,6 +255,7 @@ class RuntimeClient:
         self.cache_refresh_after_ns = 0
         self.cache_preparation_started = False
         self.pending_configuration = None
+        self.pending_start_after_configuration = None
         self.configuration_snapshot = None
         self.configuration_profile_supported = False
 
@@ -657,6 +661,15 @@ class RuntimeClient:
                 and correlation_id == pending_configuration.finalize_message_id
             )
             if configuration_rejection:
+                if pending_configuration.automatic:
+                    self.pending_start_after_configuration = None
+                    self.configuration_snapshot = None
+                    self.events.put(
+                        FrontendEvent(
+                            "error",
+                            f"确认 reraconfig.toml 迁移失败：{rejection}",
+                        )
+                    )
                 self.pending_configuration = None
             if cache_export_rejection:
                 self.pending_export = None
@@ -845,6 +858,14 @@ class RuntimeClient:
                 scenario=self.startup_scenario,
                 cache_hit=cache_hit,
             )
+        if isinstance(self.pending_configuration, PendingConfigurationPrepare) and (
+            self.pending_configuration.automatic
+        ):
+            self.pending_start_after_configuration = cache_hit
+            return
+        self._continue_project_start(cache_hit)
+
+    def _continue_project_start(self, cache_hit: bool) -> None:
         if self.pending_restore is not None:
             _path, payload, purpose = self.pending_restore
             kind = 0 if purpose == "traditional_save" else 1
@@ -874,7 +895,9 @@ class RuntimeClient:
             scenario=self.startup_scenario,
         )
 
-    def _publish_configuration(self, value: Any) -> ConfigurationSnapshot | None:
+    def _publish_configuration(
+        self, value: Any, *, confirm_generated: bool = True
+    ) -> ConfigurationSnapshot | None:
         if value is None:
             return None
         try:
@@ -891,13 +914,13 @@ class RuntimeClient:
         if snapshot.generated_source is not None and self.bundle is not None and not read_only:
             try:
                 self.bundle = self._write_configuration(
-                    self.bundle, b"", snapshot.generated_source
+                    self.bundle, snapshot.source_digest, snapshot.generated_source
                 )
+                if confirm_generated and self.pending_configuration is None:
+                    self._begin_configuration_update(snapshot, [], False, False, True)
             except (OSError, RuntimeError, UnicodeError, ValueError) as error:
                 self.configuration_snapshot = None
-                self.events.put(
-                    FrontendEvent("error", f"迁移 reraconfig.toml 失败：{error}")
-                )
+                self.events.put(FrontendEvent("error", f"迁移 reraconfig.toml 失败：{error}"))
                 return None
         self.events.put(FrontendEvent("configuration", (snapshot, read_only)))
         return snapshot
@@ -927,6 +950,16 @@ class RuntimeClient:
                 for change in changes
             ):
                 raise PermissionError("项目文件仅支持当前会话内即时生效的设置")
+        self._begin_configuration_update(snapshot, changes, restart, session_only, False)
+
+    def _begin_configuration_update(
+        self,
+        snapshot: ConfigurationSnapshot,
+        changes: list[ConfigurationChange],
+        restart: bool,
+        session_only: bool,
+        automatic: bool,
+    ) -> None:
         message_id = self.send_runtime(24, snapshot.prepare_wire(changes))
         self.pending_configuration = PendingConfigurationPrepare(
             message_id,
@@ -934,6 +967,7 @@ class RuntimeClient:
             snapshot.source_digest,
             restart,
             session_only,
+            automatic,
         )
 
     def _handle_configuration_prepared(
@@ -975,6 +1009,7 @@ class RuntimeClient:
                 pending.message_id,
                 pending.restart,
                 PreparedConfigurationAbort(message),
+                pending.automatic,
             )
             self.events.put(FrontendEvent("configuration_save_failed", message))
             return
@@ -984,6 +1019,7 @@ class RuntimeClient:
             pending.message_id,
             pending.restart,
             PreparedConfigurationCommit(value, candidate),
+            pending.automatic,
         )
 
     def _write_configuration(
@@ -1012,7 +1048,12 @@ class RuntimeClient:
             self.events.put(log_event("忽略了非预期的配置提交响应", LogLevel.WARNING))
             return
         self.pending_configuration = None
-        snapshot = self._publish_configuration(committed.get(0))
+        automatic_abort = pending.automatic and isinstance(
+            pending.outcome, PreparedConfigurationAbort
+        )
+        snapshot = self._publish_configuration(
+            committed.get(0), confirm_generated=not automatic_abort
+        )
         if snapshot is None:
             self.events.put(
                 FrontendEvent(
@@ -1022,8 +1063,23 @@ class RuntimeClient:
             )
             return
         if isinstance(pending.outcome, PreparedConfigurationAbort):
+            if pending.automatic:
+                self.pending_start_after_configuration = None
+                self.configuration_snapshot = None
+                self.events.put(
+                    FrontendEvent(
+                        "error",
+                        "确认 reraconfig.toml 迁移失败；请重新加载项目",
+                    )
+                )
             return
         outcome = pending.outcome
+        if pending.automatic:
+            cache_hit = self.pending_start_after_configuration
+            self.pending_start_after_configuration = None
+            if cache_hit is not None:
+                self._continue_project_start(cache_hit)
+            return
         if outcome.candidate is None:
             self.events.put(FrontendEvent("configuration_session_applied"))
         else:
