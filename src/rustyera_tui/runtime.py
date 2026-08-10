@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import blake3
 from rich.cells import cell_len
@@ -98,6 +98,47 @@ class DiagnosisExport:
 
 
 @dataclass(slots=True)
+class AtomicExportStream:
+    target: Path
+    temporary: Path
+    stream: Any
+    hasher: Any
+    received: int = 0
+
+    @classmethod
+    def open(cls, target: Path) -> AtomicExportStream:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        return cls(target, Path(temporary), os.fdopen(descriptor, "wb"), blake3.blake3())
+
+    def write(self, data: bytes) -> None:
+        if self.stream.write(data) != len(data):
+            raise OSError("project export was not written completely")
+        self.hasher.update(data)
+        self.received += len(data)
+
+    def finish(self, expected_size: int, expected_digest: bytes) -> None:
+        if self.received != expected_size or self.hasher.digest() != expected_digest:
+            raise RuntimeError("project export digest verification failed")
+        self.stream.flush()
+        os.fsync(self.stream.fileno())
+        self.stream.close()
+        os.replace(self.temporary, self.target)
+
+    def cancel(self) -> None:
+        if not self.stream.closed:
+            self.stream.close()
+        self.temporary.unlink(missing_ok=True)
+
+
+@dataclass(slots=True)
+class FullProjectExport:
+    target: Path
+    stream: AtomicExportStream
+    retry_after_ns: int = 0
+
+
+@dataclass(slots=True)
 class PendingGameInput:
     wait: dict[int, Any]
     intent: list[Any]
@@ -178,16 +219,16 @@ class RuntimeClient:
         self.cache_ready = False
         self.cache_refresh_after_ns = 0
         self.cache_preparation_started = False
+        self.pending_cache_stream: AtomicExportStream | None = None
         self.allow_compiled_cache_load = True
         self.pending_project_file_bytes: bytes | None = None
-        self.pending_project_file_export_path: Path | None = None
+        self.full_project_export: FullProjectExport | None = None
         self.pending_configuration: (
             PendingConfigurationPrepare | PendingConfigurationFinalize | None
         ) = None
         self.pending_start_after_configuration: bool | None = None
         self.configuration_snapshot: ConfigurationSnapshot | None = None
         self.configuration_profile_supported = False
-        self.project_file_export_retry_after_ns = 0
         self.debug_requested = False
         self.debug_grant: dict[int, Any] | None = None
         self.stop_token: dict[int, Any] | None = None
@@ -254,6 +295,12 @@ class RuntimeClient:
         self.cache_ready = False
         self.cache_refresh_after_ns = 0
         self.cache_preparation_started = False
+        if self.pending_cache_stream is not None:
+            self.pending_cache_stream.cancel()
+            self.pending_cache_stream = None
+        if self.full_project_export is not None:
+            self.full_project_export.stream.cancel()
+            self.full_project_export = None
         self.pending_configuration = None
         self.pending_start_after_configuration = None
         self.configuration_snapshot = None
@@ -704,12 +751,12 @@ class RuntimeClient:
                 self.pending_export_kind = None
                 self.pending_export_message = None
                 if value.get(0) == 0:
-                    self.project_file_export_retry_after_ns = (
-                        time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
-                    )
+                    if self.full_project_export is not None:
+                        self.full_project_export.retry_after_ns = (
+                            time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
+                        )
                 else:
-                    self.pending_project_file_export_path = None
-                    self.events.put(FrontendEvent("project_file_export_finished", False))
+                    self._finish_project_file_export(False)
             elif configuration_rejection:
                 self.events.put(
                     FrontendEvent("configuration_save_failed", f"保存设置被拒绝：{rejection}")
@@ -1173,7 +1220,10 @@ class RuntimeClient:
         if self.storage is None:
             self._finish_cache_export(False)
             return
-        self.pending_export = (self.storage.compiled_cache_path(), bytearray(), None)
+        cache_path = self.storage.compiled_cache_path()
+        if self.pending_cache_stream is None:
+            self.pending_cache_stream = AtomicExportStream.open(cache_path)
+        self.pending_export = (cache_path, bytearray(), None)
         if not self.cache_preparation_started:
             self.cache_preparation_started = True
             self.events.put(FrontendEvent("status", "正在后台生成项目文件…"))
@@ -1181,9 +1231,9 @@ class RuntimeClient:
 
     def maybe_refresh_compiled_cache(self) -> None:
         if (
-            getattr(self, "pending_project_file_export_path", None) is not None
+            self.full_project_export is not None
             and self.pending_export is None
-            and time.monotonic_ns() >= getattr(self, "project_file_export_retry_after_ns", 0)
+            and time.monotonic_ns() >= self.full_project_export.retry_after_ns
         ):
             self._request_project_file_export()
             return
@@ -1453,19 +1503,39 @@ class RuntimeClient:
         self.pending_export_kind = 1
         self.pending_export_message = self.send_runtime(60, {0: 1, 1: purpose_id})
 
-    def export_project_file(self, path: Path) -> None:
+    def export_project_file(self, path: Path, cancelled: Callable[[], bool] | None = None) -> None:
         if self.bundle is None:
             raise RuntimeError("no project is active")
-        self.pending_project_file_export_path = path
+        if self.pending_export_kind == 2 or self.cache_preparation_started:
+            self.send_runtime(71, {0: 2})
+            self.pending_export = None
+            self.pending_cache_export_message = None
+            self.pending_export_kind = None
+            if self.pending_cache_stream is not None:
+                self.pending_cache_stream.cancel()
+                self.pending_cache_stream = None
+            self.cache_preparation_started = False
+            self.cache_refresh_pending = True
+            self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
+        if self.bundle.project_file is None:
+            full_bundle = self.bundle.materialize(self._project_scan_progress, cancelled)
+            self.send_runtime(70, {0: full_bundle.manifest()})
+        self.full_project_export = FullProjectExport(path, AtomicExportStream.open(path))
         self._request_project_file_export()
 
     def _request_project_file_export(self) -> None:
-        path = self.pending_project_file_export_path
-        if path is None:
+        export = self.full_project_export
+        if export is None:
             return
-        self.pending_export = (path, bytearray(), None)
+        self.pending_export = (export.target, bytearray(), None)
         self.pending_export_kind = 5
-        self.pending_export_message = self.send_runtime(60, {0: 2, 1: 0})
+        self.pending_export_message = self.send_runtime(60, {0: 3, 1: 0})
+
+    def cancel_project_file_export(self) -> None:
+        if self.pending_export_kind != 5 and self.full_project_export is None:
+            return
+        self.send_runtime(71, {0: 3})
+        self._finish_project_file_export(None, "已取消导出全量项目文件")
 
     def export_diagnosis(self, path: Path, logs: str, project_name: str) -> None:
         if self.bundle is None:
@@ -1505,9 +1575,7 @@ class RuntimeClient:
             if self.pending_export_kind == 2:
                 self._finish_cache_export(False)
             elif self.pending_export_kind == 5:
-                self.pending_export_kind = None
-                self.pending_project_file_export_path = None
-                self.events.put(FrontendEvent("project_file_export_finished", False))
+                self._finish_project_file_export(False)
             elif self.pending_export_kind in (3, 4):
                 self._finish_diagnosis_export(False, f"当前状态不能导出：{reasons}")
             else:
@@ -1523,26 +1591,43 @@ class RuntimeClient:
         if self.pending_export is None:
             return
         path, data, descriptor = self.pending_export
-        if descriptor is None or chunk[0] != descriptor[0] or chunk[1] != len(data):
+        stream = (
+            self.full_project_export.stream
+            if self.pending_export_kind == 5 and self.full_project_export is not None
+            else self.pending_cache_stream
+            if self.pending_export_kind == 2
+            else None
+        )
+        received = stream.received if stream is not None else len(data)
+        if descriptor is None or chunk[0] != descriptor[0] or chunk[1] != received:
             raise RuntimeError("snapshot export chunk is out of sequence")
-        data.extend(chunk[2])
+        if self.pending_export_kind in (2, 5):
+            if stream is None:
+                raise RuntimeError("export stream is missing")
+            stream.write(bytes(chunk[2]))
+        else:
+            data.extend(chunk[2])
         if not chunk[3]:
-            self.send_runtime(67, {0: descriptor[0], 1: len(data), 2: 1024 * 1024})
+            self.send_runtime(67, {0: descriptor[0], 1: received + len(chunk[2]), 2: 1024 * 1024})
             return
-        if len(data) != descriptor[2] or blake3.blake3(data).digest() != descriptor[3]:
+        if self.pending_export_kind not in (2, 5) and (
+            len(data) != descriptor[2] or blake3.blake3(data).digest() != descriptor[3]
+        ):
             raise RuntimeError("snapshot export digest verification failed")
         export_kind = self.pending_export_kind
         self.pending_export = None
         self.pending_export_message = None
         if export_kind == 2:
-            _atomic_write(path, data)
+            if self.pending_cache_stream is None:
+                raise RuntimeError("cache export stream is missing")
+            self.pending_cache_stream.finish(descriptor[2], descriptor[3])
+            self.pending_cache_stream = None
             self._finish_cache_export(True)
         elif export_kind == 5:
-            _atomic_write(path, data)
-            self.pending_export_kind = None
-            self.pending_project_file_export_path = None
-            self.events.put(FrontendEvent("project_file_export_finished", True))
-            self.events.put(FrontendEvent("status", f"项目文件已导出到 {path}"))
+            if self.full_project_export is None:
+                raise RuntimeError("project export stream is missing")
+            self.full_project_export.stream.finish(descriptor[2], descriptor[3])
+            self._finish_project_file_export(True, f"项目文件已导出到 {path}")
         elif export_kind == 3:
             if self.pending_diagnosis is None:
                 raise RuntimeError("diagnosis export state is missing")
@@ -1587,6 +1672,11 @@ class RuntimeClient:
         self.events.put(FrontendEvent("diagnosis_export_finished", (success, message)))
 
     def _finish_cache_export(self, success: bool) -> None:
+        self.pending_export = None
+        self.pending_export_message = None
+        if not success and self.pending_cache_stream is not None:
+            self.pending_cache_stream.cancel()
+            self.pending_cache_stream = None
         after = self.pending_cache_after
         self.pending_cache_after = None
         self.pending_export_kind = None
@@ -1621,6 +1711,19 @@ class RuntimeClient:
                     "status", "项目文件缓存已保存。" if success else "项目文件缓存保存失败。"
                 )
             )
+
+    def _finish_project_file_export(self, success: bool | None, status: str | None = None) -> None:
+        export = self.full_project_export
+        if success is not True and export is not None:
+            export.stream.cancel()
+        self.full_project_export = None
+        self.pending_export = None
+        self.pending_export_kind = None
+        self.pending_export_message = None
+        self.events.put(FrontendEvent("project_file_export_finished", success))
+        self.events.put(FrontendEvent("project_progress_finished"))
+        if status is not None:
+            self.events.put(FrontendEvent("status", status))
 
     def _handle_import_accepted(self, accepted: dict[int, Any]) -> None:
         if self.import_bytes is None:

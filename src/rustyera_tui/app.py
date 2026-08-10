@@ -20,6 +20,7 @@ from .dialogs import (
     AboutDialog,
     ConfirmDialog,
     DebugConsoleDialog,
+    ExportProgressDialog,
     FatalErrorDialog,
     LogDialog,
     PathDialog,
@@ -35,7 +36,7 @@ from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.3.0 (0e83e76f)"
+CORE_VERSION = "0.3.0 (b7f8a8f3)"
 
 
 def frontend_version() -> str:
@@ -74,7 +75,7 @@ class RustyEraTui(App[None]):
         ("file-reload-all", "重新载入所有脚本"),
         ("file-reload-folder", "重新载入文件夹..."),
         ("file-reload-file", "重新载入脚本文件..."),
-        ("file-export-project", "导出项目文件..."),
+        ("file-export-project", "导出全量项目文件..."),
         ("file-export-snapshot", "导出当前VM快照..."),
         ("file-restore-snapshot", "恢复VM快照..."),
         ("file-exit", "退出"),
@@ -119,6 +120,7 @@ class RustyEraTui(App[None]):
         "正在验证编译结果",
         "正在整理编译结果",
         "正在准备 Runtime 资源",
+        "正在打包全量项目文件",
     )
 
     def __init__(
@@ -158,6 +160,7 @@ class RustyEraTui(App[None]):
         self.exit_pending = False
         self.snapshot_exporting = False
         self.project_file_exporting = False
+        self.export_progress_dialog: ExportProgressDialog | None = None
         self.diagnosis_exporting = False
         self.presentation_rendering = False
         self._presentation_dirty = False
@@ -170,6 +173,7 @@ class RustyEraTui(App[None]):
         self.progress_loss_dialog: ConfirmDialog | None = None
         self.fault_logs = ""
         self.project_progress_active = False
+        self.project_progress_blocks_interaction = False
         self.project_progress_message = ""
         self.configuration_snapshot: ConfigurationSnapshot | None = None
         self.configuration_read_only = False
@@ -229,7 +233,13 @@ class RustyEraTui(App[None]):
             await self._commit_presentation()
 
     async def _commit_presentation(self) -> None:
-        viewport = self.query_one(GameViewport)
+        try:
+            viewport = self.query_one(GameViewport)
+        except NoMatches:
+            self._presentation_dirty = False
+            self._presentation_commit_ready = False
+            self.presentation_rendering = False
+            return
         changed_from, trimmed_prefix = self.presentation.take_render_change()
         with self.batch_update():
             viewport.set_button_focus(self.presentation.button_focus)
@@ -300,15 +310,22 @@ class RustyEraTui(App[None]):
             self._set_status(str(value))
         elif kind == "project_progress":
             self._update_project_progress(*value)
+        elif kind == "project_progress_finished":
+            self._finish_project_progress()
         elif kind == "snapshot_export_finished":
             self.snapshot_exporting = False
             self._update_prompt()
             self._refresh_interaction_lock()
         elif kind == "project_file_export_finished":
+            dialog = self.export_progress_dialog
+            self.export_progress_dialog = None
+            if dialog is not None and dialog.is_mounted:
+                dialog.dismiss(True)
             self.project_file_exporting = False
+            self._finish_project_progress()
             self._update_prompt()
             self._refresh_interaction_lock()
-            if not value:
+            if value is False:
                 self.notify("项目文件导出失败", severity="error")
         elif kind == "diagnosis_export_finished":
             self.diagnosis_exporting = False
@@ -454,9 +471,11 @@ class RustyEraTui(App[None]):
         else:
             self.query_one("#prompt", Input).placeholder = message
 
-    def _begin_project_progress(self, message: str) -> None:
-        self._cancel_progress_loss_confirmation()
+    def _begin_project_progress(self, message: str, *, blocks_interaction: bool = True) -> None:
+        if blocks_interaction:
+            self._cancel_progress_loss_confirmation()
         self.project_progress_active = True
+        self.project_progress_blocks_interaction = blocks_interaction
         self.project_progress_message = message
         if self.is_mounted:
             self._update_prompt()
@@ -471,12 +490,17 @@ class RustyEraTui(App[None]):
         percent = min(100, completed * 100 // total) if total > 0 else 100
         filled = percent * 20 // 100
         bar = f"[{'█' * filled}{'░' * (20 - filled)}]"
+        message = f"{self.PROJECT_PROGRESS_LABELS[stage]}：{completed}/{total} {bar} {percent}%"
+        if self.project_file_exporting and self.export_progress_dialog is not None:
+            self.export_progress_dialog.update_progress(message)
         self._begin_project_progress(
-            f"{self.PROJECT_PROGRESS_LABELS[stage]}：{completed}/{total} {bar} {percent}%"
+            message,
+            blocks_interaction=stage != 9 or self.project_file_exporting,
         )
 
     def _finish_project_progress(self) -> None:
         self.project_progress_active = False
+        self.project_progress_blocks_interaction = False
         self.project_progress_message = ""
         if self.is_mounted:
             self._update_prompt()
@@ -521,7 +545,7 @@ class RustyEraTui(App[None]):
             prompt.disabled = True
             prompt.placeholder = "页面渲染中……"
             return
-        if self.project_progress_active:
+        if self.project_progress_active and self.project_progress_blocks_interaction:
             self._set_prompt_state("prompt-running")
             prompt.disabled = True
             prompt.placeholder = self.project_progress_message
@@ -714,7 +738,7 @@ class RustyEraTui(App[None]):
             self._choose_path("重新载入脚本文件", "file", "reload_file")
         elif item_id == "file-export-project":
             self.push_screen(
-                PathDialog("导出项目文件", "save", self._project_file_default_path()),
+                PathDialog("导出全量项目文件", "save", self._project_file_default_path()),
                 self._start_project_file_export,
             )
         elif item_id == "file-export-snapshot":
@@ -761,7 +785,7 @@ class RustyEraTui(App[None]):
             and self.runtime_phase == expected_phase
             and self._runtime_menu_actions_available()
             and self.blocking_error is None
-            and not self.project_progress_active
+            and not self.project_progress_blocks_interaction
         ):
             self.worker.send(command)
 
@@ -772,6 +796,8 @@ class RustyEraTui(App[None]):
         self.progress_loss_dialog = None
         if dialog.is_mounted:
             dialog.dismiss(False)
+        if self.is_mounted:
+            self.query_one("#menu-file", Button).focus()
 
     def action_preferences(self) -> None:
         if self.configuration_snapshot is None:
@@ -857,7 +883,18 @@ class RustyEraTui(App[None]):
         self.project_file_exporting = True
         self._update_prompt()
         self._refresh_interaction_lock()
+        self.export_progress_dialog = ExportProgressDialog()
+        self.push_screen(self.export_progress_dialog, self._finish_project_file_progress_dialog)
         self.worker.send("export_project_file", path)
+
+    def _finish_project_file_progress_dialog(self, completed: bool | None) -> None:
+        if completed or not self.project_file_exporting:
+            return
+        self.export_progress_dialog = None
+        self.project_file_exporting = False
+        self._update_prompt()
+        self._refresh_interaction_lock()
+        self.worker.send("cancel_project_file_export")
 
     def _start_diagnosis_export(self, path: Path | None) -> None:
         if path is None or self.diagnosis_exporting:

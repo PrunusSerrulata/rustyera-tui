@@ -42,11 +42,12 @@ class StorageBackend:
     def compiled_cache_path(self) -> Path:
         """Return the frontend-private opaque compiler cache path for this project."""
 
-        return self.data_root / ".rustyera" / "cache" / "compiled-project.reraproj"
+        return self.data_root / ".rustyera" / "cache" / "compiled-project.reracache"
 
     def obsolete_compiled_cache_paths(self) -> tuple[Path, ...]:
         root = self.data_root / ".rustyera" / "cache"
         return (
+            root / "compiled-project.reraproj",
             root / "compiled-project-v8.bin.zst",
             root / "compiled-project-v7.bin.zst",
             root / "compiled-project-v6.bin.zst",

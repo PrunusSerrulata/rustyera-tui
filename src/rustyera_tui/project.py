@@ -34,6 +34,7 @@ FILE_RESOURCE = 4
 FILE_CONFIGURATION = 5
 
 RESOURCE_IMAGE_SUFFIXES = frozenset({".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"})
+RESOURCE_AUDIO_SUFFIXES = frozenset({".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"})
 DEFAULT_MAXIMUM_ENVELOPE_BYTES = 128 * 1024 * 1024
 DEFAULT_MAXIMUM_PAYLOAD_BYTES = 127 * 1024 * 1024
 MAXIMUM_PROJECT_ENVELOPE_BYTES = 1024 * 1024 * 1024
@@ -271,13 +272,19 @@ class ProjectBundle:
             item.payload is not None for item in self.files.values()
         )
 
-    def materialize(self, progress: ProjectScanProgress | None = None) -> ProjectBundle:
+    def materialize(
+        self,
+        progress: ProjectScanProgress | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> ProjectBundle:
         if self.is_materialized:
             return self
         if progress is not None:
             progress(0, len(self.files))
         files: dict[str, ProjectFile] = {}
         for index, item in enumerate(self.files.values(), 1):
+            if cancelled is not None and cancelled():
+                raise InterruptedError("full project export cancelled")
             materialized = item
             source_path = materialized.source_path or (
                 self.root / PurePosixPath(materialized.relative_path)
@@ -424,6 +431,14 @@ class ProjectBundle:
         if self.project_file is not None:
             raise RuntimeError("a packaged project cannot reload source files")
         candidate = ProjectBundle.scan(self.root, self.revision + 1, progress)
+        if self.quick_scan_pending:
+            changes = [
+                variant(0, item.submitted())
+                for item in sorted(
+                    candidate.files.values(), key=lambda value: value.relative_path.casefold()
+                )
+            ]
+            return candidate, {0: self.revision, 1: candidate.revision, 2: changes}
         changes: list[Any] = []
         for relative_path in sorted(set(self.files) | set(candidate.files), key=str.casefold):
             old = self.files.get(relative_path)
@@ -440,6 +455,8 @@ class ProjectBundle:
     def reload_file(self, path: Path) -> tuple[ProjectBundle, dict[int, Any]]:
         if self.project_file is not None:
             raise RuntimeError("a packaged project cannot reload source files")
+        if self.quick_scan_pending:
+            return self.rescan()
         expanded = path.expanduser()
         absolute = expanded if expanded.is_absolute() else Path.cwd() / expanded
         lexical = Path(os.path.abspath(absolute))
@@ -486,9 +503,7 @@ def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
                 len(raw),
                 path,
             )
-        text = _decode_project_source(
-            raw, strict_utf8=relative.casefold() == "reraconfig.toml"
-        )
+        text = _decode_project_source(raw, strict_utf8=relative.casefold() == "reraconfig.toml")
         if category == FILE_RESOURCE_MANIFEST:
             text = _normalize_resource_manifest_paths(text)
         normalized = text.encode("utf-8")
@@ -588,7 +603,7 @@ def _classify_project_path(root: Path, path: Path, canonical_roots: frozenset[st
     if first == "resources":
         if path.suffix.casefold() == ".csv":
             return FILE_RESOURCE_MANIFEST
-        if path.suffix.casefold() in RESOURCE_IMAGE_SUFFIXES:
+        if path.suffix.casefold() in RESOURCE_IMAGE_SUFFIXES | RESOURCE_AUDIO_SUFFIXES:
             return FILE_RESOURCE
         return None
     category = classify_path(path)

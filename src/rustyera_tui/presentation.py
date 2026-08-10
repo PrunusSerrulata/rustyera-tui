@@ -191,9 +191,7 @@ class PresentationModel:
         return replace(line, segments=segments) if segments != line.segments else line
 
     @staticmethod
-    def _line_for_button_generation(
-        line: DisplayLineModel, generation: int
-    ) -> DisplayLineModel:
+    def _line_for_button_generation(line: DisplayLineModel, generation: int) -> DisplayLineModel:
         segments = tuple(
             replace(segment, enabled=False)
             if segment.enabled
@@ -211,8 +209,7 @@ class PresentationModel:
             identity
             for line in self.lines
             for segment in line.segments
-            if segment.enabled
-            and (identity := self._token_identity(segment.token)) is not None
+            if segment.enabled and (identity := self._token_identity(segment.token)) is not None
         }
         if not tokens:
             return tokens
@@ -228,9 +225,7 @@ class PresentationModel:
         self._retired_button_tokens.difference_update(tokens)
         self._set_button_tokens_enabled(tokens, True)
 
-    def _set_button_tokens_enabled(
-        self, tokens: set[tuple[int, int]], enabled: bool
-    ) -> None:
+    def _set_button_tokens_enabled(self, tokens: set[tuple[int, int]], enabled: bool) -> None:
         for index, line in enumerate(self.lines):
             segments = tuple(
                 replace(segment, enabled=enabled)

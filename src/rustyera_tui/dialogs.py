@@ -46,6 +46,26 @@ class ConfirmDialog(ModalScreen[bool]):
         self.dismiss(event.button.id == "confirm-accept")
 
 
+class ExportProgressDialog(ModalScreen[bool]):
+    """Show cancellable progress for a user-initiated full project export."""
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog export-progress-dialog"):
+            yield Label("导出全量项目文件", classes="dialog-title")
+            yield Static("正在读取项目文件…", id="export-progress-message", markup=False)
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("取消", id="export-progress-cancel", variant="error")
+
+    def update_progress(self, message: str) -> None:
+        self.query_one("#export-progress-message", Static).update(message)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "export-progress-cancel":
+            event.button.disabled = True
+            self.update_progress("正在取消导出…")
+            self.dismiss(False)
+
+
 class AboutDialog(ModalScreen[None]):
     """Display build and licensing information for the frontend and bound core."""
 

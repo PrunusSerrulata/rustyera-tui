@@ -339,6 +339,7 @@ def test_compiled_cache_persistence_waits_until_the_deferred_deadline(
     client.cache_ready = False
     client.cache_refresh_after_ns = 100
     client.pending_export = None
+    client.full_project_export = None
     client.pending_diagnosis = None
     requested: list[str] = []
     client._refresh_compiled_cache = requested.append  # type: ignore[method-assign]
@@ -510,7 +511,7 @@ def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
 
 
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
-def test_real_c_abi_appends_and_reopens_packaged_configuration(
+def test_real_c_abi_exports_appends_and_reopens_packaged_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
@@ -518,27 +519,32 @@ def test_real_c_abi_appends_and_reopens_packaged_configuration(
     project = tmp_path / "minimal"
     shutil.copytree(Path(__file__).parent / "fixtures" / "minimal", project)
     cache_path = StorageBackend(project).compiled_cache_path()
+    project_file = tmp_path / "minimal.reraproj"
     source_worker = RuntimeWorker(RUNTIME_LIBRARY, project)
     source_worker.start()
     try:
         wait_for(source_worker, lambda event: event.kind == "project_loaded")
         wait_for_input(source_worker)
         wait_for_path(source_worker, cache_path)
+        source_worker.send("export_project_file", project_file)
+        finished = wait_for(
+            source_worker, lambda event: event.kind == "project_file_export_finished"
+        )
+        assert finished.value is True
+        wait_for_path(source_worker, project_file)
     finally:
         source_worker.stop()
         source_worker.join(timeout=5)
 
-    project_file = tmp_path / "minimal.reraproj"
-    original = cache_path.read_bytes()
-    project_file.write_bytes(original)
+    original = project_file.read_bytes()
+    assert original.startswith(b"RERAPROJ")
     abi = RuntimeAbi(RUNTIME_LIBRARY, resource_directory=project)
     try:
         manifest = abi.project_file_manifest(original)
         bundle = ProjectBundle.from_project_file_manifest(project_file, manifest)
         bundle.write_configuration(
             b"",
-            "[text]\nreplace_full_width_spaces = true\n"
-            'character_width_mode = "ambiguous_wide"\n',
+            '[text]\nreplace_full_width_spaces = true\ncharacter_width_mode = "ambiguous_wide"\n',
             abi.prepare_project_configuration_update,
         )
     finally:

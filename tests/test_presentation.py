@@ -371,9 +371,7 @@ def test_snapshot_forgets_local_button_generation_before_later_partial_updates()
         }
     )
 
-    assert all(
-        segment.enabled for item in model.lines for segment in item.segments
-    )
+    assert all(segment.enabled for item in model.lines for segment in item.segments)
 
 
 def test_submitted_buttons_retire_while_later_partial_updates_stay_enabled() -> None:

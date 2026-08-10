@@ -11,7 +11,9 @@ from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapsho
 from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile
 from rustyera_tui.presentation import ServicePresentationModel
 from rustyera_tui.runtime import (
+    AtomicExportStream,
     FrontendEvent,
+    FullProjectExport,
     PendingConfigurationPrepare,
     PendingGameInput,
     RuntimeClient,
@@ -34,6 +36,12 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client.pending_cache_export_message = None
     client.pending_export_message = None
     client.pending_export_kind = None
+    client.pending_export = None
+    client.pending_cache_stream = None
+    client.full_project_export = None
+    client.cache_preparation_started = False
+    client.cache_refresh_pending = False
+    client.cache_refresh_after_ns = 0
     client.pending_diagnosis = None
     client.pending_start_after_configuration = None
     client.pending_restore = None
@@ -50,6 +58,57 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
         lambda tag, value, **_kwargs: captured.append((tag, value)) or 1
     )
     return client, captured
+
+
+def test_full_project_export_preempts_cache_and_cleans_up_on_cancel(tmp_path: Path) -> None:
+    client, captured = client_with_capture()
+    manifest = {0: 1, 1: []}
+    client.bundle = SimpleNamespace(
+        project_file=None,
+        materialize=lambda _progress, _cancelled: SimpleNamespace(manifest=lambda: manifest),
+    )
+    client.pending_export_kind = 2
+    client.cache_preparation_started = True
+    client.pending_cache_stream = AtomicExportStream.open(tmp_path / "cache.reracache")
+    target = tmp_path / "full.reraproj"
+
+    client.export_project_file(target, lambda: False)
+
+    assert [tag for tag, _value in captured] == [71, 70, 60]
+    assert captured[0][1] == {0: 2}
+    assert captured[1][1] == {0: manifest}
+    assert client.full_project_export is not None
+    temporary = client.full_project_export.stream.temporary
+    assert temporary.exists()
+    assert client.cache_refresh_pending
+
+    client.cancel_project_file_export()
+
+    assert captured[-1] == (71, {0: 3})
+    assert client.full_project_export is None
+    assert not temporary.exists()
+    events = [client.events.get_nowait() for _ in range(client.events.qsize())]
+    assert FrontendEvent("project_file_export_finished", None) in events
+    assert FrontendEvent("project_progress_finished") in events
+
+
+def test_full_project_chunks_stream_to_an_atomic_target(tmp_path: Path) -> None:
+    client, captured = client_with_capture()
+    target = tmp_path / "full.reraproj"
+    stream = AtomicExportStream.open(target)
+    client.full_project_export = FullProjectExport(target, stream)
+    client.pending_export_kind = 5
+    descriptor = {0: 7, 1: 3, 2: 6, 3: blake3.blake3(b"abcdef").digest()}
+    client.pending_export = (target, bytearray(), descriptor)
+
+    client._handle_export_chunk({0: 7, 1: 0, 2: b"abc", 3: False})
+    client._handle_export_chunk({0: 7, 1: 3, 2: b"def", 3: True})
+
+    assert target.read_bytes() == b"abcdef"
+    assert client.full_project_export is None
+    assert captured[-1] == (67, {0: 7, 1: 3, 2: 1024 * 1024})
+    events = [client.events.get_nowait() for _ in range(client.events.qsize())]
+    assert FrontendEvent("project_file_export_finished", True) in events
 
 
 def ready_payload(captured: list[tuple[int, Any]]) -> dict[int, Any]:

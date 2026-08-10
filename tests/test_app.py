@@ -24,6 +24,7 @@ from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapsho
 from rustyera_tui.dialogs import (
     AboutDialog,
     ConfirmDialog,
+    ExportProgressDialog,
     FatalErrorDialog,
     PathDialog,
     PreferencesDialog,
@@ -244,7 +245,7 @@ async def test_restart_and_return_to_title_require_confirmation(tmp_path: Path) 
         await pilot.click("#menu-file")
         await pilot.click("#file-restart")
         worker.events.put(FrontendEvent("phase", 5))
-        await pilot.pause()
+        await pilot.pause(0.1)
         assert not isinstance(app.screen, ConfirmDialog)
         assert ("restart", None) not in worker.commands
         assert app.focused is app.query_one("#menu-file", Button)
@@ -303,7 +304,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.3.0" in contents
-        assert "core 版本：0.3.0 (0e83e76f)" in contents
+        assert "core 版本：0.3.0 (b7f8a8f3)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 
@@ -399,6 +400,7 @@ async def test_viewport_and_keyboard_submit_message_waits_once(tmp_path: Path) -
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
     async with app.run_test(size=(100, 30)) as pilot:
+
         def input_commands() -> list[tuple[str, Any]]:
             return [command for command in worker.commands if command[0] != "projection"]
 
@@ -439,9 +441,7 @@ async def test_viewport_and_keyboard_submit_message_waits_once(tmp_path: Path) -
     keyboard_worker = FakeWorker()
     keyboard_app.worker = keyboard_worker  # type: ignore[assignment]
     async with keyboard_app.run_test(size=(100, 30)) as pilot:
-        keyboard_worker.events.put(
-            FrontendEvent("wait", {0: 15, 1: 1, 11: {0: 2, 1: 15}})
-        )
+        keyboard_worker.events.put(FrontendEvent("wait", {0: 15, 1: 1, 11: {0: 2, 1: 15}}))
         await pilot.pause(0.1)
         keyboard_worker.commands.clear()
         prompt = keyboard_app.query_one("#prompt", Input)
@@ -450,17 +450,17 @@ async def test_viewport_and_keyboard_submit_message_waits_once(tmp_path: Path) -
         assert keyboard_app.focused is prompt
 
         keyboard_app.on_key(events.Key("a", "a"))
-        assert [
-            command for command in keyboard_worker.commands if command[0] != "projection"
-        ] == [("submit_text", "a")]
+        assert [command for command in keyboard_worker.commands if command[0] != "projection"] == [
+            ("submit_text", "a")
+        ]
         await pilot.click("#game-viewport", offset=(10, 5))
         await pilot.click("#game-viewport", offset=(10, 5), button=3)
         keyboard_app.query_one("#prompt", Input).focus()
         await pilot.press("enter")
 
-        assert [
-            command for command in keyboard_worker.commands if command[0] != "projection"
-        ] == [("submit_text", "a")]
+        assert [command for command in keyboard_worker.commands if command[0] != "projection"] == [
+            ("submit_text", "a")
+        ]
 
 
 async def test_game_any_key_does_not_cross_an_application_dialog(tmp_path: Path) -> None:
@@ -1561,6 +1561,49 @@ async def test_snapshot_export_locks_gameplay_and_uses_a_timestamped_name(
         assert not app.snapshot_exporting
         assert not prompt.disabled
         assert viewport.interactions_enabled
+
+
+async def test_full_project_export_uses_a_cancellable_modal_and_locks_gameplay(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.active_wait = {0: 7, 1: 0, 11: {0: 1, 1: 2}}
+        app._update_prompt()
+        target = tmp_path / "full.reraproj"
+
+        app._start_project_file_export(target)
+        await pilot.pause()
+
+        assert isinstance(app.screen, ExportProgressDialog)
+        assert app.project_file_exporting
+        assert app.query_one("#prompt", Input).disabled
+        assert not app.query_one(GameViewport).interactions_enabled
+        assert ("export_project_file", target) in worker.commands
+
+        await pilot.click("#export-progress-cancel")
+        await pilot.pause()
+
+        assert not app.project_file_exporting
+        assert ("cancel_project_file_export", None) in worker.commands
+        assert not app.query_one("#prompt", Input).disabled
+
+
+async def test_background_cache_packaging_progress_does_not_lock_gameplay(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)):
+        app._handle_worker_event(FrontendEvent("phase", 5))
+        app.active_wait = {0: 7, 1: 0, 11: {0: 1, 1: 2}}
+        app._update_prompt()
+
+        app._handle_worker_event(FrontendEvent("project_progress", (9, 4, 12)))
+
+        assert not app.project_file_exporting
+        assert not app.query_one("#prompt", Input).disabled
+        assert app.query_one(GameViewport).interactions_enabled
 
 
 async def test_fatal_fault_dialog_exports_diagnosis_and_gates_recovery_actions(

@@ -42,9 +42,12 @@ class RuntimeWorker(threading.Thread):
         # revisions when Runtime can produce output faster than Textual lays it out.
         self.events: queue.Queue[FrontendEvent] = queue.Queue(maxsize=4_096)
         self._stop_requested = threading.Event()
+        self._project_export_cancelled = threading.Event()
         self.client: RuntimeClient | None = None
 
     def send(self, kind: str, value: Any = None) -> None:
+        if kind == "cancel_project_file_export":
+            self._project_export_cancelled.set()
         self.commands.put(FrontendCommand(kind, value))
 
     def run(self) -> None:
@@ -81,6 +84,10 @@ class RuntimeWorker(threading.Thread):
                     self._process_command(command)
         except Exception as error:  # noqa: BLE001 - worker must report all boundary failures
             if self.client is not None:
+                if self.client.full_project_export is not None:
+                    self.client._finish_project_file_export(False)
+                if self.client.pending_cache_stream is not None:
+                    self.client._finish_cache_export(False)
                 self.client.fail_startup(error)
             else:
                 emit_startup_milestone("failed", attempt_id=0, scenario="unknown", error=str(error))
@@ -169,7 +176,12 @@ class RuntimeWorker(threading.Thread):
                     path, purpose = command.value
                     client.export_snapshot(Path(path), str(purpose))
                 case "export_project_file":
-                    client.export_project_file(Path(command.value))
+                    self._project_export_cancelled.clear()
+                    client.export_project_file(
+                        Path(command.value), self._project_export_cancelled.is_set
+                    )
+                case "cancel_project_file_export":
+                    client.cancel_project_file_export()
                 case "export_diagnosis":
                     path, logs, project_name = command.value
                     client.export_diagnosis(Path(path), str(logs), str(project_name))
@@ -203,6 +215,9 @@ class RuntimeWorker(threading.Thread):
                 case _:
                     raise ValueError(f"unknown frontend command {command.kind}")
         except Exception as error:  # noqa: BLE001 - command boundary
+            if command.kind == "export_project_file" and self._project_export_cancelled.is_set():
+                client._finish_project_file_export(None, "已取消导出全量项目文件")
+                return
             client.fail_startup(error)
             if wait_bound_input and submitted_wait is not None:
                 self.events.put(FrontendEvent("interaction_rejected", submitted_wait))
@@ -212,11 +227,7 @@ class RuntimeWorker(threading.Thread):
                 client.pending_export_message = None
                 self.events.put(FrontendEvent("snapshot_export_finished", False))
             elif command.kind == "export_project_file":
-                client.pending_export = None
-                client.pending_export_kind = None
-                client.pending_export_message = None
-                client.pending_project_file_export_path = None
-                self.events.put(FrontendEvent("project_file_export_finished", False))
+                client._finish_project_file_export(False)
             elif command.kind == "export_diagnosis":
                 client._finish_diagnosis_export(False, str(error))
             self.events.put(FrontendEvent("error", str(error)))

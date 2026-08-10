@@ -12,7 +12,7 @@ from .protocol_text import ERA_STATUSES, enum_text
 from .wire import decode
 
 ABI_MAJOR = 3
-ABI_MINOR = 6
+ABI_MINOR = 7
 
 STATUS_OK = 0
 STATUS_EMPTY = 1

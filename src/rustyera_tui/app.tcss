@@ -391,6 +391,17 @@ ModalScreen {
     height: 10;
 }
 
+.export-progress-dialog {
+    width: 64;
+    height: auto;
+}
+
+#export-progress-message {
+    height: auto;
+    min-height: 3;
+    padding: 1 0;
+}
+
 .fatal-dialog {
     width: 100;
     height: 24;

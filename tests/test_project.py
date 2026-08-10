@@ -446,9 +446,10 @@ def test_storage_defaults_to_the_project_directory(
     assert backend._namespace_root(1) == tmp_path.resolve() / "sav"
     assert backend._namespace_root(2) == tmp_path.resolve() / "sav"
     assert backend.compiled_cache_path() == (
-        tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project.reraproj"
+        tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project.reracache"
     )
     assert backend.obsolete_compiled_cache_paths() == (
+        tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project.reraproj",
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v8.bin.zst",
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v7.bin.zst",
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v6.bin.zst",
@@ -458,6 +459,18 @@ def test_storage_defaults_to_the_project_directory(
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v2.bin.zst",
         tmp_path.resolve() / ".rustyera" / "cache" / "compiled-project-v1.bin.gz",
     )
+
+
+def test_project_scanner_includes_audio_resources_for_full_exports(tmp_path: Path) -> None:
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    audio = b"OggS\x00example"
+    (resources / "theme.ogg").write_bytes(audio)
+
+    scanned = ProjectBundle.scan(tmp_path)
+
+    assert scanned.files["resources/theme.ogg"].category == FILE_RESOURCE
+    assert scanned.files["resources/theme.ogg"].payload == variant(1, audio)
 
 
 def test_configuration_write_is_atomic_and_detects_external_changes(tmp_path: Path) -> None:
@@ -499,7 +512,5 @@ def test_packaged_project_configuration_appends_the_runtime_update(tmp_path: Pat
 
     bundle.write_configuration(b"digest", "[display]\nfont_size = 20\n", prepare)
 
-    assert captured == [
-        (b"base-incomplete", b"digest", "[display]\nfont_size = 20\n")
-    ]
+    assert captured == [(b"base-incomplete", b"digest", "[display]\nfont_size = 20\n")]
     assert project_file.read_bytes() == b"basejournal"
