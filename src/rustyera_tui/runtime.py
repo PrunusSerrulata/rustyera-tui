@@ -866,7 +866,7 @@ class RuntimeClient:
                 self.fail_startup("runtime requested source without a pending project")
                 self.events.put(FrontendEvent("error", "Runtime 请求源码，但没有待载入项目。"))
                 return
-            self.events.put(FrontendEvent("status", "项目文件缓存未命中，正在读取项目源码…"))
+            self.events.put(FrontendEvent("status", "项目缓存未命中，正在读取项目源码…"))
             self.pending_bundle = self.pending_bundle.materialize(self._project_scan_progress)
             self._submit_project(None)
             return
@@ -922,7 +922,7 @@ class RuntimeClient:
             self.cache_refresh_pending = False
             self.cache_ready = False
             self.cache_preparation_started = False
-            self.events.put(FrontendEvent("status", "项目文件缓存命中，正在进入标题画面…"))
+            self.events.put(FrontendEvent("status", "项目缓存命中，正在进入标题画面…"))
             self._submit_start(self._new_game_start())
         else:
             self.cache_refresh_pending = True
@@ -1202,11 +1202,11 @@ class RuntimeClient:
         if cache_path is not None:
             try:
                 if cache_path.stat().st_size > 0:
-                    self.events.put(FrontendEvent("status", "正在载入项目文件缓存…"))
+                    self.events.put(FrontendEvent("status", "正在载入项目缓存…"))
                     self._stage_project_cache_file(cache_path, "project_cache")
                     return
             except OSError as error:
-                self.events.put(log_event(f"读取项目文件缓存失败：{error}", LogLevel.WARNING))
+                self.events.put(log_event(f"读取项目缓存失败：{error}", LogLevel.WARNING))
         if self.pending_bundle is None:
             return
         self.pending_bundle = self.pending_bundle.materialize(self._project_scan_progress)
@@ -1226,7 +1226,12 @@ class RuntimeClient:
         self.pending_export = (cache_path, bytearray(), None)
         if not self.cache_preparation_started:
             self.cache_preparation_started = True
-            self.events.put(FrontendEvent("status", "正在后台生成项目文件…"))
+            self.events.put(
+                FrontendEvent(
+                    "status",
+                    "正在后台生成项目缓存，可继续游戏，但游戏运行和响应速度可能暂时受到影响…",
+                )
+            )
         self.pending_cache_export_message = self.send_runtime(60, {0: 2, 1: 0})
 
     def maybe_refresh_compiled_cache(self) -> None:
@@ -1697,9 +1702,9 @@ class RuntimeClient:
             self.events.put(
                 FrontendEvent(
                     "status",
-                    "项目文件缓存已保存，正在进入标题画面…"
+                    "项目缓存已保存，正在进入标题画面…"
                     if success
-                    else "项目文件缓存保存失败，正在进入标题画面…",
+                    else "项目缓存保存失败，正在进入标题画面…",
                 )
             )
             self._submit_start(self._new_game_start())
@@ -1707,9 +1712,7 @@ class RuntimeClient:
             self.events.put(FrontendEvent("status", "脚本热重载完成。"))
         elif after == "background":
             self.events.put(
-                FrontendEvent(
-                    "status", "项目文件缓存已保存。" if success else "项目文件缓存保存失败。"
-                )
+                FrontendEvent("status", "项目缓存已保存。" if success else "项目缓存保存失败。")
             )
 
     def _finish_project_file_export(self, success: bool | None, status: str | None = None) -> None:

@@ -36,7 +36,7 @@ from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.3.0 (b7f8a8f3)"
+CORE_VERSION = "0.3.0 (96a9a847)"
 
 
 def frontend_version() -> str:
@@ -101,13 +101,13 @@ class RustyEraTui(App[None]):
     PROJECT_PROGRESS_PREFIXES = (
         "正在创建新的 Runtime session",
         "正在扫描 ",
-        "正在载入项目文件缓存",
-        "项目文件缓存未命中",
+        "正在载入项目缓存",
+        "项目缓存未命中",
         "正在提交项目并编译脚本",
         "项目编译完成，正在进入标题画面",
-        "项目文件缓存命中，正在进入标题画面",
-        "项目文件缓存已保存，正在进入标题画面",
-        "项目文件缓存保存失败，正在进入标题画面",
+        "项目缓存命中，正在进入标题画面",
+        "项目缓存已保存，正在进入标题画面",
+        "项目缓存保存失败，正在进入标题画面",
         "正在热重载",
     )
     PROJECT_PROGRESS_LABELS = (

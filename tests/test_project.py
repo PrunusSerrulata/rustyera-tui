@@ -32,6 +32,17 @@ def test_project_scanner_is_utf8_and_deterministic(tmp_path: Path) -> None:
     assert csv[3] == blake3.blake3(b"0,test\n").digest()
 
 
+def test_project_scanner_uses_lowercase_instead_of_casefold_for_path_order(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "ß.erb").write_text("@SHARP_S\nRETURN\n", encoding="utf-8")
+    (tmp_path / "st.erb").write_text("@ST\nRETURN\n", encoding="utf-8")
+
+    bundle = ProjectBundle.scan(tmp_path)
+
+    assert list(bundle.files) == ["st.erb", "ß.erb"]
+
+
 def test_project_bundle_uses_embedded_project_file_resources(tmp_path: Path) -> None:
     project_file = tmp_path / "game.reraproj"
     project_file.write_bytes(b"container")
@@ -99,6 +110,69 @@ def test_project_scanners_submit_nested_sprite_manifests_and_images(tmp_path: Pa
     assert resource_image.category == FILE_RESOURCE
     assert resource_image.payload == variant(1, image)
     assert quick.materialize().identity() == scanned.identity()
+
+
+def test_project_scanners_include_only_audio_from_the_sound_directory(tmp_path: Path) -> None:
+    sound = tmp_path / "sound"
+    sound.mkdir()
+    (sound / "theme.mp3").write_bytes(b"audio")
+    (sound / "cover.png").write_bytes(b"image")
+    (sound / "ignored.erb").write_text("@IGNORED", encoding="utf-8")
+    (sound / "ignored.csv").write_text("IGNORED,1", encoding="utf-8")
+    (sound / "ignored.config").write_text("IGNORED:YES", encoding="utf-8")
+
+    scanned = ProjectBundle.scan(tmp_path)
+    quick = ProjectBundle.scan_quick(tmp_path)
+
+    assert list(scanned.files) == ["sound/theme.mp3"]
+    assert scanned.files["sound/theme.mp3"].category == FILE_RESOURCE
+    assert quick.materialize().identity() == scanned.identity()
+
+
+def test_project_scanners_share_the_cross_frontend_cache_contract(tmp_path: Path) -> None:
+    resources = tmp_path / "resources"
+    sound = tmp_path / "sound"
+    nested = tmp_path / "sub"
+    private = tmp_path / ".RUSTYERA" / "cache"
+    for directory in (resources, sound, nested, private):
+        directory.mkdir(parents=True)
+    decomposed = "e\u0301.png"
+    (resources / decomposed).write_bytes(b"png")
+    manifest = (
+        f"FACE, \t{decomposed} \t\r\n"
+        "ANIME, \tAnImE\t \n"
+        f"NOTE,\u00a0{decomposed}\u00a0\r"
+        "META,a\u0085b"
+    )
+    (resources / "sprites.csv").write_text(manifest, encoding="utf-8", newline="")
+    (sound / "theme.MP3").write_bytes(b"audio")
+    (sound / "ignored.erb").write_text("@IGNORED", encoding="utf-8")
+    (private / "ignored.erb").write_text("@PRIVATE", encoding="utf-8")
+    (tmp_path / "reraconfig.toml").write_text("[display]\nfont_size = 20\n", encoding="utf-8")
+    (nested / "reraconfig.toml").write_bytes(b"\x82\xa0\n")
+    (tmp_path / "é.erb").write_text("@ACCENTED\nRETURN\n", encoding="utf-8")
+    (tmp_path / "z.erb").write_text("@ASCII\nRETURN\n", encoding="utf-8")
+
+    scanned = ProjectBundle.scan(tmp_path)
+
+    assert list(scanned.files) == [
+        "reraconfig.toml",
+        "resources/sprites.csv",
+        "resources/é.png",
+        "sound/theme.MP3",
+        "sub/reraconfig.toml",
+        "z.erb",
+        "é.erb",
+    ]
+    assert [file.category for file in scanned.files.values()] == [5, 3, 4, 4, 5, 2, 2]
+    assert scanned.files["resources/sprites.csv"].payload == variant(
+        0,
+        "FACE, \té.png \t\r\nANIME, \tAnImE\t \nNOTE,\u00a0é.png\u00a0\rMETA,a\u0085b",
+    )
+    assert scanned.files["sub/reraconfig.toml"].payload == variant(0, "あ\n")
+    assert scanned.identity()[1].hex() == (
+        "50fbe8e1e7ad5492e29fab4b229ad35d31ccde47f9c078df86c1ee5c30ed7255"
+    )
 
 
 def test_project_scanners_normalize_resource_paths_and_manifests_to_nfc(tmp_path: Path) -> None:

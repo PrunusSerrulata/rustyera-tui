@@ -74,10 +74,10 @@ def _decode_project_source(raw: bytes, *, strict_utf8: bool = False) -> str:
 
 
 def classify_path(path: Path | PurePosixPath) -> int | None:
-    name = path.name.casefold()
+    name = path.name.lower()
     if name in {"reraconfig.toml", "setting.json"}:
         return FILE_CONFIGURATION
-    suffix = path.suffix.casefold()
+    suffix = path.suffix.lower()
     return {
         ".csv": FILE_CSV,
         ".erh": FILE_ERH,
@@ -122,7 +122,7 @@ class ProjectBundle:
         cls, project_file: Path, manifest: dict[int, Any]
     ) -> ProjectBundle:
         resolved = project_file.expanduser().resolve(strict=True)
-        if resolved.suffix.casefold() != ".reraproj":
+        if resolved.suffix.lower() != ".reraproj":
             raise ValueError("project file must use the .reraproj extension")
         revision = manifest.get(0)
         submitted = manifest.get(1)
@@ -301,9 +301,7 @@ class ProjectBundle:
 
     def identity(self) -> dict[int, Any]:
         hasher = blake3.blake3(derive_key_context="rustyera.project-source-identity.v1")
-        ordered = sorted(
-            self.files.values(), key=lambda item: (item.relative_path.lower(), item.relative_path)
-        )
+        ordered = sorted(self.files.values(), key=lambda item: _path_sort_key(item.relative_path))
         for item in ordered:
             digest = item.content_hash
             if digest is None and item.payload is not None and item.payload[0] == 2:
@@ -320,7 +318,7 @@ class ProjectBundle:
     def manifest(self) -> dict[int, Any]:
         if not self.is_materialized:
             raise RuntimeError("project source payloads have not been materialized")
-        ordered = sorted(self.files.values(), key=lambda item: item.relative_path.casefold())
+        ordered = sorted(self.files.values(), key=lambda item: _path_sort_key(item.relative_path))
         return {0: self.revision, 1: [item.submitted() for item in ordered]}
 
     def requested_wire_limits(self) -> tuple[int, int]:
@@ -377,7 +375,7 @@ class ProjectBundle:
                 for item in self.files.values()
                 if item.category == FILE_CONFIGURATION
                 and "/" not in item.relative_path
-                and item.relative_path.casefold() == "reraconfig.toml"
+                and item.relative_path.lower() == "reraconfig.toml"
             ),
             self.root / "reraconfig.toml",
         )
@@ -402,7 +400,7 @@ class ProjectBundle:
                 (
                     candidate
                     for path, candidate in self.files.items()
-                    if path.casefold() == resource_id.casefold()
+                    if path.lower() == resource_id.lower()
                 ),
                 None,
             )
@@ -435,12 +433,12 @@ class ProjectBundle:
             changes = [
                 variant(0, item.submitted())
                 for item in sorted(
-                    candidate.files.values(), key=lambda value: value.relative_path.casefold()
+                    candidate.files.values(), key=lambda value: _path_sort_key(value.relative_path)
                 )
             ]
             return candidate, {0: self.revision, 1: candidate.revision, 2: changes}
         changes: list[Any] = []
-        for relative_path in sorted(set(self.files) | set(candidate.files), key=str.casefold):
+        for relative_path in sorted(set(self.files) | set(candidate.files), key=_path_sort_key):
             old = self.files.get(relative_path)
             new = candidate.files.get(relative_path)
             if new is None and old is not None:
@@ -503,7 +501,7 @@ def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
                 len(raw),
                 path,
             )
-        text = _decode_project_source(raw, strict_utf8=relative.casefold() == "reraconfig.toml")
+        text = _decode_project_source(raw, strict_utf8=relative.lower() == "reraconfig.toml")
         if category == FILE_RESOURCE_MANIFEST:
             text = _normalize_resource_manifest_paths(text)
         normalized = text.encode("utf-8")
@@ -523,28 +521,42 @@ def _normalize_relative_path(path: str) -> str:
     return unicodedata.normalize("NFC", path)
 
 
+def _path_sort_key(path: str) -> tuple[str, str]:
+    """Match the runtime's locale-independent lowercase/path ordering."""
+
+    return path.lower(), path
+
+
 def _normalize_resource_manifest_paths(text: str) -> str:
     normalized: list[str] = []
-    for line in text.splitlines(keepends=True):
-        body = line.rstrip("\r\n")
-        ending = line[len(body) :]
+    for body, ending in _resource_manifest_lines(text):
         fields = body.split(",")
-        if len(fields) >= 2 and fields[1].strip() and fields[1].strip().casefold() != "anime":
+        if len(fields) >= 2:
             value = fields[1]
-            leading = value[: len(value) - len(value.lstrip())]
-            trailing = value[len(value.rstrip()) :]
-            fields[1] = f"{leading}{unicodedata.normalize('NFC', value.strip())}{trailing}"
+            stripped = value.strip(" \t")
+            if stripped and stripped.lower() != "anime":
+                leading = value[: len(value) - len(value.lstrip(" \t"))]
+                trailing = value[len(value.rstrip(" \t")) :]
+                fields[1] = f"{leading}{unicodedata.normalize('NFC', stripped)}{trailing}"
         normalized.append(",".join(fields) + ending)
     return "".join(normalized)
 
 
-def _normalized_project_bytes(raw: bytes, category: int) -> bytes:
-    if category == FILE_RESOURCE:
-        return raw
-    text = _decode_project_source(raw)
-    if category == FILE_RESOURCE_MANIFEST:
-        text = _normalize_resource_manifest_paths(text)
-    return text.encode("utf-8")
+def _resource_manifest_lines(text: str) -> list[tuple[str, str]]:
+    lines: list[tuple[str, str]] = []
+    start = 0
+    while start < len(text):
+        cr = text.find("\r", start)
+        lf = text.find("\n", start)
+        endings = [offset for offset in (cr, lf) if offset >= 0]
+        if not endings:
+            lines.append((text[start:], ""))
+            break
+        ending_start = min(endings)
+        ending_end = ending_start + (2 if text.startswith("\r\n", ending_start) else 1)
+        lines.append((text[start:ending_start], text[ending_start:ending_end]))
+        start = ending_end
+    return lines
 
 
 def _source_signature(path: Path) -> tuple[int, int, int, int, int]:
@@ -589,9 +601,9 @@ def _atomic_write_text(path: Path, contents: str) -> None:
 def _canonical_source_roots(root: Path) -> frozenset[str]:
     try:
         return frozenset(
-            entry.name.casefold()
+            entry.name.lower()
             for entry in root.iterdir()
-            if entry.is_dir() and entry.name.casefold() in {"csv", "erb"}
+            if entry.is_dir() and entry.name.lower() in {"csv", "erb"}
         )
     except OSError:
         return frozenset()
@@ -599,13 +611,17 @@ def _canonical_source_roots(root: Path) -> frozenset[str]:
 
 def _classify_project_path(root: Path, path: Path, canonical_roots: frozenset[str]) -> int | None:
     parts = path.relative_to(root).parts
-    first = parts[0].casefold()
+    first = parts[0].lower()
+    if path.name.lower() in {"reraconfig.toml", "setting.json"}:
+        return FILE_CONFIGURATION
     if first == "resources":
-        if path.suffix.casefold() == ".csv":
+        if path.suffix.lower() == ".csv":
             return FILE_RESOURCE_MANIFEST
-        if path.suffix.casefold() in RESOURCE_IMAGE_SUFFIXES | RESOURCE_AUDIO_SUFFIXES:
+        if path.suffix.lower() in RESOURCE_IMAGE_SUFFIXES | RESOURCE_AUDIO_SUFFIXES:
             return FILE_RESOURCE
         return None
+    if first == "sound":
+        return FILE_RESOURCE if path.suffix.lower() in RESOURCE_AUDIO_SUFFIXES else None
     category = classify_path(path)
     if category is None:
         return None
@@ -633,7 +649,7 @@ def _project_paths(root: Path) -> list[Path]:
         directory_path = Path(directory)
         retained: list[str] = []
         for name in sorted(names, key=str.casefold):
-            if name == ".rustyera":
+            if name.lower() == ".rustyera":
                 continue
             try:
                 stat = (directory_path / name).stat()
@@ -648,8 +664,7 @@ def _project_paths(root: Path) -> list[Path]:
         paths.extend(directory_path / name for name in filenames)
     return sorted(
         paths,
-        key=lambda path: (
-            path.relative_to(root).as_posix().casefold(),
-            path.relative_to(root).as_posix(),
+        key=lambda path: _path_sort_key(
+            _normalize_relative_path(path.relative_to(root).as_posix())
         ),
     )

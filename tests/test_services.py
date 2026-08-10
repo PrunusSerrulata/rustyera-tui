@@ -8,7 +8,7 @@ from typing import Any
 import blake3
 
 from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
-from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile
+from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile, StorageBackend
 from rustyera_tui.presentation import ServicePresentationModel
 from rustyera_tui.runtime import (
     AtomicExportStream,
@@ -90,6 +90,23 @@ def test_full_project_export_preempts_cache_and_cleans_up_on_cancel(tmp_path: Pa
     events = [client.events.get_nowait() for _ in range(client.events.qsize())]
     assert FrontendEvent("project_file_export_finished", None) in events
     assert FrontendEvent("project_progress_finished") in events
+
+
+def test_background_cache_status_names_the_cache_and_keeps_gameplay_available(
+    tmp_path: Path,
+) -> None:
+    client, captured = client_with_capture()
+    client.storage = StorageBackend(tmp_path)
+    client.pending_cache_after = None
+    client.cache_ready = True
+
+    client._refresh_compiled_cache("background")
+
+    assert captured == [(60, {0: 2, 1: 0})]
+    assert client.events.get_nowait() == FrontendEvent(
+        "status",
+        "正在后台生成项目缓存，可继续游戏，但游戏运行和响应速度可能暂时受到影响…",
+    )
 
 
 def test_full_project_chunks_stream_to_an_atomic_target(tmp_path: Path) -> None:
