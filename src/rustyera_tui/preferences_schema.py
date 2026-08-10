@@ -47,7 +47,7 @@ WARNING_CHOICES = (
     ("立即显示", "DISPLAY"),
 )
 CHARACTER_WIDTH_CHOICES = (
-    ("自动", "AUTOMATIC"),
+    ("自动（Era 与图形符号兼容）", "AUTOMATIC"),
     ("模糊字符按窄字符", "AMBIGUOUS_NARROW"),
     ("模糊字符按宽字符", "AMBIGUOUS_WIDE"),
 )

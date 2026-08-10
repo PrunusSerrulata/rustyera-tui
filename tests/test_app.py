@@ -304,7 +304,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.3.0" in contents
-        assert "core 版本：0.3.0 (96a9a847)" in contents
+        assert "core 版本：0.3.0 (1db0a4ce)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 
@@ -786,6 +786,8 @@ async def test_runtime_text_columns_control_terminal_advance(tmp_path: Path) -> 
             DisplaySegment(" ", logical_columns=0),
             DisplaySegment("B", logical_columns=1),
             DisplaySegment("■", logical_columns=2),
+            DisplaySegment("☀", logical_columns=2),
+            DisplaySegment("❤", logical_columns=2),
             DisplaySegment("- ", logical_columns=2),
         ),
     )
@@ -795,9 +797,9 @@ async def test_runtime_text_columns_control_terminal_advance(tmp_path: Path) -> 
         await pilot.pause()
         rendered = app.query_one(GameLine).render().plain
 
-        assert rendered == "AB■ - "
+        assert rendered == "AB■ ☀ ❤ - "
         assert rendered[:2] == "AB"
-        assert cell_len(rendered[:2]) == cell_len(rendered[2:4]) == cell_len(rendered[4:]) == 2
+        assert cell_len(rendered) == 10
 
 
 async def test_full_width_space_replacement_hotly_rerenders_existing_and_new_lines(
