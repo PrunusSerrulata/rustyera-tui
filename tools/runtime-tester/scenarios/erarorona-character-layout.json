@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "start": {
+    "type": "traditional_save",
+    "path": "../../../../games/erarorona/save/save00.sav"
+  },
+  "inputs": [50],
+  "goal": {
+    "output_contains": [
+      "查看能力",
+      "┌特质",
+      "│                      ││[处女]　[淳朴 Lv1]　[胆小 Lv1]　[献身的 Lv1]　[擅长受虐 Lv1]　[怕痛 Lv1]　                      │",
+      "▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅"
+    ]
+  },
+  "limits": { "max_steps": 20, "timeout_seconds": 900 }
+}

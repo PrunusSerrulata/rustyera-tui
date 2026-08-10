@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erafl",
+  "mode": "fixed",
+  "seed": 123456,
+  "inputs": [0],
+  "goal": {
+    "output_contains": ["请选择游戏开始时的伙伴"]
+  },
+  "limits": { "max_steps": 20, "timeout_seconds": 900 }
+}

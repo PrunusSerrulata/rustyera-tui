@@ -304,7 +304,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.3.0" in contents
-        assert "core 版本：0.3.0 (c008a62a)" in contents
+        assert "core 版本：0.3.0 (23fd1895)" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 
@@ -791,15 +791,25 @@ async def test_runtime_text_columns_control_terminal_advance(tmp_path: Path) -> 
             DisplaySegment("- ", logical_columns=2),
         ),
     )
+    bar_line = DisplayLineModel(
+        2,
+        False,
+        True,
+        True,
+        0,
+        (DisplaySegment("▅" * 64, logical_columns=64), DisplaySegment("│", logical_columns=2)),
+    )
     async with app.run_test(size=(40, 20)) as pilot:
         viewport = app.query_one(GameViewport)
-        await viewport.set_lines([line])
+        await viewport.set_lines([line, bar_line])
         await pilot.pause()
-        rendered = app.query_one(GameLine).render().plain
+        rendered, rendered_bar = [item.render().plain for item in app.query(GameLine)]
 
         assert rendered == "AB■ ☀ ❤ - "
         assert rendered[:2] == "AB"
         assert cell_len(rendered) == 10
+        assert rendered_bar == "▅" * 64 + "│ "
+        assert rendered_bar.index("│") == 64
 
 
 async def test_full_width_space_replacement_hotly_rerenders_existing_and_new_lines(

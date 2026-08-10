@@ -1526,9 +1526,7 @@ class RuntimeClient:
         self.full_project_export = FullProjectExport(path, AtomicExportStream.open(path))
         self._request_project_file_export()
 
-    def _stage_full_project_manifest(
-        self, cancelled: Callable[[], bool] | None = None
-    ) -> None:
+    def _stage_full_project_manifest(self, cancelled: Callable[[], bool] | None = None) -> None:
         if self.bundle is None:
             raise RuntimeError("no project is active")
         if self.bundle.project_file is None:
