@@ -88,6 +88,8 @@ class RuntimeWorker(threading.Thread):
                     self.client._finish_project_file_export(False)
                 if self.client.pending_cache_stream is not None:
                     self.client._finish_cache_export(False)
+                if self.client.pending_diagnosis is not None:
+                    self.client._finish_diagnosis_export(False, str(error))
                 self.client.fail_startup(error)
             else:
                 emit_startup_milestone("failed", attempt_id=0, scenario="unknown", error=str(error))

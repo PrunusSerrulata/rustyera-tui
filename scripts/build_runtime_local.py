@@ -101,8 +101,7 @@ def main() -> int:
             child.send_signal(signum)
 
     previous_handlers = {
-        signum: signal.signal(signum, forward_signal)
-        for signum in (signal.SIGINT, signal.SIGTERM)
+        signum: signal.signal(signum, forward_signal) for signum in (signal.SIGINT, signal.SIGTERM)
     }
     try:
         child = subprocess.Popen(command, cwd=TUI_ROOT)

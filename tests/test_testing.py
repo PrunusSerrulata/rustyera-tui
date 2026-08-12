@@ -50,6 +50,26 @@ def test_scenario_uses_explicit_seed(tmp_path: Path) -> None:
     assert Scenario.load(path).seed == 17
 
 
+def test_scenario_accepts_a_full_u64_seed_as_a_decimal_string(tmp_path: Path) -> None:
+    project = tmp_path / "game"
+    project.mkdir()
+    path = tmp_path / "scenario.json"
+    write_scenario(path, project, seed=str(0xFFFF_FFFF_FFFF_FFFF))
+
+    assert Scenario.load(path).seed == 0xFFFF_FFFF_FFFF_FFFF
+
+
+@pytest.mark.parametrize("seed", [1.5, True, "-1", "18446744073709551616"])
+def test_scenario_rejects_non_u64_seed_values(tmp_path: Path, seed: object) -> None:
+    project = tmp_path / "game"
+    project.mkdir()
+    path = tmp_path / "scenario.json"
+    write_scenario(path, project, seed=seed)
+
+    with pytest.raises(TestDriverError, match="decimal unsigned 64-bit"):
+        Scenario.load(path)
+
+
 def test_scenario_resolves_state_path_without_reseeding(tmp_path: Path) -> None:
     project = tmp_path / "game"
     project.mkdir()

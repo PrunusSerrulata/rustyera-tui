@@ -74,7 +74,7 @@ def test_snapshot_rejection_event_uses_reason_names() -> None:
     client.pending_export_kind = 1
     client.pending_export_message = None
 
-    client._handle_export_ready({1: [1, [[3]]]})
+    client._handle_export_ready({0: 1, 1: [1, [[3]]]})
 
     event = client.events.get_nowait()
     assert event.kind == "runtime_error"

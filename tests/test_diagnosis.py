@@ -23,6 +23,7 @@ def test_diagnosis_archive_has_the_required_named_payloads(tmp_path: Path) -> No
         target,
         project_name="eraThe World",
         snapshot=b"snapshot",
+        input_replay=b'{"record":"header"}\n',
         logs="first\nlast\n",
         project_file=b"RERAPROJartifact",
         exported_at=datetime(2026, 7, 26, 14, 5, 6),
@@ -39,6 +40,7 @@ def test_diagnosis_archive_has_the_required_named_payloads(tmp_path: Path) -> No
     assert members == {
         "runtime.snapshot": b"snapshot",
         "runtime.log": b"first\nlast\n",
+        "input-replay.jsonl": b'{"record":"header"}\n',
         "eraThe World.reraproj": b"RERAPROJartifact",
     }
 

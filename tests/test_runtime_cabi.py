@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import queue
 import shutil
 import tarfile
@@ -627,15 +628,30 @@ def test_real_c_abi_diagnosis_contains_a_parseable_full_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
-    project = tmp_path / "minimal"
-    shutil.copytree(Path(__file__).parent / "fixtures" / "minimal", project)
-    target = tmp_path / "minimal-diagnosis.tar.zst"
+    project = tmp_path / "replay-diagnosis"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "replay-diagnosis", project)
+    target = tmp_path / "replay-diagnosis.tar.zst"
     worker = RuntimeWorker(RUNTIME_LIBRARY, project)
     worker.start()
     try:
         wait_for(worker, lambda event: event.kind == "project_loaded")
         wait_for_input(worker)
-        worker.send("export_diagnosis", (target, "complete log\n", "minimal"))
+        worker.send("submit_text", "7")
+        wait_for_input(worker)
+        script = project / "ERB" / "main.erb"
+        script.write_text(
+            script.read_text(encoding="utf-8") + "\n@REPLAY_HOT_RELOAD_MARKER\nRETURN\n",
+            encoding="utf-8",
+        )
+        worker.send("reload_file", script)
+        wait_for(
+            worker,
+            lambda event: event.kind == "status" and "热重载完成" in str(event.value),
+        )
+        wait_for_input(worker)
+        worker.send("submit_text", "8")
+        wait_for_input(worker)
+        worker.send("export_diagnosis", (target, "complete log\n", "TUI Replay Diagnosis"))
         finished = wait_for(worker, lambda event: event.kind == "diagnosis_export_finished")
         assert finished.value == (True, str(target))
         wait_for_path(worker, target)
@@ -646,18 +662,44 @@ def test_real_c_abi_diagnosis_contains_a_parseable_full_project(
     with target.open("rb") as compressed:
         with zstandard.ZstdDecompressor().stream_reader(compressed) as stream:
             with tarfile.open(fileobj=stream, mode="r|") as archive:
-                project_file = next(
-                    archive.extractfile(member).read()
+                members = {
+                    member.name: archive.extractfile(member).read()
                     for member in archive
-                    if member.isfile() and member.name.endswith(".reraproj")
-                )
+                    if member.isfile()
+                }
+    project_file = next(value for name, value in members.items() if name.endswith(".reraproj"))
+    replay = members["input-replay.jsonl"]
+    header = json.loads(replay.splitlines()[0])
+    assert header["record"] == "header"
+    assert header["status"] == "available"
+    assert header["origin"]["kind"] == "hot_reload"
+    assert header["origin"]["before_revision"] == "1"
+    assert header["origin"]["after_revision"] == "2"
+    assert header["origin"]["changes"] == [
+        {
+            "operation": "upsert",
+            "relative_path": "ERB/main.erb",
+            "category": "erb",
+        }
+    ]
+    assert header["step_count"] == 1
+    step = json.loads(replay.splitlines()[1])
+    assert step == {
+        "record": "step",
+        "sequence": 1,
+        "action": "text",
+        "wait_kind": "integer_value",
+        "result": {"kind": "integer", "value": "8"},
+        "message_skip": False,
+        "text": "8",
+    }
     assert project_file.startswith(b"RERAPROJ")
     abi = RuntimeAbi(RUNTIME_LIBRARY, resource_directory=project)
     try:
         manifest = abi.project_file_manifest(project_file)
     finally:
         abi.destroy_session()
-    assert manifest[0] == 1
+    assert manifest[0] == 2
     assert manifest[1]
 
 

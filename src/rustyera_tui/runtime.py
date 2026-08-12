@@ -10,6 +10,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from enum import IntEnum
 from pathlib import Path
 from typing import Any, Callable
 
@@ -76,6 +77,30 @@ COMPILED_CACHE_RETRY_NS = 250_000_000
 STATE_IMPORT_CHUNK_BYTES = 16 * 1024 * 1024
 
 
+class ExportStage(IntEnum):
+    SNAPSHOT = 1
+    COMPILED_CACHE = 2
+    DIAGNOSIS_SNAPSHOT = 3
+    DIAGNOSIS_PROJECT = 4
+    PROJECT_FILE = 5
+    DIAGNOSIS_REPLAY = 6
+
+
+RUNTIME_EXPORT_KIND = {
+    ExportStage.SNAPSHOT: 1,
+    ExportStage.COMPILED_CACHE: 2,
+    ExportStage.DIAGNOSIS_SNAPSHOT: 1,
+    ExportStage.DIAGNOSIS_PROJECT: 3,
+    ExportStage.PROJECT_FILE: 3,
+    ExportStage.DIAGNOSIS_REPLAY: 4,
+}
+DIAGNOSIS_EXPORT_STAGES = {
+    ExportStage.DIAGNOSIS_REPLAY,
+    ExportStage.DIAGNOSIS_SNAPSHOT,
+    ExportStage.DIAGNOSIS_PROJECT,
+}
+
+
 def _debug_action_owner(action: str) -> str | None:
     if action.startswith("console_"):
         return "console"
@@ -91,9 +116,10 @@ class DiagnosisExport:
     target: Path
     project_name: str
     logs: str
+    input_replay: bytes | None = None
     snapshot: bytes | None = None
     project_file: bytes | None = None
-    stage: str = "snapshot"
+    stage: str = "export_wait"
     retry_after_ns: int = 0
 
 
@@ -647,7 +673,7 @@ class RuntimeClient:
         elif tag == 52:
             self._handle_service(value, correlation_id)
         elif tag == 61:
-            self._handle_export_ready(value)
+            self._handle_export_ready(value, correlation_id)
         elif tag == 63:
             self._handle_import_accepted(value)
         elif tag == 66:
@@ -691,13 +717,16 @@ class RuntimeClient:
                 )
             cache_export_rejection = correlation_id == self.pending_cache_export_message
             diagnosis_export_rejection = (
-                correlation_id == self.pending_export_message and self.pending_export_kind in (3, 4)
+                correlation_id == self.pending_export_message
+                and self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES
             )
             snapshot_export_rejection = (
-                correlation_id == self.pending_export_message and self.pending_export_kind == 1
+                correlation_id == self.pending_export_message
+                and self.pending_export_kind == ExportStage.SNAPSHOT
             )
             project_file_export_rejection = (
-                correlation_id == self.pending_export_message and self.pending_export_kind == 5
+                correlation_id == self.pending_export_message
+                and self.pending_export_kind == ExportStage.PROJECT_FILE
             )
             pending_configuration = getattr(self, "pending_configuration", None)
             configuration_rejection = (
@@ -733,7 +762,11 @@ class RuntimeClient:
                 stage = self.pending_export_kind
                 self.pending_export = None
                 self.pending_export_message = None
-                if stage == 4 and value.get(0) == 0 and self.pending_diagnosis is not None:
+                if (
+                    stage == ExportStage.DIAGNOSIS_PROJECT
+                    and value.get(0) == 0
+                    and self.pending_diagnosis is not None
+                ):
                     self.pending_export_kind = None
                     self.pending_diagnosis.stage = "project_wait"
                     self.pending_diagnosis.retry_after_ns = (
@@ -887,9 +920,7 @@ class RuntimeClient:
             return
         if self.pending_bundle is not None:
             if cache_hit:
-                self.pending_bundle = self.pending_bundle.materialize(
-                    self._project_scan_progress
-                )
+                self.pending_bundle = self.pending_bundle.materialize(self._project_scan_progress)
                 self.pending_bundle.reload_baseline_pending = True
             else:
                 self.pending_bundle.reload_baseline_pending = False
@@ -1223,7 +1254,7 @@ class RuntimeClient:
         self.cache_refresh_pending = False
         self.cache_ready = False
         self.pending_cache_after = after
-        self.pending_export_kind = 2
+        self.pending_export_kind = ExportStage.COMPILED_CACHE
         if self.storage is None:
             self._finish_cache_export(False)
             return
@@ -1251,7 +1282,7 @@ class RuntimeClient:
             return
         if self.pending_diagnosis is not None:
             if self.pending_diagnosis.stage == "export_wait" and self.pending_export is None:
-                self._start_diagnosis_snapshot_export()
+                self._start_diagnosis_replay_export()
             elif (
                 self.pending_diagnosis.stage == "project_wait"
                 and self.pending_export is None
@@ -1368,7 +1399,11 @@ class RuntimeClient:
         self.send_runtime(53, {0: request_id, 1: result}, correlation_id=correlation_id)
 
     def _advance_deadline(self) -> None:
-        if not self.active_wait or self.active_wait.get(8) is None:
+        if (
+            self.pending_diagnosis is not None
+            or not self.active_wait
+            or self.active_wait.get(8) is None
+        ):
             return
         now = time.monotonic_ns()
         if now - self.last_time_advance_ns >= 50_000_000:
@@ -1427,6 +1462,8 @@ class RuntimeClient:
         message_skip: bool = False,
         stale_retries: int = 0,
     ) -> None:
+        if self.pending_diagnosis is not None:
+            return
         message_id = self.send_runtime(
             30,
             {
@@ -1446,6 +1483,8 @@ class RuntimeClient:
             self.request_debug_action("pause_only")
 
     def _retry_stale_input(self, request: PendingGameInput) -> bool:
+        if self.pending_diagnosis is not None:
+            return False
         wait = self.active_wait
         if (
             request.stale_retries != 0
@@ -1463,7 +1502,7 @@ class RuntimeClient:
         return True
 
     def input_undo(self, token: dict[int, Any] | None) -> None:
-        if token is not None:
+        if token is not None and self.pending_diagnosis is None:
             self.send_runtime(37, {0: token})
 
     def projection(
@@ -1528,13 +1567,13 @@ class RuntimeClient:
         if purpose_id is None:
             raise ValueError(f"unknown snapshot export purpose {purpose}")
         self.pending_export = (path, bytearray(), None)
-        self.pending_export_kind = 1
+        self.pending_export_kind = ExportStage.SNAPSHOT
         self.pending_export_message = self.send_runtime(60, {0: 1, 1: purpose_id})
 
     def export_project_file(self, path: Path, cancelled: Callable[[], bool] | None = None) -> None:
         if self.bundle is None:
             raise RuntimeError("no project is active")
-        if self.pending_export_kind == 2 or self.cache_preparation_started:
+        if self.pending_export_kind == ExportStage.COMPILED_CACHE or self.cache_preparation_started:
             self.send_runtime(71, {0: 2})
             self.pending_export = None
             self.pending_cache_export_message = None
@@ -1561,11 +1600,14 @@ class RuntimeClient:
         if export is None:
             return
         self.pending_export = (export.target, bytearray(), None)
-        self.pending_export_kind = 5
+        self.pending_export_kind = ExportStage.PROJECT_FILE
         self.pending_export_message = self.send_runtime(60, {0: 3, 1: 0})
 
     def cancel_project_file_export(self) -> None:
-        if self.pending_export_kind != 5 and self.full_project_export is None:
+        if (
+            self.pending_export_kind != ExportStage.PROJECT_FILE
+            and self.full_project_export is None
+        ):
             return
         self.send_runtime(71, {0: 3})
         self._finish_project_file_export(None, "已取消导出全量项目文件")
@@ -1582,7 +1624,16 @@ class RuntimeClient:
             stage="export_wait",
         )
         if self.pending_export is None:
-            self._start_diagnosis_snapshot_export()
+            self._start_diagnosis_replay_export()
+
+    def _start_diagnosis_replay_export(self) -> None:
+        diagnosis = self.pending_diagnosis
+        if diagnosis is None:
+            return
+        diagnosis.stage = "replay"
+        self.pending_export = (diagnosis.target, bytearray(), None)
+        self.pending_export_kind = ExportStage.DIAGNOSIS_REPLAY
+        self.pending_export_message = self.send_runtime(60, {0: 4, 1: 0})
 
     def _start_diagnosis_snapshot_export(self) -> None:
         diagnosis = self.pending_diagnosis
@@ -1590,11 +1641,26 @@ class RuntimeClient:
             return
         diagnosis.stage = "snapshot"
         self.pending_export = (diagnosis.target, bytearray(), None)
-        self.pending_export_kind = 3
+        self.pending_export_kind = ExportStage.DIAGNOSIS_SNAPSHOT
         self.pending_export_message = self.send_runtime(60, {0: 1, 1: 2})
 
-    def _handle_export_ready(self, ready: dict[int, Any]) -> None:
+    def _handle_export_ready(
+        self, ready: dict[int, Any], correlation_id: int | None = None
+    ) -> None:
         if self.pending_export is None:
+            return
+        stage = self.pending_export_kind
+        expected_kind = RUNTIME_EXPORT_KIND.get(stage) if stage is not None else None
+        if (
+            stage is None
+            or expected_kind is None
+            or (
+                self.pending_export_message is not None
+                and correlation_id != self.pending_export_message
+            )
+            or ready.get(0) != expected_kind
+        ):
+            self._fail_mismatched_export("state export ready does not match the active request")
             return
         self.pending_export_message = None
         result_tag, fields = unwrap_variant(ready[1])
@@ -1605,17 +1671,20 @@ class RuntimeClient:
             self.events.put(FrontendEvent("runtime_error", f"当前状态不能生成快照：{reasons}"))
             self.pending_export = None
             self.pending_export_message = None
-            if self.pending_export_kind == 2:
+            if self.pending_export_kind == ExportStage.COMPILED_CACHE:
                 self._finish_cache_export(False)
-            elif self.pending_export_kind == 5:
+            elif self.pending_export_kind == ExportStage.PROJECT_FILE:
                 self._finish_project_file_export(False)
-            elif self.pending_export_kind in (3, 4):
+            elif self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
                 self._finish_diagnosis_export(False, f"当前状态不能导出：{reasons}")
             else:
                 self.pending_export_kind = None
                 self.events.put(FrontendEvent("snapshot_export_finished", False))
             return
         descriptor = fields[0]
+        if descriptor.get(1) != expected_kind:
+            self._fail_mismatched_export("state export descriptor kind does not match the request")
+            return
         path, data, _ = self.pending_export
         self.pending_export = (path, data, descriptor)
         self.send_runtime(67, {0: descriptor[0], 1: 0, 2: 1024 * 1024})
@@ -1626,15 +1695,24 @@ class RuntimeClient:
         path, data, descriptor = self.pending_export
         stream = (
             self.full_project_export.stream
-            if self.pending_export_kind == 5 and self.full_project_export is not None
+            if self.pending_export_kind == ExportStage.PROJECT_FILE
+            and self.full_project_export is not None
             else self.pending_cache_stream
-            if self.pending_export_kind == 2
+            if self.pending_export_kind == ExportStage.COMPILED_CACHE
             else None
         )
         received = stream.received if stream is not None else len(data)
         if descriptor is None or chunk[0] != descriptor[0] or chunk[1] != received:
+            if self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
+                self._finish_diagnosis_export(
+                    False, "diagnosis state export chunk is out of sequence"
+                )
+                return
             raise RuntimeError("snapshot export chunk is out of sequence")
-        if self.pending_export_kind in (2, 5):
+        if self.pending_export_kind in {
+            ExportStage.COMPILED_CACHE,
+            ExportStage.PROJECT_FILE,
+        }:
             if stream is None:
                 raise RuntimeError("export stream is missing")
             stream.write(bytes(chunk[2]))
@@ -1643,38 +1721,56 @@ class RuntimeClient:
         if not chunk[3]:
             self.send_runtime(67, {0: descriptor[0], 1: received + len(chunk[2]), 2: 1024 * 1024})
             return
-        if self.pending_export_kind not in (2, 5) and (
-            len(data) != descriptor[2] or blake3.blake3(data).digest() != descriptor[3]
-        ):
+        if self.pending_export_kind not in {
+            ExportStage.COMPILED_CACHE,
+            ExportStage.PROJECT_FILE,
+        } and (len(data) != descriptor[2] or blake3.blake3(data).digest() != descriptor[3]):
+            if self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
+                self._finish_diagnosis_export(
+                    False, "diagnosis state export size or digest verification failed"
+                )
+                return
             raise RuntimeError("snapshot export digest verification failed")
         export_kind = self.pending_export_kind
         self.pending_export = None
         self.pending_export_message = None
-        if export_kind == 2:
+        if export_kind == ExportStage.COMPILED_CACHE:
             if self.pending_cache_stream is None:
                 raise RuntimeError("cache export stream is missing")
             self.pending_cache_stream.finish(descriptor[2], descriptor[3])
             self.pending_cache_stream = None
             self._finish_cache_export(True)
-        elif export_kind == 5:
+        elif export_kind == ExportStage.PROJECT_FILE:
             if self.full_project_export is None:
                 raise RuntimeError("project export stream is missing")
             self.full_project_export.stream.finish(descriptor[2], descriptor[3])
             self._finish_project_file_export(True, f"项目文件已导出到 {path}")
-        elif export_kind == 3:
+        elif export_kind == ExportStage.DIAGNOSIS_SNAPSHOT:
             if self.pending_diagnosis is None:
                 raise RuntimeError("diagnosis export state is missing")
             self.pending_diagnosis.snapshot = bytes(data)
             self._start_diagnosis_project_export()
-        elif export_kind == 4:
+        elif export_kind == ExportStage.DIAGNOSIS_REPLAY:
+            if self.pending_diagnosis is None:
+                raise RuntimeError("diagnosis export state is missing")
+            self.pending_diagnosis.input_replay = bytes(data)
+            self._start_diagnosis_snapshot_export()
+        elif export_kind == ExportStage.DIAGNOSIS_PROJECT:
             if self.pending_diagnosis is None:
                 raise RuntimeError("diagnosis export state is missing")
             self.pending_diagnosis.project_file = bytes(data)
+            if (
+                self.pending_diagnosis.input_replay is None
+                or self.pending_diagnosis.snapshot is None
+            ):
+                self._finish_diagnosis_export(False, "diagnosis archive input is missing")
+                return
             try:
                 write_diagnosis_archive(
                     self.pending_diagnosis.target,
                     project_name=self.pending_diagnosis.project_name,
-                    snapshot=self.pending_diagnosis.snapshot or b"",
+                    snapshot=self.pending_diagnosis.snapshot,
+                    input_replay=self.pending_diagnosis.input_replay,
                     logs=self.pending_diagnosis.logs,
                     project_file=self.pending_diagnosis.project_file,
                 )
@@ -1705,15 +1801,30 @@ class RuntimeClient:
         if diagnosis is None:
             return
         self.pending_export = (diagnosis.target, bytearray(), None)
-        self.pending_export_kind = 4
+        self.pending_export_kind = ExportStage.DIAGNOSIS_PROJECT
         self.pending_export_message = self.send_runtime(60, {0: 3, 1: 0})
 
     def _finish_diagnosis_export(self, success: bool, message: str) -> None:
+        if not success:
+            descriptor = self.pending_export[2] if self.pending_export is not None else None
+            try:
+                if descriptor is not None:
+                    self.send_runtime(69, {0: descriptor[0]})
+                elif self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
+                    self.send_runtime(71, {0: RUNTIME_EXPORT_KIND[self.pending_export_kind]})
+            except Exception:  # noqa: BLE001 - cleanup must restore frontend interaction
+                pass
         self.pending_export = None
         self.pending_export_kind = None
         self.pending_export_message = None
         self.pending_diagnosis = None
         self.events.put(FrontendEvent("diagnosis_export_finished", (success, message)))
+
+    def _fail_mismatched_export(self, message: str) -> None:
+        if self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
+            self._finish_diagnosis_export(False, message)
+            return
+        raise RuntimeError(message)
 
     def _finish_cache_export(self, success: bool) -> None:
         self.pending_export = None

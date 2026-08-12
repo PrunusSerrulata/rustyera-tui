@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import blake3
+import pytest
 
 from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
 from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile, StorageBackend
@@ -30,6 +31,7 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     )
     client.events = queue.Queue()
     client.session = {0: 1, 1: 2}
+    client.phase = 6
     client.active_wait = None
     client._projection_messages = set()
     client._input_messages = {}
@@ -382,7 +384,7 @@ def test_snapshot_export_purposes_and_restore_warnings_are_frontend_visible(
         "complete log\n",
         "eraThe World",
     )
-    assert captured.pop() == (60, {0: 1, 1: 2})
+    assert captured.pop() == (60, {0: 4, 1: 0})
 
     client._handle_runtime(
         97,
@@ -418,9 +420,118 @@ def test_diagnosis_export_waits_for_an_existing_state_transfer(tmp_path: Path) -
     client.pending_export = None
     client.maybe_refresh_compiled_cache()
 
-    assert captured == [(60, {0: 1, 1: 2})]
-    assert client.pending_export_kind == 3
-    assert client.pending_diagnosis.stage == "snapshot"
+    assert captured == [(60, {0: 4, 1: 0})]
+    assert client.pending_export_kind == 6
+    assert client.pending_diagnosis.stage == "replay"
+
+
+def test_diagnosis_export_blocks_input_undo_and_deadline_advancement(tmp_path: Path) -> None:
+    client, captured = client_with_capture()
+    client.bundle = SimpleNamespace(root=tmp_path / "eraTW")
+    client.active_wait = {0: 7, 1: 3, 8: 1, 11: {0: 2, 1: 3}}
+
+    client.export_diagnosis(tmp_path / "diagnosis.tar.zst", "fault log\n", "eraThe World")
+    captured.clear()
+    client.submit_text("blocked")
+    client.activate({0: 2, 1: 4})
+    client.input_undo({0: 2, 1: 3})
+    client._advance_deadline()
+
+    assert captured == []
+
+
+@pytest.mark.parametrize(
+    ("ready", "correlation_id"),
+    [
+        (
+            {
+                0: 4,
+                1: [0, [{0: 10, 1: 4, 2: 2, 3: blake3.blake3(b"{}").digest()}]],
+            },
+            99,
+        ),
+        (
+            {
+                0: 1,
+                1: [0, [{0: 10, 1: 4, 2: 2, 3: blake3.blake3(b"{}").digest()}]],
+            },
+            1,
+        ),
+        (
+            {
+                0: 4,
+                1: [0, [{0: 10, 1: 1, 2: 2, 3: blake3.blake3(b"{}").digest()}]],
+            },
+            1,
+        ),
+    ],
+)
+def test_diagnosis_ready_mismatch_cancels_and_restores_interaction(
+    tmp_path: Path, ready: dict[int, Any], correlation_id: int
+) -> None:
+    client, captured = client_with_capture()
+    client.bundle = SimpleNamespace(root=tmp_path / "eraTW")
+    client.active_wait = {0: 7, 1: 3, 8: 1, 11: {0: 2, 1: 3}}
+    client.export_diagnosis(tmp_path / "diagnosis.tar.zst", "fault\n", "eraThe World")
+
+    client._handle_export_ready(ready, correlation_id=correlation_id)
+
+    assert client.pending_diagnosis is None
+    assert client.pending_export is None
+    assert captured[-1] == (71, {0: 4})
+    assert client.events.get_nowait().kind == "diagnosis_export_finished"
+
+
+@pytest.mark.parametrize(
+    ("chunk", "descriptor"),
+    [
+        ({0: 99, 1: 0, 2: b"{}", 3: True}, {0: 10, 1: 4, 2: 2, 3: b"x" * 32}),
+        ({0: 10, 1: 1, 2: b"{}", 3: True}, {0: 10, 1: 4, 2: 2, 3: b"x" * 32}),
+        ({0: 10, 1: 0, 2: b"{}", 3: True}, {0: 10, 1: 4, 2: 3, 3: b"x" * 32}),
+        ({0: 10, 1: 0, 2: b"{}", 3: True}, {0: 10, 1: 4, 2: 2, 3: b"x" * 32}),
+    ],
+)
+def test_diagnosis_chunk_validation_failure_is_local_and_restores_interaction(
+    tmp_path: Path, chunk: dict[int, Any], descriptor: dict[int, Any]
+) -> None:
+    client, captured = client_with_capture()
+    client.bundle = SimpleNamespace(root=tmp_path / "eraTW")
+    target = tmp_path / "diagnosis.tar.zst"
+    client.export_diagnosis(target, "fault\n", "eraThe World")
+    client.pending_export = (target, bytearray(), descriptor)
+
+    client._handle_export_chunk(chunk)
+
+    assert client.pending_diagnosis is None
+    assert client.pending_export is None
+    assert captured[-1] == (69, {0: 10})
+    finished = client.events.get_nowait()
+    assert finished.kind == "diagnosis_export_finished"
+    assert finished.value[0] is False
+
+
+def test_diagnosis_cleanup_restores_interaction_when_cancel_send_fails(tmp_path: Path) -> None:
+    client, _captured = client_with_capture()
+    client.bundle = SimpleNamespace(root=tmp_path / "eraTW")
+    target = tmp_path / "diagnosis.tar.zst"
+    client.export_diagnosis(target, "fault\n", "eraThe World")
+    client.pending_export = (
+        target,
+        bytearray(),
+        {0: 10, 1: 4, 2: 2, 3: blake3.blake3(b"{}").digest()},
+    )
+
+    def fail_send(*_args: object, **_kwargs: object) -> None:
+        raise OSError("cancel failed")
+
+    client.send_runtime = fail_send  # type: ignore[method-assign]
+    client._finish_diagnosis_export(False, "failed")
+
+    assert client.pending_diagnosis is None
+    assert client.pending_export is None
+    assert client.events.get_nowait() == FrontendEvent(
+        "diagnosis_export_finished", (False, "failed")
+    )
 
 
 def test_diagnosis_exports_a_full_project_and_retries_without_rescanning(
@@ -438,9 +549,19 @@ def test_diagnosis_exports_a_full_project_and_retries_without_rescanning(
     client.bundle = SimpleNamespace(project_file=None, materialize=materialize)
     target = tmp_path / "diagnosis.tar.zst"
     snapshot = b"snapshot"
+    input_replay = b'{"record":"header"}\n'
     project_file = b"RERAPROJproject"
 
     client.export_diagnosis(target, "complete log\n", "diagnosis fixture")
+    replay_descriptor = {
+        0: 10,
+        1: 4,
+        2: len(input_replay),
+        3: blake3.blake3(input_replay).digest(),
+    }
+    client.pending_export = (target, bytearray(), replay_descriptor)
+    client._handle_export_chunk({0: 10, 1: 0, 2: input_replay, 3: True})
+    assert captured[-1] == (60, {0: 1, 1: 2})
     snapshot_descriptor = {
         0: 11,
         1: 3,
@@ -492,8 +613,17 @@ def test_diagnosis_project_scan_failure_releases_the_export_state(tmp_path: Path
     )
     target = tmp_path / "diagnosis.tar.zst"
     snapshot = b"snapshot"
+    input_replay = b'{"record":"header"}\n'
 
     client.export_diagnosis(target, "complete log\n", "diagnosis fixture")
+    replay_descriptor = {
+        0: 10,
+        1: 4,
+        2: len(input_replay),
+        3: blake3.blake3(input_replay).digest(),
+    }
+    client.pending_export = (target, bytearray(), replay_descriptor)
+    client._handle_export_chunk({0: 10, 1: 0, 2: input_replay, 3: True})
     descriptor = {
         0: 11,
         1: 3,

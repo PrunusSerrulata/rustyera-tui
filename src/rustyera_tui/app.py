@@ -36,7 +36,7 @@ from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.3.0 (e7e16ec9)"
+CORE_VERSION = "0.3.0 (6b410b7e)"
 
 
 def frontend_version() -> str:
@@ -80,9 +80,7 @@ class RustyEraTui(App[None]):
         ("file-preferences", "设置…"),
         ("file-exit", "退出"),
     )
-    FILE_SEPARATORS = frozenset(
-        {"file-export-snapshot", "file-preferences", "file-exit"}
-    )
+    FILE_SEPARATORS = frozenset({"file-export-snapshot", "file-preferences", "file-exit"})
     GAME_READY_PHASES = {4, 5, 6, 7, 10, 11}
     GAME_FILE_ITEMS = (
         "file-restart",
@@ -662,9 +660,7 @@ class RustyEraTui(App[None]):
 
     def _set_debug_enabled(self, enabled: bool) -> None:
         self.debug_enabled = enabled
-        self.query_one("#debug-toggle", Button).label = (
-            "禁用调试" if enabled else "启用调试"
-        )
+        self.query_one("#debug-toggle", Button).label = "禁用调试" if enabled else "启用调试"
         self._refresh_menu_availability()
         if not enabled:
             self.single_step = False

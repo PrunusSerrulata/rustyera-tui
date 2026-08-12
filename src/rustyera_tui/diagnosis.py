@@ -39,6 +39,7 @@ def write_diagnosis_archive(
     *,
     project_name: str,
     snapshot: bytes,
+    input_replay: bytes,
     logs: str,
     project_file: bytes,
     exported_at: datetime | None = None,
@@ -53,6 +54,7 @@ def write_diagnosis_archive(
     members = (
         ("runtime.snapshot", snapshot),
         ("runtime.log", logs.encode("utf-8")),
+        ("input-replay.jsonl", input_replay),
         (f"{project_name}.reraproj", project_file),
     )
     try:

@@ -7,8 +7,9 @@ Use JSON `schema_version: 1`.
 - `project`: Required absolute path or path relative to the scenario.
 - `mode`: `fixed` or `autonomous`.
 - `start.type`: `new_game`, `traditional_save`, or `vm_snapshot`. Restore types require `path`.
-- `seed`: Optional non-negative signed 32-bit integer. When absent, the driver generates a random
-  seed and records it. It applies only to `new_game`.
+- `seed`: Optional unsigned 64-bit integer. Use a decimal string for the full range when authoring
+  portable JSON. When absent, the driver generates a random seed and records it. It applies only
+  to `new_game`.
 - `inputs`: Fixed prefix. An item is a string/integer or `{ "value": ..., "when": {
   "output_contains": ... } }`. Use `{ "action": "skip_message" }` to submit the visible
   Enter/AnyKey wait with continuous message skipping in Rust-only scenarios; reference comparison

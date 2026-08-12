@@ -77,16 +77,7 @@ class Scenario:
             candidate = Path(start_path)
             state_path = candidate if candidate.is_absolute() else resolved.parent / candidate
             state_path = state_path.expanduser().resolve(strict=True)
-        configured_seed = raw.get("seed")
-        seed = (
-            secrets.randbelow(0x8000_0000)
-            if configured_seed is None and start_type == "new_game"
-            else int(configured_seed)
-            if configured_seed is not None and start_type == "new_game"
-            else None
-        )
-        if seed is not None and not 0 <= seed <= 0x7FFF_FFFF:
-            raise TestDriverError("seed must be a non-negative 32-bit integer")
+        seed = _scenario_seed(raw.get("seed")) if start_type == "new_game" else None
         inputs = tuple(
             {"value": item} if isinstance(item, (str, int)) else dict(item)
             for item in raw.get("inputs", [])
@@ -113,6 +104,20 @@ class Scenario:
             dict(raw.get("comparison", {})),
             dict(raw.get("checkpoint", {})),
         )
+
+
+def _scenario_seed(value: object) -> int:
+    if value is None:
+        return secrets.randbelow(0x8000_0000)
+    if type(value) is int:
+        seed = value
+    elif isinstance(value, str) and value.isascii() and value.isdecimal():
+        seed = int(value)
+    else:
+        raise TestDriverError("seed must be a decimal unsigned 64-bit integer")
+    if not 0 <= seed <= 0xFFFF_FFFF_FFFF_FFFF:
+        raise TestDriverError("seed must be a decimal unsigned 64-bit integer")
+    return seed
 
 
 def plain_output(model: PresentationModel) -> list[str]:

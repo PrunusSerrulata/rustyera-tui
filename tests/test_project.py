@@ -456,9 +456,7 @@ def test_cache_hit_baseline_hydrates_the_first_scoped_reload_without_leaking_dis
     candidate, request = baseline.reload_folder(selected_folder)
 
     submitted = {
-        fields[0][0]: fields[0][2]
-        for tag, fields in map(unwrap_variant, request[2])
-        if tag == 0
+        fields[0][0]: fields[0][2] for tag, fields in map(unwrap_variant, request[2]) if tag == 0
     }
     assert submitted == {
         "ERB/folder/command.erb": variant(0, "PRINTL FOLDER_VERSION=2\n"),
@@ -469,9 +467,7 @@ def test_cache_hit_baseline_hydrates_the_first_scoped_reload_without_leaking_dis
     _, second_request = candidate.reload_file(unselected)
 
     assert len(second_request[2]) == 1
-    assert unwrap_variant(second_request[2][0])[1][0][2] == variant(
-        0, "PRINTL SINGLE_VERSION=2\n"
-    )
+    assert unwrap_variant(second_request[2][0])[1][0][2] == variant(0, "PRINTL SINGLE_VERSION=2\n")
 
 
 def test_quick_scan_reuses_stat_index_and_materializes_on_demand(

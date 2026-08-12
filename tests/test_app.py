@@ -192,8 +192,7 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         assert not app.query_one("#debug-logs", Button).disabled
         file_menu = app.query_one("#file-menu")
         assert [
-            child.id if isinstance(child, Button) else "separator"
-            for child in file_menu.children
+            child.id if isinstance(child, Button) else "separator" for child in file_menu.children
         ] == [
             "file-export-project",
             "file-restart",
@@ -223,8 +222,7 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         ]
         debug_menu = app.query_one("#debug-menu")
         assert [
-            child.id if isinstance(child, Button) else "separator"
-            for child in debug_menu.children
+            child.id if isinstance(child, Button) else "separator" for child in debug_menu.children
         ] == [
             "debug-toggle",
             "separator",
@@ -376,7 +374,8 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
         assert "前端版本：0.3.0" in contents
-        assert "core 版本：0.3.0 (e7e16ec9)" in contents
+        pinned_revision = (Path(__file__).parent.parent / "rustyera-core.rev").read_text().strip()
+        assert f"core 版本：0.3.0 ({pinned_revision[:8]})" in contents
         assert "许可证：GPL-3.0-only" in contents
 
 

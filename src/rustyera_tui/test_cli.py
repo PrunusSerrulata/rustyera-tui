@@ -129,9 +129,7 @@ def dispatch_agent_request(
         )
     if operation == "inspect":
         watched = tuple(str(item) for item in request.get("watches", []))
-        return AgentDispatch(
-            {"type": "inspection", "values": rust.inspect(watched, deadline)}
-        )
+        return AgentDispatch({"type": "inspection", "values": rust.inspect(watched, deadline)})
     if operation == "wait_status":
         status = str(request.get("text", ""))
         rust.wait_for_status(status, deadline)
@@ -194,9 +192,7 @@ def _input_event(step: int, source: str, action: str, value: str) -> dict[str, A
     }
 
 
-def _runtime_action_event(
-    step: int, action: str, relative_path: str | None
-) -> dict[str, Any]:
+def _runtime_action_event(step: int, action: str, relative_path: str | None) -> dict[str, Any]:
     return {
         "type": "runtime_action",
         "step": step + 1,
