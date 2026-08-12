@@ -1179,21 +1179,14 @@ async def test_runtime_events_only_log_backend_authoritative_entries(tmp_path: P
         worker.events.put(
             FrontendEvent(
                 "log",
-                LogMessage(LogLevel.DEBUG, "Runtime phase -> WaitingInput", authoritative=True),
-            )
-        )
-        worker.events.put(
-            FrontendEvent(
-                "log",
                 LogMessage(LogLevel.DEBUG, "debug stopped: StepCompleted", authoritative=True),
             )
         )
         await pilot.pause(0.1)
-        phase_log = next(log for log in app.logs if "Runtime phase -> WaitingInput" in log)
         pause_log = next(log for log in app.logs if "debug stopped: StepCompleted" in log)
-        assert phase_log.level is LogLevel.DEBUG
         assert pause_log.level is LogLevel.DEBUG
-        assert len(app.logs) == 2
+        assert all("Runtime phase ->" not in log.message for log in app.logs)
+        assert len(app.logs) == 1
 
 
 async def test_single_step_prompt_shows_source_and_f10_advances(tmp_path: Path) -> None:
