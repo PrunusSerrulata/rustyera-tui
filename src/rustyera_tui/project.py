@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -24,7 +25,7 @@ from .frontend_io import (
     frontend_error,
 )
 from .storage import StorageBackend as StorageBackend
-from .wire import variant
+from .wire import unwrap_variant, variant
 
 FILE_CSV = 0
 FILE_ERH = 1
@@ -117,6 +118,7 @@ class ProjectBundle:
     files: dict[str, ProjectFile]
     project_file: Path | None = None
     quick_scan_pending: bool = False
+    reload_baseline_pending: bool = False
 
     @classmethod
     def from_project_file_manifest(
@@ -430,14 +432,6 @@ class ProjectBundle:
         if self.project_file is not None:
             raise RuntimeError("a packaged project cannot reload source files")
         candidate = ProjectBundle.scan(self.root, self.revision + 1, progress)
-        if self.quick_scan_pending:
-            changes = [
-                variant(0, item.submitted())
-                for item in sorted(
-                    candidate.files.values(), key=lambda value: _path_sort_key(value.relative_path)
-                )
-            ]
-            return candidate, {0: self.revision, 1: candidate.revision, 2: changes}
         changes: list[Any] = []
         for relative_path in sorted(set(self.files) | set(candidate.files), key=_path_sort_key):
             old = self.files.get(relative_path)
@@ -449,33 +443,137 @@ class ProjectBundle:
             ):
                 changes.append(variant(0, new.submitted()))
         reload_request = {0: self.revision, 1: candidate.revision, 2: changes}
-        return candidate, reload_request
+        return self._hydrate_reload_baseline(candidate, reload_request)
+
+    def reload_folder(
+        self,
+        path: Path,
+        progress: ProjectScanProgress | None = None,
+    ) -> tuple[ProjectBundle, dict[int, Any]]:
+        if self.project_file is not None:
+            raise RuntimeError("a packaged project cannot reload source files")
+        folder = self._project_relative_path(path, expected="folder")
+        prefix = "" if folder == "." else f"{folder}/"
+        scanned_files = self._scan_folder(folder, progress)
+        selected = set(scanned_files) | {
+            relative for relative in self.files if not prefix or relative.startswith(prefix)
+        }
+        candidate, request = self._reload_selected(scanned_files, selected)
+        return self._hydrate_reload_baseline(candidate, request)
+
+    def _scan_folder(
+        self,
+        folder: str,
+        progress: ProjectScanProgress | None,
+    ) -> dict[str, ProjectFile]:
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="rustyera-project-scan") as pool:
+            return pool.submit(self._scan_folder_sync, folder, progress).result()
+
+    def _scan_folder_sync(
+        self,
+        folder: str,
+        progress: ProjectScanProgress | None,
+    ) -> dict[str, ProjectFile]:
+        directory = self.root if folder == "." else self.root / PurePosixPath(folder)
+        canonical_roots = frozenset(
+            PurePosixPath(relative).parts[0].lower()
+            for relative in self.files
+            if PurePosixPath(relative).parts[0].lower() in {"csv", "erb"}
+        )
+        candidates = [
+            (path, category)
+            for path in _project_paths(directory)
+            if (category := _classify_project_path(self.root, path, canonical_roots)) is not None
+        ]
+        if progress is not None:
+            progress(0, len(candidates))
+        files: dict[str, ProjectFile] = {}
+        for index, (source, category) in enumerate(candidates, 1):
+            item = read_project_file(self.root, source, category)
+            files[item.relative_path] = item
+            _report_scan_progress(progress, index, len(candidates))
+        return files
+
+    def _reload_selected(
+        self,
+        scanned: dict[str, ProjectFile],
+        selected: set[str],
+    ) -> tuple[ProjectBundle, dict[int, Any]]:
+        files = dict(self.files)
+        changes: list[Any] = []
+        for relative in sorted(selected, key=_path_sort_key):
+            old = self.files.get(relative)
+            new = scanned.get(relative)
+            if new is None and old is not None:
+                files.pop(relative, None)
+                changes.append(variant(1, old.category, relative))
+            elif new is not None and (
+                old is None or new.category != old.category or new.content_hash != old.content_hash
+            ):
+                files[relative] = new
+                changes.append(variant(0, new.submitted()))
+        candidate = ProjectBundle(
+            self.root,
+            self.revision + 1,
+            files,
+            quick_scan_pending=any(item.payload is None for item in files.values()),
+        )
+        return candidate, {0: self.revision, 1: candidate.revision, 2: changes}
 
     def reload_file(self, path: Path) -> tuple[ProjectBundle, dict[int, Any]]:
         if self.project_file is not None:
             raise RuntimeError("a packaged project cannot reload source files")
-        if self.quick_scan_pending:
-            return self.rescan()
-        expanded = path.expanduser()
-        absolute = expanded if expanded.is_absolute() else Path.cwd() / expanded
-        lexical = Path(os.path.abspath(absolute))
-        if not lexical.is_file():
-            raise FileNotFoundError(lexical)
-        try:
-            relative = _normalize_relative_path(lexical.relative_to(self.root).as_posix())
-        except ValueError as error:
-            raise ValueError("the script file must be inside the active project") from error
+        relative = self._project_relative_path(path, expected="file")
+        lexical = self.root / PurePosixPath(relative)
         category = _classify_project_path(self.root, lexical, _canonical_source_roots(self.root))
         if category not in (FILE_CSV, FILE_ERH, FILE_ERB, FILE_CONFIGURATION):
             raise ValueError("only project source and configuration files can be reloaded")
         item = read_project_file(self.root, lexical, category)
-        candidate = ProjectBundle(self.root, self.revision + 1, dict(self.files))
-        candidate.files[relative] = item
-        return candidate, {
+        files = dict(self.files)
+        files[relative] = item
+        candidate = ProjectBundle(
+            self.root,
+            self.revision + 1,
+            files,
+            quick_scan_pending=any(value.payload is None for value in files.values()),
+        )
+        request = {
             0: self.revision,
             1: candidate.revision,
             2: [variant(0, item.submitted())],
         }
+        return self._hydrate_reload_baseline(candidate, request)
+
+    def _hydrate_reload_baseline(
+        self,
+        candidate: ProjectBundle,
+        request: dict[int, Any],
+    ) -> tuple[ProjectBundle, dict[int, Any]]:
+        if not self.reload_baseline_pending:
+            return candidate, request
+        removals = [change for change in request[2] if unwrap_variant(change)[0] == 1]
+        request[2] = [
+            variant(0, item.submitted())
+            for item in sorted(
+                candidate.files.values(),
+                key=lambda value: _path_sort_key(value.relative_path),
+            )
+        ] + removals
+        candidate.reload_baseline_pending = False
+        return candidate, request
+
+    def _project_relative_path(self, path: Path, *, expected: str) -> str:
+        expanded = path.expanduser()
+        absolute = expanded if expanded.is_absolute() else Path.cwd() / expanded
+        lexical = Path(os.path.abspath(absolute))
+        if expected == "file" and not lexical.is_file():
+            raise FileNotFoundError(lexical)
+        if expected == "folder" and not lexical.is_dir():
+            raise NotADirectoryError(lexical)
+        try:
+            return _normalize_relative_path(lexical.relative_to(self.root).as_posix())
+        except ValueError as error:
+            raise ValueError(f"the {expected} must be inside the active project") from error
 
 
 def _payload_size(payload: list[Any]) -> int:

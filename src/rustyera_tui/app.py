@@ -69,16 +69,19 @@ class RustyEraTui(App[None]):
     ]
 
     FILE_ITEMS = (
-        ("file-restart", "重启"),
-        ("file-title", "返回标题画面"),
-        ("file-preferences", "偏好选项..."),
-        ("file-reload-all", "重新载入所有脚本"),
-        ("file-reload-folder", "重新载入文件夹..."),
-        ("file-reload-file", "重新载入脚本文件..."),
-        ("file-export-project", "导出全量项目文件..."),
-        ("file-export-snapshot", "导出当前VM快照..."),
-        ("file-restore-snapshot", "恢复VM快照..."),
+        ("file-export-project", "导出全量项目文件…"),
+        ("file-restart", "重新开始"),
+        ("file-title", "返回标题"),
+        ("file-reload-all", "重新加载全部脚本"),
+        ("file-reload-folder", "重新加载文件夹…"),
+        ("file-reload-file", "重新加载单个脚本…"),
+        ("file-export-snapshot", "导出 VM 快照…"),
+        ("file-restore-snapshot", "恢复 VM 快照…"),
+        ("file-preferences", "设置…"),
         ("file-exit", "退出"),
+    )
+    FILE_SEPARATORS = frozenset(
+        {"file-export-snapshot", "file-preferences", "file-exit"}
     )
     GAME_READY_PHASES = {4, 5, 6, 7, 10, 11}
     GAME_FILE_ITEMS = (
@@ -191,14 +194,18 @@ class RustyEraTui(App[None]):
                 yield Input(placeholder="等待 Runtime…", id="prompt", disabled=True)
         with Vertical(id="file-menu", classes="dropdown"):
             for item_id, label in self.FILE_ITEMS:
+                if item_id in self.FILE_SEPARATORS:
+                    yield Rule(classes="menu-separator")
                 yield Button(label, id=item_id, classes="menu-item")
         with Vertical(id="debug-menu", classes="dropdown"):
-            yield Button("开启调试模式", id="debug-toggle", classes="menu-item")
-            yield Button("调试控制台...", id="debug-console", classes="menu-item", disabled=True)
-            yield Button("变量查看...", id="debug-variables", classes="menu-item", disabled=True)
-            yield Button("栈查看...", id="debug-stack", classes="menu-item", disabled=True)
+            yield Button("启用调试", id="debug-toggle", classes="menu-item")
+            yield Rule(classes="menu-separator")
+            yield Button("控制台…", id="debug-console", classes="menu-item", disabled=True)
+            yield Button("变量查看器…", id="debug-variables", classes="menu-item", disabled=True)
+            yield Button("Fibers / 调用栈…", id="debug-stack", classes="menu-item", disabled=True)
             yield Button("开启单步运行", id="debug-step-toggle", classes="menu-item", disabled=True)
-            yield Button("查看日志...", id="debug-logs", classes="menu-item")
+            yield Rule(classes="menu-separator")
+            yield Button("日志…", id="debug-logs", classes="menu-item")
         with Vertical(id="help-menu", classes="dropdown"):
             yield Button("导出诊断信息…", id="help-export-diagnosis", classes="menu-item")
             yield Rule(classes="menu-separator")
@@ -656,7 +663,7 @@ class RustyEraTui(App[None]):
     def _set_debug_enabled(self, enabled: bool) -> None:
         self.debug_enabled = enabled
         self.query_one("#debug-toggle", Button).label = (
-            "关闭调试模式" if enabled else "开启调试模式"
+            "禁用调试" if enabled else "启用调试"
         )
         self._refresh_menu_availability()
         if not enabled:
@@ -733,9 +740,9 @@ class RustyEraTui(App[None]):
         elif item_id == "file-reload-all":
             self.worker.send("reload_all")
         elif item_id == "file-reload-folder":
-            self._choose_path("重新载入 Era 项目文件夹", "directory", "load_project")
+            self._choose_path("重新加载文件夹", "directory", "reload_folder")
         elif item_id == "file-reload-file":
-            self._choose_path("重新载入脚本文件", "file", "reload_file")
+            self._choose_path("重新加载单个脚本", "file", "reload_file")
         elif item_id == "file-export-project":
             self.push_screen(
                 PathDialog("导出全量项目文件", "save", self._project_file_default_path()),

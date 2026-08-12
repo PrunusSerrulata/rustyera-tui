@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/hot_reload",
+  "mode": "autonomous",
+  "seed": 123456,
+  "inputs": [],
+  "goal": {
+    "output_contains": [
+      "FOLDER_VERSION=2 STATE=40",
+      "SINGLE_VERSION=1 STATE=41",
+      "SINGLE_VERSION=2 STATE=42",
+      "ALL_VERSION=1 STATE=43",
+      "ALL_VERSION=2 STATE=44",
+      "HOT_RELOAD_STATE=45"
+    ],
+    "wait_kind": 2,
+    "status_contains": ["项目缓存命中"]
+  },
+  "limits": { "max_steps": 40, "timeout_seconds": 180 }
+}

@@ -356,6 +356,124 @@ def test_reload_accepts_a_file_below_a_resource_directory_link(tmp_path: Path) -
     assert unwrap_variant(request[2][0])[1][0][0] == "ERB/main.erb"
 
 
+def test_quick_scan_reloads_only_the_selected_file(tmp_path: Path) -> None:
+    (tmp_path / "ERB").mkdir()
+    selected = tmp_path / "ERB" / "selected.erb"
+    unselected = tmp_path / "ERB" / "unselected.erb"
+    selected.write_text("@SELECTED\nPRINTL v1\nRETURN\n", encoding="utf-8")
+    unselected.write_text("@UNSELECTED\nPRINTL v1\nRETURN\n", encoding="utf-8")
+    ProjectBundle.scan_quick(tmp_path)
+    bundle = ProjectBundle.scan_quick(tmp_path)
+    unselected_hash = bundle.files["ERB/unselected.erb"].content_hash
+    selected.write_text("@SELECTED\nPRINTL v2\nRETURN\n", encoding="utf-8")
+    unselected.write_text("@UNSELECTED\nPRINTL v2\nRETURN\n", encoding="utf-8")
+
+    candidate, request = bundle.reload_file(selected)
+
+    assert len(request[2]) == 1
+    assert unwrap_variant(request[2][0])[1][0][0] == "ERB/selected.erb"
+    assert candidate.files["ERB/selected.erb"].payload == variant(
+        0, "@SELECTED\nPRINTL v2\nRETURN\n"
+    )
+    assert candidate.files["ERB/unselected.erb"].payload is None
+    assert candidate.files["ERB/unselected.erb"].content_hash == unselected_hash
+
+
+def test_folder_reload_preserves_unselected_source_generation(tmp_path: Path) -> None:
+    selected_folder = tmp_path / "ERB" / "folder"
+    unselected_folder = tmp_path / "ERB" / "single"
+    selected_folder.mkdir(parents=True)
+    unselected_folder.mkdir()
+    selected = selected_folder / "command.erb"
+    unselected = unselected_folder / "command.erb"
+    removed = selected_folder / "removed.erb"
+    selected.write_text("@SELECTED\nPRINTL v1\nRETURN\n", encoding="utf-8")
+    unselected.write_text("@UNSELECTED\nPRINTL v1\nRETURN\n", encoding="utf-8")
+    removed.write_text("@REMOVED\nRETURN\n", encoding="utf-8")
+    ProjectBundle.scan_quick(tmp_path)
+    bundle = ProjectBundle.scan_quick(tmp_path)
+    unselected_hash = bundle.files["ERB/single/command.erb"].content_hash
+    selected.write_text("@SELECTED\nPRINTL v2\nRETURN\n", encoding="utf-8")
+    unselected.write_text("@UNSELECTED\nPRINTL v2\nRETURN\n", encoding="utf-8")
+    removed.unlink()
+
+    candidate, request = bundle.reload_folder(selected_folder)
+
+    changes = [unwrap_variant(change) for change in request[2]]
+    assert [(tag, fields[-1] if tag == 1 else fields[0][0]) for tag, fields in changes] == [
+        (0, "ERB/folder/command.erb"),
+        (1, "ERB/folder/removed.erb"),
+    ]
+    assert candidate.files["ERB/folder/command.erb"].payload == variant(
+        0, "@SELECTED\nPRINTL v2\nRETURN\n"
+    )
+    assert "ERB/folder/removed.erb" not in candidate.files
+    assert candidate.files["ERB/single/command.erb"].payload is None
+    assert candidate.files["ERB/single/command.erb"].content_hash == unselected_hash
+
+    final, single_request = candidate.reload_file(unselected)
+
+    assert len(single_request[2]) == 1
+    assert unwrap_variant(single_request[2][0])[1][0][0] == "ERB/single/command.erb"
+    assert final.files["ERB/single/command.erb"].payload == variant(
+        0, "@UNSELECTED\nPRINTL v2\nRETURN\n"
+    )
+
+
+def test_quick_scan_all_reload_submits_only_changed_sources(tmp_path: Path) -> None:
+    (tmp_path / "ERB").mkdir()
+    changed = tmp_path / "ERB" / "changed.erb"
+    unchanged = tmp_path / "ERB" / "unchanged.erb"
+    changed.write_text("@CHANGED\nPRINTL v1\nRETURN\n", encoding="utf-8")
+    unchanged.write_text("@UNCHANGED\nRETURN\n", encoding="utf-8")
+    ProjectBundle.scan_quick(tmp_path)
+    bundle = ProjectBundle.scan_quick(tmp_path)
+    changed.write_text("@CHANGED\nPRINTL v2\nRETURN\n", encoding="utf-8")
+
+    candidate, request = bundle.rescan()
+
+    assert candidate.is_materialized
+    assert len(request[2]) == 1
+    assert unwrap_variant(request[2][0])[1][0][0] == "ERB/changed.erb"
+
+
+def test_cache_hit_baseline_hydrates_the_first_scoped_reload_without_leaking_disk_changes(
+    tmp_path: Path,
+) -> None:
+    selected_folder = tmp_path / "ERB" / "folder"
+    unselected_folder = tmp_path / "ERB" / "single"
+    selected_folder.mkdir(parents=True)
+    unselected_folder.mkdir()
+    selected = selected_folder / "command.erb"
+    unselected = unselected_folder / "command.erb"
+    selected.write_text("PRINTL FOLDER_VERSION=1\n", encoding="utf-8")
+    unselected.write_text("PRINTL SINGLE_VERSION=1\n", encoding="utf-8")
+    baseline = ProjectBundle.scan_quick(tmp_path).materialize()
+    baseline.reload_baseline_pending = True
+    selected.write_text("PRINTL FOLDER_VERSION=2\n", encoding="utf-8")
+    unselected.write_text("PRINTL SINGLE_VERSION=2\n", encoding="utf-8")
+
+    candidate, request = baseline.reload_folder(selected_folder)
+
+    submitted = {
+        fields[0][0]: fields[0][2]
+        for tag, fields in map(unwrap_variant, request[2])
+        if tag == 0
+    }
+    assert submitted == {
+        "ERB/folder/command.erb": variant(0, "PRINTL FOLDER_VERSION=2\n"),
+        "ERB/single/command.erb": variant(0, "PRINTL SINGLE_VERSION=1\n"),
+    }
+    assert candidate.reload_baseline_pending is False
+
+    _, second_request = candidate.reload_file(unselected)
+
+    assert len(second_request[2]) == 1
+    assert unwrap_variant(second_request[2][0])[1][0][2] == variant(
+        0, "PRINTL SINGLE_VERSION=2\n"
+    )
+
+
 def test_quick_scan_reuses_stat_index_and_materializes_on_demand(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

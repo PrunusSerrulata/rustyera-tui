@@ -41,6 +41,20 @@ truncated), so an agent always receives the next wait without transport truncati
   `budget_exhausted`, or `stopped`.
 - `error`: Infrastructure or protocol failure.
 
+In a `serve` session, source-reload testing may also submit these operations one at a time after an
+observation:
+
+- `{"op":"wait_status","text":"项目缓存已保存。"}` waits for a frontend status without changing
+  the active input.
+- `{"op":"restart"}` recreates the runtime against the same isolated project.
+- `{"op":"edit_source","path":"ERB/main.erb","expected":"v1","replacement":"v2"}` replaces one
+  exact UTF-8 source fragment inside the isolated project while the game stays running.
+- `{"op":"reload","scope":"all"}` reloads all sources; `folder` and `file` scopes additionally
+  require a project-relative `path`.
+
+These produce `status_observed`, `source_edited`, or `runtime_action` trace events. They are Rust-only
+frontend operations and must not be used with reference comparison.
+
 By default, the TUI driver records its complete observable state when it reaches a stable input
 wait. It does not emit periodic snapshots or treat equal consecutive observations as a stall unless
 the user explicitly requests that policy. All test commands in a task share the 60-minute

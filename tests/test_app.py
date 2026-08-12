@@ -176,6 +176,8 @@ async def test_preferences_use_native_compact_controls_and_fit_the_terminal(
 
 
 async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
+    source = tmp_path / "main.erb"
+    source.write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
@@ -188,6 +190,59 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         assert all(app.query_one(f"#{item_id}", Button).disabled for item_id in controlled_items)
         assert not app.query_one("#file-exit", Button).disabled
         assert not app.query_one("#debug-logs", Button).disabled
+        file_menu = app.query_one("#file-menu")
+        assert [
+            child.id if isinstance(child, Button) else "separator"
+            for child in file_menu.children
+        ] == [
+            "file-export-project",
+            "file-restart",
+            "file-title",
+            "file-reload-all",
+            "file-reload-folder",
+            "file-reload-file",
+            "separator",
+            "file-export-snapshot",
+            "file-restore-snapshot",
+            "separator",
+            "file-preferences",
+            "separator",
+            "file-exit",
+        ]
+        assert [str(button.label) for button in file_menu.query(Button)] == [
+            "导出全量项目文件…",
+            "重新开始",
+            "返回标题",
+            "重新加载全部脚本",
+            "重新加载文件夹…",
+            "重新加载单个脚本…",
+            "导出 VM 快照…",
+            "恢复 VM 快照…",
+            "设置…",
+            "退出",
+        ]
+        debug_menu = app.query_one("#debug-menu")
+        assert [
+            child.id if isinstance(child, Button) else "separator"
+            for child in debug_menu.children
+        ] == [
+            "debug-toggle",
+            "separator",
+            "debug-console",
+            "debug-variables",
+            "debug-stack",
+            "debug-step-toggle",
+            "separator",
+            "debug-logs",
+        ]
+        assert [str(button.label) for button in debug_menu.query(Button)] == [
+            "启用调试",
+            "控制台…",
+            "变量查看器…",
+            "Fibers / 调用栈…",
+            "开启单步运行",
+            "日志…",
+        ]
 
         worker.events.put(FrontendEvent("phase", 4))
         await pilot.pause(0.1)
@@ -199,6 +254,22 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         assert app.query_one("#file-menu").has_class("visible")
         await pilot.click("#file-reload-all")
         assert ("reload_all", None) in worker.commands
+
+        await pilot.click("#menu-file")
+        await pilot.click("#file-reload-folder")
+        assert isinstance(app.screen, PathDialog)
+        assert str(app.screen.query_one(".dialog-title").render()) == "重新加载文件夹"
+        app.screen.query_one("#path-value", Input).value = str(tmp_path)
+        await pilot.click("#path-accept")
+        assert ("reload_folder", tmp_path) in worker.commands
+
+        await pilot.click("#menu-file")
+        await pilot.click("#file-reload-file")
+        assert isinstance(app.screen, PathDialog)
+        assert str(app.screen.query_one(".dialog-title").render()) == "重新加载单个脚本"
+        app.screen.query_one("#path-value", Input).value = str(source)
+        await pilot.click("#path-accept")
+        assert ("reload_file", source) in worker.commands
 
         app.project_name = "测试项目"
         await pilot.click("#menu-file")
@@ -219,6 +290,7 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         worker.events.put(FrontendEvent("phase", 5))
         worker.events.put(FrontendEvent("debug_enabled", True))
         await pilot.pause(0.1)
+        assert str(app.query_one("#debug-toggle", Button).label) == "禁用调试"
         assert all(
             not app.query_one(f"#{item_id}", Button).disabled for item_id in controlled_items
         )

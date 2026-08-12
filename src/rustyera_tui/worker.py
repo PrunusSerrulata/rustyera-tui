@@ -160,6 +160,8 @@ class RuntimeWorker(threading.Thread):
                     client.prepare_configuration_update(changes, restart)
                 case "reload_all":
                     client.reload_all()
+                case "reload_folder":
+                    client.reload_folder(Path(command.value))
                 case "reload_file":
                     client.reload_file(Path(command.value))
                 case "submit_text":

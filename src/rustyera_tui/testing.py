@@ -8,9 +8,11 @@ import queue
 import re
 import secrets
 import shutil
+import sys
 import time
+import traceback
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .presentation import PresentationModel
@@ -150,8 +152,10 @@ class RustTestSession:
     model: PresentationModel = field(default_factory=PresentationModel)
     previous_output: list[str] = field(default_factory=list)
     statuses: list[str] = field(default_factory=list)
+    logs: list[str] = field(default_factory=list)
     metrics: list[dict[str, Any]] = field(default_factory=list)
     _last_wait: tuple[int, Any] | None = None
+    project_root: Path = field(init=False)
     worker: RuntimeWorker = field(init=False)
 
     def __post_init__(self) -> None:
@@ -160,6 +164,7 @@ class RustTestSession:
             state = (self.scenario.start.path, self.scenario.start.type)
         seed = self.scenario.seed if self.scenario.start.type == "new_game" else None
         project = self.project_override or self.scenario.project
+        self.project_root = project.resolve(strict=True)
         self.worker = RuntimeWorker(
             self.runtime_library,
             project,
@@ -178,6 +183,45 @@ class RustTestSession:
 
     def skip_message(self) -> None:
         self.worker.send("skip_message_waits")
+
+    def restart(self) -> None:
+        self.model = PresentationModel()
+        self.previous_output = []
+        self._last_wait = None
+        self.worker.send("restart")
+
+    def edit_source(self, relative_path: str, expected: str, replacement: str) -> None:
+        target = self._project_path(relative_path)
+        if not target.is_file():
+            raise TestDriverError("source edit path must name a project file")
+        contents = target.read_text(encoding="utf-8")
+        if contents.count(expected) != 1:
+            raise TestDriverError("source edit expected text must occur exactly once")
+        target.write_text(contents.replace(expected, replacement, 1), encoding="utf-8")
+
+    def reload(self, scope: str, relative_path: str | None = None) -> None:
+        if scope == "all":
+            if relative_path is not None:
+                raise TestDriverError("all reload does not accept a path")
+            self.worker.send("reload_all")
+            return
+        if scope not in {"folder", "file"} or relative_path is None:
+            raise TestDriverError("reload scope must be all, folder, or file")
+        target = self._project_path(relative_path)
+        if scope == "folder" and not target.is_dir():
+            raise TestDriverError("folder reload path must name a project folder")
+        if scope == "file" and not target.is_file():
+            raise TestDriverError("file reload path must name a project file")
+        self.worker.send(f"reload_{scope}", target)
+
+    def _project_path(self, relative_path: str) -> Path:
+        relative = PurePosixPath(relative_path)
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            raise TestDriverError("source path must stay inside the isolated project")
+        target = self.project_root.joinpath(*relative.parts).resolve(strict=True)
+        if not target.is_relative_to(self.project_root):
+            raise TestDriverError("source path must stay inside the isolated project")
+        return target
 
     def export_snapshot(self, path: Path) -> None:
         self.worker.send("export_snapshot", (path, "normal"))
@@ -206,52 +250,108 @@ class RustTestSession:
             apply_presentation_event(self.model, event)
             if event.kind == "status":
                 self.statuses.append(str(event.value))
+            elif event.kind == "log":
+                self.logs.append(str(event.value))
             elif event.kind in TERMINAL_EVENTS:
                 raise TestDriverError(f"{event.kind}: {event.value}")
         if text not in self.statuses:
             raise TestDriverError(f"timed out waiting for status {text!r}")
 
-    def wait_observation(self, deadline: float) -> dict[str, Any]:
+    def wait_observation(
+        self,
+        deadline: float,
+        *,
+        completion_status: str | None = None,
+    ) -> dict[str, Any]:
+        completed = False
+        observed: list[str] = []
         while time.monotonic() < deadline:
             try:
                 event = self.worker.events.get(timeout=0.25)
             except queue.Empty:
                 if not self.worker.is_alive():
                     raise TestDriverError("runtime worker stopped")
+                if completed and self.worker.client and self.worker.client.active_wait is not None:
+                    return self._observation(self.worker.client.active_wait)
                 continue
+            observed.append(f"{event.kind}: {event.value}")
             if event.kind == "status":
                 self.statuses.append(str(event.value))
+                completed = completed or (
+                    completion_status is not None and completion_status in str(event.value)
+                )
+            elif event.kind == "log":
+                self.logs.append(str(event.value))
             elif event.kind == "runtime_metrics":
                 self.metrics.append(dict(event.value))
             elif event.kind in TERMINAL_EVENTS:
-                raise TestDriverError(f"{event.kind}: {event.value}")
+                client = self.worker.client
+                state = (
+                    None
+                    if client is None
+                    else {
+                        "phase": client.phase,
+                        "epoch": client.epoch,
+                        "active_wait": client.active_wait,
+                    }
+                )
+                raise TestDriverError(
+                    f"{event.kind}: {event.value}; state={state}; "
+                    f"statuses={self.statuses[-20:]}; logs={self.logs[-50:]}"
+                )
             wait = apply_presentation_event(self.model, event)
             if wait is None:
                 continue
             identity = (wait[0], wait.get(11))
             if identity == self._last_wait:
                 continue
-            self._last_wait = identity
-            current = plain_output(self.model)
-            delta = output_delta(self.previous_output, current)
-            self.previous_output = current
-            return {
-                "termination": "waitingInput",
-                "phase": self.worker.client.phase if self.worker.client else None,
-                "wait": {
-                    "id": wait[0],
-                    "kind": wait[1],
-                    "stability": wait[2],
-                    "system_input": wait[5],
-                    "deadline_ns": wait.get(8),
-                },
-                "output": current,
-                "output_delta": delta.as_dict(),
-                "output_tail": current[-30:],
-                "metrics": list(self.metrics),
-                "statuses": list(self.statuses[-20:]),
+            return self._observation(wait)
+        client = self.worker.client
+        frame = sys._current_frames().get(self.worker.ident)
+        state = (
+            None
+            if client is None
+            else {
+                "phase": client.phase,
+                "epoch": client.epoch,
+                "active_wait": client.active_wait,
+                "reload_revision": (
+                    client.reload_candidate.revision
+                    if client.reload_candidate is not None
+                    else None
+                ),
+                "queued_commands": self.worker.commands.qsize(),
+                "worker_stack": traceback.format_stack(frame) if frame is not None else [],
             }
-        raise TestDriverError("timed out waiting for a stable runtime input")
+        )
+        raise TestDriverError(
+            "timed out waiting for a stable runtime input; "
+            f"state={state}; observed={observed[-30:]}"
+        )
+
+    def _observation(self, wait: dict[int, Any]) -> dict[str, Any]:
+        self._last_wait = (wait[0], wait.get(11))
+        current = plain_output(self.model)
+        delta = output_delta(self.previous_output, current)
+        self.previous_output = current
+        return {
+            "termination": "waitingInput",
+            "phase": self.worker.client.phase if self.worker.client else None,
+            "epoch": self.worker.client.epoch if self.worker.client else None,
+            "wait": {
+                "id": wait[0],
+                "kind": wait[1],
+                "stability": wait[2],
+                "system_input": wait[5],
+                "deadline_ns": wait.get(8),
+            },
+            "output": current,
+            "output_delta": delta.as_dict(),
+            "output_tail": current[-30:],
+            "metrics": list(self.metrics),
+            "statuses": list(self.statuses[-20:]),
+            "logs": list(self.logs[-50:]),
+        }
 
     def inspect(self, watches: tuple[str, ...], deadline: float) -> dict[str, Any]:
         values: dict[str, Any] = {}

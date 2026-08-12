@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import queue
+import time
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,8 +11,9 @@ from typing import Any
 import pytest
 
 from rustyera_tui.runtime import FrontendEvent, PresentationBatch, RuntimeClient
-from rustyera_tui.test_cli import build_parser
+from rustyera_tui.test_cli import build_parser, dispatch_agent_request
 from rustyera_tui.testing import (
+    RustTestSession,
     Scenario,
     TestDriverError,
     TraceWriter,
@@ -145,6 +148,131 @@ def test_isolated_project_copy_excludes_generated_rustyera_cache(tmp_path: Path)
 
     assert (copied / "erb" / "main.erb").is_file()
     assert not (copied / ".rustyera").exists()
+
+
+def test_agent_source_reload_operations_stay_inside_the_isolated_project(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    source = project / "ERB" / "main.erb"
+    source.parent.mkdir(parents=True)
+    source.write_text("PRINTL VERSION=1\n", encoding="utf-8")
+    commands: list[tuple[str, Any]] = []
+    session = object.__new__(RustTestSession)
+    session.project_root = project
+    session.worker = SimpleNamespace(send=lambda kind, value=None: commands.append((kind, value)))
+
+    session.edit_source("ERB/main.erb", "VERSION=1", "VERSION=2")
+    session.reload("folder", "ERB")
+    session.reload("file", "ERB/main.erb")
+    session.reload("all")
+    session.restart()
+
+    assert source.read_text(encoding="utf-8") == "PRINTL VERSION=2\n"
+    assert commands == [
+        ("reload_folder", project / "ERB"),
+        ("reload_file", source),
+        ("reload_all", None),
+        ("restart", None),
+    ]
+    with pytest.raises(TestDriverError, match="inside the isolated project"):
+        session.edit_source("../outside.erb", "v1", "v2")
+
+
+def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: Path) -> None:
+    calls: list[tuple[str, Any]] = []
+    rust = SimpleNamespace(
+        inspect=lambda watches, deadline: calls.append(("inspect", (watches, deadline))) or {},
+        wait_for_status=lambda text, deadline: calls.append(("wait", (text, deadline))),
+        edit_source=lambda path, expected, replacement: calls.append(
+            ("edit", (path, expected, replacement))
+        ),
+        export_snapshot=lambda path: calls.append(("snapshot", path)),
+        restart=lambda: calls.append(("restart", None)),
+        reload=lambda scope, path: calls.append(("reload", (scope, path))),
+        submit=lambda value: calls.append(("step", value)),
+    )
+    common = {
+        "rust": rust,
+        "reference_enabled": False,
+        "deadline": 12.5,
+        "step": 4,
+        "trace_path": tmp_path / "trace.ndjson",
+    }
+
+    inspect = dispatch_agent_request({"op": "inspect", "watches": ["FLAG:0"]}, **common)
+    status = dispatch_agent_request({"op": "wait_status", "text": "缓存已保存"}, **common)
+    edit = dispatch_agent_request(
+        {
+            "op": "edit_source",
+            "path": "ERB/main.erb",
+            "expected": "v1",
+            "replacement": "v2",
+        },
+        **common,
+    )
+    reload = dispatch_agent_request(
+        {"op": "reload", "scope": "folder", "path": "ERB/folder"}, **common
+    )
+    restart = dispatch_agent_request({"op": "restart"}, **common)
+    step = dispatch_agent_request({"op": "step", "input": "1"}, **common)
+
+    assert not inspect.advances and inspect.trace_event["type"] == "inspection"
+    assert not status.advances and status.trace_event["type"] == "status_observed"
+    assert not edit.advances and edit.trace_event["type"] == "source_edited"
+    assert reload.advances and not reload.drives_reference
+    assert reload.completion_status == "脚本热重载完成"
+    assert reload.trace_event == {
+        "type": "runtime_action",
+        "step": 5,
+        "source": "agent",
+        "action": "reload_folder",
+        "path": "ERB/folder",
+    }
+    assert restart.advances and not restart.drives_reference
+    assert step.advances and step.drives_reference and step.input_value == "1"
+    assert calls == [
+        ("inspect", (("FLAG:0",), 12.5)),
+        ("wait", ("缓存已保存", 12.5)),
+        ("edit", ("ERB/main.erb", "v1", "v2")),
+        ("reload", ("folder", "ERB/folder")),
+        ("restart", None),
+        ("step", "1"),
+    ]
+
+    with pytest.raises(TestDriverError, match="reference comparison"):
+        dispatch_agent_request(
+            {"op": "reload", "scope": "all"},
+            **{**common, "reference_enabled": True},
+        )
+
+
+def test_reload_completion_status_republishes_the_stable_runtime_wait() -> None:
+    active_wait = {0: 9, 1: 2, 2: 0, 5: True, 11: {0: 3, 1: 9}}
+    session = object.__new__(RustTestSession)
+    session.model = SimpleNamespace(lines=[])
+    session.previous_output = []
+    session.statuses = []
+    session.logs = []
+    session.metrics = []
+    session._last_wait = (4, {0: 2, 1: 4})
+    events: queue.Queue[FrontendEvent] = queue.Queue()
+    events.put(FrontendEvent("status", "脚本热重载完成。"))
+    session.worker = SimpleNamespace(
+        events=events,
+        is_alive=lambda: True,
+        client=SimpleNamespace(phase=5, epoch=3, active_wait=active_wait),
+    )
+
+    observation = session.wait_observation(
+        time.monotonic() + 1,
+        completion_status="脚本热重载完成",
+    )
+
+    assert observation["epoch"] == 3
+    assert observation["wait"]["id"] == 9
+    assert observation["wait"]["kind"] == 2
+    assert observation["statuses"] == ["脚本热重载完成。"]
 
 
 def test_trace_keeps_full_output_while_agent_stream_uses_tail(tmp_path: Path) -> None:

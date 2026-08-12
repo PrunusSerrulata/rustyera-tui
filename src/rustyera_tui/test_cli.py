@@ -8,6 +8,7 @@ import shlex
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +102,110 @@ def _decorate(
     return result
 
 
+@dataclass(frozen=True, slots=True)
+class AgentDispatch:
+    trace_event: dict[str, Any]
+    advances: bool = False
+    terminal: bool = False
+    input_value: str | None = None
+    drives_reference: bool = False
+    completion_status: str | None = None
+
+
+def dispatch_agent_request(
+    request: dict[str, Any],
+    rust: RustTestSession,
+    *,
+    reference_enabled: bool,
+    deadline: float,
+    step: int,
+    trace_path: Path,
+) -> AgentDispatch:
+    operation = request.get("op")
+    if operation == "stop":
+        return AgentDispatch(
+            {"type": "result", "status": "stopped", "trace": str(trace_path)},
+            terminal=True,
+        )
+    if operation == "inspect":
+        watched = tuple(str(item) for item in request.get("watches", []))
+        return AgentDispatch(
+            {"type": "inspection", "values": rust.inspect(watched, deadline)}
+        )
+    if operation == "wait_status":
+        status = str(request.get("text", ""))
+        rust.wait_for_status(status, deadline)
+        return AgentDispatch({"type": "status_observed", "text": status})
+    if operation == "edit_source":
+        _reject_reference_operation(reference_enabled, "source edits")
+        path = str(request.get("path", ""))
+        rust.edit_source(
+            path,
+            str(request.get("expected", "")),
+            str(request.get("replacement", "")),
+        )
+        return AgentDispatch({"type": "source_edited", "path": path})
+    if operation == "export_snapshot":
+        target = Path(request["path"]).expanduser().resolve()
+        rust.export_snapshot(target)
+        return AgentDispatch({"type": "checkpoint_requested", "path": str(target)})
+    if operation == "restart":
+        _reject_reference_operation(reference_enabled, "runtime restart")
+        rust.restart()
+        return AgentDispatch(
+            _runtime_action_event(step, "restart", None),
+            advances=True,
+        )
+    if operation == "reload":
+        _reject_reference_operation(reference_enabled, "hot reload")
+        scope = str(request.get("scope", ""))
+        path_value = request.get("path")
+        relative_path = str(path_value) if path_value is not None else None
+        rust.reload(scope, relative_path)
+        return AgentDispatch(
+            _runtime_action_event(step, f"reload_{scope}", relative_path),
+            advances=True,
+            completion_status="脚本热重载完成",
+        )
+    if operation == "step":
+        value = str(request.get("input", ""))
+        rust.submit(value)
+        return AgentDispatch(
+            _input_event(step, "agent", "input", value),
+            advances=True,
+            input_value=value,
+            drives_reference=True,
+        )
+    raise TestDriverError(f"unknown agent operation {operation!r}")
+
+
+def _reject_reference_operation(enabled: bool, operation: str) -> None:
+    if enabled:
+        raise TestDriverError(f"{operation} unavailable during reference comparison")
+
+
+def _input_event(step: int, source: str, action: str, value: str) -> dict[str, Any]:
+    return {
+        "type": "input",
+        "step": step + 1,
+        "source": source,
+        "action": action,
+        "value": value,
+    }
+
+
+def _runtime_action_event(
+    step: int, action: str, relative_path: str | None
+) -> dict[str, Any]:
+    return {
+        "type": "runtime_action",
+        "step": step + 1,
+        "source": "agent",
+        "action": action,
+        "path": relative_path,
+    }
+
+
 def execute(args: argparse.Namespace) -> int:
     scenario = Scenario.load(args.scenario, args.project)
     library = discover_library(args.runtime_library, scenario.project)
@@ -173,6 +278,7 @@ def execute(args: argparse.Namespace) -> int:
             value: str | None = "" if wait_kind == 0 else None
             input_action = "input"
             source = "automatic_enter" if value is not None else "fixed"
+            agent_dispatch: AgentDispatch | None = None
             while value is None and input_index < len(scenario.inputs):
                 item = scenario.inputs[input_index]
                 input_index += 1
@@ -184,23 +290,20 @@ def execute(args: argparse.Namespace) -> int:
                 if not request_line:
                     raise TestDriverError("agent input stream closed")
                 request = json.loads(request_line)
-                operation = request.get("op")
-                if operation == "stop":
-                    trace.emit({"type": "result", "status": "stopped", "trace": str(trace_path)})
+                agent_dispatch = dispatch_agent_request(
+                    request,
+                    rust,
+                    reference_enabled=reference is not None,
+                    deadline=deadline,
+                    step=step,
+                    trace_path=trace_path,
+                )
+                trace.emit(agent_dispatch.trace_event)
+                if agent_dispatch.terminal:
                     return 0
-                if operation == "inspect":
-                    watched = tuple(str(item) for item in request.get("watches", []))
-                    trace.emit({"type": "inspection", "values": rust.inspect(watched, deadline)})
+                if not agent_dispatch.advances:
                     continue
-                if operation == "export_snapshot":
-                    target = Path(request["path"]).expanduser().resolve()
-                    rust.export_snapshot(target)
-                    trace.emit({"type": "checkpoint_requested", "path": str(target)})
-                    continue
-                if operation != "step":
-                    raise TestDriverError(f"unknown agent operation {operation!r}")
-                value = str(request.get("input", ""))
-                source = "agent"
+                value = agent_dispatch.input_value or ""
             elif value is None:
                 pending_statuses = scenario.goal.get("status_contains", [])
                 if pending_statuses:
@@ -218,22 +321,30 @@ def execute(args: argparse.Namespace) -> int:
                     status = "goal_not_met"
                 trace.emit({"type": "result", "status": status, "trace": str(trace_path)})
                 return 0 if status == "passed" else 2 if status == "input_exhausted" else 1
-            trace.emit(
-                {
-                    "type": "input",
-                    "step": step + 1,
-                    "source": source,
-                    "action": input_action,
-                    "value": value,
-                }
+            if agent_dispatch is None:
+                trace.emit(_input_event(step, source, input_action, value))
+                if input_action == "skip_message":
+                    rust.skip_message()
+                else:
+                    rust.submit(value)
+            reference_observation = (
+                reference.step(value, scenario.watches)
+                if reference is not None
+                and (agent_dispatch is None or agent_dispatch.drives_reference)
+                else None
             )
-            if input_action == "skip_message":
-                rust.skip_message()
-            else:
-                rust.submit(value)
-            reference_observation = reference.step(value, scenario.watches) if reference else None
             step += 1
-            rust_observation = rust.wait_observation(deadline)
+            observation_deadline = (
+                min(deadline, time.monotonic() + 5)
+                if agent_dispatch is not None and agent_dispatch.completion_status is not None
+                else deadline
+            )
+            rust_observation = rust.wait_observation(
+                observation_deadline,
+                completion_status=(
+                    agent_dispatch.completion_status if agent_dispatch is not None else None
+                ),
+            )
             decorated = _decorate(rust_observation, reference_observation, scenario, rust, deadline)
             trace.emit({"type": "observation", "step": step, **decorated})
         trace.emit({"type": "result", "status": "budget_exhausted", "trace": str(trace_path)})

@@ -480,6 +480,59 @@ def test_title_and_snapshot_restore_do_not_scan_project(
     assert client.restored == snapshot.resolve()
 
 
+def test_worker_routes_scoped_reload_commands(tmp_path: Path) -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.bundle = type("Bundle", (), {"root": tmp_path})()
+            self.reloaded: list[tuple[str, Path | None]] = []
+
+        def reload_all(self) -> None:
+            self.reloaded.append(("all", None))
+
+        def reload_folder(self, path: Path) -> None:
+            self.reloaded.append(("folder", path))
+
+        def reload_file(self, path: Path) -> None:
+            self.reloaded.append(("file", path))
+
+    worker = RuntimeWorker(None, None)
+    client = Client()
+    worker.client = client  # type: ignore[assignment]
+
+    worker._process_command(FrontendCommand("reload_all"))
+    worker._process_command(FrontendCommand("reload_folder", tmp_path / "ERB"))
+    worker._process_command(FrontendCommand("reload_file", tmp_path / "main.erb"))
+
+    assert client.reloaded == [
+        ("all", None),
+        ("folder", tmp_path / "ERB"),
+        ("file", tmp_path / "main.erb"),
+    ]
+
+
+def test_no_change_reload_refreshes_the_frontend_baseline_without_runtime_work(
+    tmp_path: Path,
+) -> None:
+    current = ProjectBundle(tmp_path, 7, {})
+    candidate = ProjectBundle(tmp_path, 8, {})
+    client = object.__new__(RuntimeClient)
+    client.bundle = current
+    client.reload_candidate = None
+    client.events = queue.Queue()
+    submitted: list[tuple[int, object]] = []
+    client.send_runtime = lambda tag, value: submitted.append((tag, value))  # type: ignore[method-assign]
+
+    client._submit_reload(candidate, {0: 7, 1: 8, 2: []}, "0 个文件变更")
+
+    assert client.bundle is candidate
+    assert candidate.revision == 7
+    assert client.reload_candidate is None
+    assert submitted == []
+    status = client.events.get_nowait()
+    assert status.kind == "status"
+    assert "热重载完成" in status.value
+
+
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
 def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
