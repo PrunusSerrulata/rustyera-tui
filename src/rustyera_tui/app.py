@@ -36,14 +36,14 @@ from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.3.0 (6b410b7e)"
+CORE_VERSION = "0.4.0 (f2e04514)"
 
 
 def frontend_version() -> str:
     try:
         return version("rustyera-tui")
     except PackageNotFoundError:
-        return "0.3.0"
+        return "0.4.0"
 
 
 class RustyEraTui(App[None]):
