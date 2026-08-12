@@ -16,6 +16,12 @@ from .presentation_types import (
     SegmentStyle,
     SeparatorLayout,
 )
+from .terminal_html_layout import (
+    has_relative_division,
+    project_direct_shape,
+    project_html_shape,
+    project_positioned_html,
+)
 from .wire import unwrap_variant
 
 SAVE_DELETE_PATTERN = re.compile(r"Delete save\d+\.sav")
@@ -63,7 +69,7 @@ def plain_run(run: list[Any]) -> str:
     if tag == 1:
         return "".join(plain_run(child) for child in fields[0])
     if tag == 2:
-        return "".join(segment.text for segment in parse_html_document(fields[0]))
+        return "".join(_plain_html_node(node) for node in fields[0].get(0, []))
     if tag == 3:
         return fields[1] or "[图片]"
     if tag == 4:
@@ -197,9 +203,7 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
         alt = fields[1] or "[图片]"
         return [DisplaySegment(text=alt, style=inherited.style if inherited else SegmentStyle())]
     if tag == 4:  # Shape
-        return [
-            DisplaySegment(text="[图形]", style=inherited.style if inherited else SegmentStyle())
-        ]
+        return project_direct_shape(fields[0], inherited or DisplaySegment(""))
     if tag == 5:  # PRINTC-family semantic cell
         content, alignment, preferred_columns = fields
         nested: list[DisplaySegment] = []
@@ -259,8 +263,16 @@ def parse_html_document(
     """Project the normalized Emuera HTML tree into terminal display spans."""
 
     base = inherited or DisplaySegment("")
+    nodes = document.get(0, [])
+    if any(has_relative_division(node) for node in nodes):
+        return project_positioned_html(
+            nodes,
+            base,
+            font_context=_html_font_context,
+            button_context=_html_button_context,
+        )
     result: list[DisplaySegment] = []
-    for node in document.get(0, []):
+    for node in nodes:
         result.extend(_parse_html_node(node, base))
     return result
 
@@ -282,7 +294,7 @@ def _parse_html_node(node: list[Any], context: DisplaySegment) -> list[DisplaySe
     if kind == 10:  # img
         return []
     if kind == 11:  # shape
-        return [_html_shape_segment(semantic, context)]
+        return project_html_shape(semantic, context)
 
     nested = context
     if kind == 0:  # b
@@ -316,6 +328,42 @@ def _parse_html_node(node: list[Any], context: DisplaySegment) -> list[DisplaySe
     return result
 
 
+def _plain_html_node(node: list[Any]) -> str:
+    """Keep frontend service text independent from the terminal layout projection."""
+
+    try:
+        tag, fields = unwrap_variant(node)
+    except (TypeError, ValueError):
+        return ""
+    if tag == 0 and fields:
+        return str(fields[0])
+    if tag != 1 or len(fields) < 3 or not isinstance(fields[2], list):
+        return ""
+    kind = fields[0]
+    if kind == 13:  # br
+        return "\n"
+    if kind == 10:  # img
+        return ""
+    if kind == 11:  # shape
+        semantic = fields[6] if len(fields) > 6 else None
+        shape_kind = str(_semantic_field(semantic, 0, ""))
+        if shape_kind.lower() == "space":
+            parameters = _semantic_field(semantic, 1, [])
+            if isinstance(parameters, list) and parameters:
+                try:
+                    width_tag, width_fields = unwrap_variant(parameters[0])
+                    raw = width_fields[0]
+                    if isinstance(raw, list):
+                        raw = raw[0]
+                    columns = max(1, round(int(raw) / (1 if width_tag == 0 else 50)))
+                    return " " * columns
+                except (IndexError, TypeError, ValueError):
+                    pass
+            return "[图形]"
+        return "[图形]"
+    return "".join(_plain_html_node(child) for child in fields[2])
+
+
 def _html_font_context(semantic: Any, context: DisplaySegment) -> DisplaySegment:
     foreground = _semantic_field(semantic, 1)
     button_color = _semantic_field(semantic, 2)
@@ -343,27 +391,12 @@ def _html_button_context(
     )
 
 
-def _html_shape_segment(semantic: Any, context: DisplaySegment) -> DisplaySegment:
-    kind = _semantic_field(semantic, 0, "")
-    parameters = _semantic_field(semantic, 1, [])
-    if kind == "space" and parameters:
-        width_tag, width_fields = unwrap_variant(parameters[0])
-        raw = width_fields[0]
-        if isinstance(raw, list):
-            raw = raw[0]
-        # A unitless HTML space uses hundredths of font height. eraTW's helper
-        # deliberately emits 50 per requested half-width terminal cell.
-        columns = max(1, round(raw / (1 if width_tag == 0 else 50)))
-        return replace(context, text=" " * columns)
-    return replace(context, text="[图形]")
-
-
 def _semantic_field(semantic: Any, index: int, default: Any = None) -> Any:
     if semantic is None:
         return default
     try:
         _tag, fields = unwrap_variant(semantic)
-    except ValueError:
+    except (TypeError, ValueError):
         return default
     return fields[index] if index < len(fields) else default
 

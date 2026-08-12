@@ -35,12 +35,15 @@ from rustyera_tui.presentation import (
     DisplayLineModel,
     DisplaySegment,
     SeparatorLayout,
+    parse_line,
 )
 from rustyera_tui.color_picker import ColorField, ColorPickerDialog
 from rustyera_tui.preferences_schema import FIELDS, PAGES, FieldSpec
 from rustyera_tui.runtime import FrontendEvent, PresentationBatch, RuntimeFailure
 from rustyera_tui.widgets import GameLine, GameViewport
 from rustyera_tui.wire import variant
+
+from erafl_layout_fixture import GUILD_TASK_TOKEN, erafl_guild_line
 
 
 class FakeWorker:
@@ -812,6 +815,40 @@ async def test_responsive_layout_preserves_long_text_maps_and_button_coordinates
         assert game_lines[2].content is map_content
         assert game_lines[2].render().plain == "┌" + "─" * 39 + "┐"
         assert viewport.show_horizontal_scrollbar
+
+
+async def test_positioned_html_table_keeps_clickable_terminal_coordinates(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    model = parse_line(erafl_guild_line())
+    app.presentation.lines = [model]
+    app.active_wait = {0: 8, 1: 2}
+
+    async with app.run_test(size=(180, 60)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([model])
+        await pilot.pause()
+        game_line = app.query_one(GameLine)
+        rendered = game_line.render().plain.splitlines()
+
+        assert len(rendered) == 45
+        assert rendered[5][3] == "┌"
+        assert rendered[5][67] == "┌"
+        assert rendered[30][67] == "┌"
+        assert [
+            (region.row, region.start, region.end, region.token, region.enabled, region.title)
+            for region in game_line.regions
+        ] == [(7, 5, 17, GUILD_TASK_TOKEN, True, "选择任务")]
+        assert await pilot.hover(game_line, offset=(6, 7))
+        assert game_line.tooltip == "选择任务"
+        assert game_line.hovered_region == 0
+        assert await pilot.click(game_line, offset=(6, 7))
+        assert ("activate", GUILD_TASK_TOKEN) in worker.commands
+        assert not game_line.interactions_enabled
+        assert await pilot.hover(game_line, offset=(6, 7))
+        assert game_line.hovered_region is None
+        assert game_line.tooltip is None
 
 
 async def test_semantic_separator_tracks_the_viewport_without_wrapping_plain_text(
