@@ -10,7 +10,6 @@ from .runtime_dependencies import (
     FrontendEvent,
     GameInformation,
     LogLevel,
-    Path,
     PendingConfigurationFinalize,
     PendingConfigurationPrepare,
     PreparedConfiguration,
@@ -24,9 +23,10 @@ from .runtime_dependencies import (
     runtime_log_level,
     time,
 )
+from .runtime_project_reload import _RuntimeProjectReloadMixin
 
 
-class _RuntimeProjectMixin:
+class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
     def _handle_project_report(self, report: dict[int, Any]) -> None:
         from . import runtime as runtime_facade
 
@@ -403,35 +403,3 @@ class _RuntimeProjectMixin:
             request[2] = cache_transfer_id
         self.send_runtime(19, request)
         self.record_host_duration("submission_transfer_ms", started)
-
-    def reload_all(self) -> None:
-        if self.bundle is None:
-            raise RuntimeError("no project is active")
-        candidate, request = self.bundle.rescan(self._project_scan_progress)
-        self._submit_reload(candidate, request, f"{len(request[2])} 个文件变更")
-
-    def reload_folder(self, path: Path) -> None:
-        if self.bundle is None:
-            raise RuntimeError("no project is active")
-        candidate, request = self.bundle.reload_folder(path, self._project_scan_progress)
-        self._submit_reload(candidate, request, path.name or str(path))
-
-    def reload_file(self, path: Path) -> None:
-        if self.bundle is None:
-            raise RuntimeError("no project is active")
-        candidate, request = self.bundle.reload_file(path)
-        self._submit_reload(candidate, request, path.name)
-
-    def _submit_reload(
-        self, candidate: ProjectBundle, request: dict[int, Any], description: str
-    ) -> None:
-        if not request[2]:
-            if self.bundle is None:
-                raise RuntimeError("no project is active")
-            candidate.revision = self.bundle.revision
-            self.bundle = candidate
-            self.events.put(FrontendEvent("status", "脚本热重载完成；没有文件发生变化。"))
-            return
-        self.reload_candidate = candidate
-        self.events.put(FrontendEvent("status", f"正在热重载 {description}…"))
-        self.reload_message_id = self.send_runtime(12, request)
