@@ -90,6 +90,8 @@ DIAGNOSIS_PROGRESS_STAGE_BY_EXPORT: dict[ExportStage, DiagnosisProgressStage] = 
 COMPILED_CACHE_PERSIST_DELAY_NS = 10_000_000_000
 COMPILED_CACHE_RETRY_NS = 250_000_000
 STATE_IMPORT_CHUNK_BYTES = 16 * 1024 * 1024
+# Larger bounded chunks amortize frontend/runtime round trips without changing the wire contract.
+STATE_EXPORT_CHUNK_BYTES = 16 * 1024 * 1024
 
 
 def _debug_action_owner(action: str) -> str | None:
@@ -1685,7 +1687,7 @@ class RuntimeClient:
                 0,
                 int(descriptor[2]),
             )
-        self.send_runtime(67, {0: descriptor[0], 1: 0, 2: 1024 * 1024})
+        self.send_runtime(67, {0: descriptor[0], 1: 0, 2: STATE_EXPORT_CHUNK_BYTES})
 
     def _handle_export_chunk(self, chunk: dict[int, Any]) -> None:
         if self.pending_export is None:
@@ -1723,7 +1725,10 @@ class RuntimeClient:
                 int(descriptor[2]),
             )
         if not chunk[3]:
-            self.send_runtime(67, {0: descriptor[0], 1: received + len(chunk[2]), 2: 1024 * 1024})
+            self.send_runtime(
+                67,
+                {0: descriptor[0], 1: received + len(chunk[2]), 2: STATE_EXPORT_CHUNK_BYTES},
+            )
             return
         if self.pending_export_kind not in {
             ExportStage.COMPILED_CACHE,

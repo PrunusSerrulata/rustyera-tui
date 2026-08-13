@@ -128,14 +128,19 @@ def test_full_project_chunks_stream_to_an_atomic_target(tmp_path: Path) -> None:
     client.full_project_export = FullProjectExport(target, stream)
     client.pending_export_kind = 5
     descriptor = {0: 7, 1: 3, 2: 6, 3: blake3.blake3(b"abcdef").digest()}
-    client.pending_export = (target, bytearray(), descriptor)
+    client.pending_export = (target, bytearray(), None)
+
+    client._handle_export_ready({0: 3, 1: variant(0, descriptor)})
 
     client._handle_export_chunk({0: 7, 1: 0, 2: b"abc", 3: False})
     client._handle_export_chunk({0: 7, 1: 3, 2: b"def", 3: True})
 
     assert target.read_bytes() == b"abcdef"
     assert client.full_project_export is None
-    assert captured[-1] == (67, {0: 7, 1: 3, 2: 1024 * 1024})
+    assert captured == [
+        (67, {0: 7, 1: 0, 2: 16 * 1024 * 1024}),
+        (67, {0: 7, 1: 3, 2: 16 * 1024 * 1024}),
+    ]
     events = [client.events.get_nowait() for _ in range(client.events.qsize())]
     assert FrontendEvent("project_file_export_finished", True) in events
 
