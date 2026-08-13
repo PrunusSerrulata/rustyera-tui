@@ -11,7 +11,6 @@ from .runtime_dependencies import (
     COMPILED_CACHE_RETRY_NS,
     CORE_STARTUP_PHASES,
     ConfigurationSnapshot,
-    DEBUG_VERSION,
     DIAGNOSIS_EXPORT_STAGES,
     DiagnosisExport,
     DiagnosisProgress,
@@ -26,35 +25,32 @@ from .runtime_dependencies import (
     PendingGameInput,
     PresentationBatch,
     ProjectBundle,
-    RUNTIME_VERSION,
     RuntimeAbi,
     RuntimeFailure,
     ServicePresentationModel,
     StorageBackend,
     coalesce_presentation_deltas,
     copy,
-    debug_message,
     decode_envelope,
     emit_startup_milestone,
-    encode_envelope,
     enum_text,
     log_event,
     message_value,
     queue,
     runtime_log_level,
-    runtime_message,
     time,
     variant,
-    version_range,
 )
 
 from .runtime_debug import _RuntimeDebugMixin
-from .runtime_project import _RuntimeProjectMixin
 from .runtime_interaction import _RuntimeInteractionMixin
+from .runtime_project import _RuntimeProjectMixin
+from .runtime_transport import _RuntimeTransportMixin
 from .runtime_transfer import _RuntimeTransferMixin
 
 
 class RuntimeClient(
+    _RuntimeTransportMixin,
     _RuntimeProjectMixin,
     _RuntimeTransferMixin,
     _RuntimeDebugMixin,
@@ -300,153 +296,6 @@ class RuntimeClient(
         )
         self.startup_active = False
         self._startup_core_phase_started.clear()
-
-    def _send_hello(self) -> None:
-        service_capabilities = [
-            {0: 9, 1: "random_seed", 2: version_range(1, 0)},
-            {0: 8, 1: "local_date_time", 2: version_range(1, 0)},
-            {0: 7, 1: "get_key_state", 2: version_range(1, 0)},
-            {0: 1, 1: "image_metadata", 2: version_range(1, 0)},
-            {0: 10, 1: "get_display_line", 2: version_range(1, 0)},
-            {0: 10, 1: "html_get_printed_str", 2: version_range(1, 0)},
-            {0: 10, 1: "serialize_physical_history", 2: version_range(1, 0)},
-            {0: 0, 1: "gget_text_size", 2: version_range(1, 0)},
-        ]
-        capabilities = {
-            0: [0, 1],
-            1: True,
-            2: True,
-            3: False,
-            4: False,
-            5: False,
-            6: True,
-            7: True,
-            8: True,
-            9: [],
-            10: service_capabilities,
-            11: {0: True, 1: True, 2: True, 3: True},
-        }
-        maximum_envelope_bytes, maximum_payload_bytes = (
-            self.pending_bundle.requested_wire_limits()
-            if self.pending_bundle is not None
-            else (128 * 1024 * 1024, 127 * 1024 * 1024)
-        )
-        limits = {
-            0: maximum_envelope_bytes,
-            1: maximum_payload_bytes,
-            2: 128,
-            3: 4096,
-            4: 1_000_000,
-            5: 512 * 1024 * 1024,
-        }
-        hello = {
-            0: version_range(*RUNTIME_VERSION),
-            1: "rustyera-textual-tui",
-            2: [0, 1, 2, 3, 4, 10, 11, 12, 13, 14],
-            3: limits,
-            4: capabilities,
-            5: ["zh-CN", "ja", "en"],
-            6: 1,
-        }
-        self.send_runtime(0, hello)
-
-    @staticmethod
-    def _storage_for_bundle(bundle: ProjectBundle) -> StorageBackend:
-        if bundle.project_file is None:
-            return StorageBackend(bundle.root)
-        return StorageBackend(
-            bundle.root,
-            data_root=bundle.root / ".rustyera" / "packaged-projects",
-            identity_path=bundle.project_file,
-        )
-
-    def send_runtime(
-        self, tag: int, value: Any | None = None, *, correlation_id: int | None = None
-    ) -> int:
-        message_id = self.next_message_id
-        self.next_message_id += 1
-        data = encode_envelope(
-            channel=CHANNEL_RUNTIME,
-            channel_version=RUNTIME_VERSION,
-            session=self.session,
-            sequence=self.runtime_sequence,
-            message_id=message_id,
-            correlation_id=correlation_id,
-            payload_tag=tag,
-            payload=runtime_message(tag, value),
-            epoch=self.epoch,
-        )
-        self.runtime_sequence += 1
-        self.abi.submit(data)
-        return message_id
-
-    def send_debug(self, tag: int, value: Any | None = None, *, pending: str = "") -> int:
-        if self.session is None or self.epoch is None:
-            raise RuntimeError("debug protocol requires an active runtime session")
-        message_id = self.next_message_id
-        self.next_message_id += 1
-        data = encode_envelope(
-            channel=CHANNEL_DEBUG,
-            channel_version=DEBUG_VERSION,
-            session=self.session,
-            sequence=self.debug_sequence,
-            message_id=message_id,
-            correlation_id=None,
-            payload_tag=tag,
-            payload=debug_message(tag, value),
-            epoch=self.epoch,
-        )
-        self.debug_sequence += 1
-        self.abi.submit(data)
-        if pending:
-            self.debug_pending_by_message[message_id] = pending
-        return message_id
-
-    def pump(self) -> bool:
-        pump_started = time.perf_counter()
-        self._pending_presentation_events.clear()
-        self._wait_event_dirty = False
-        self._presentation_boundary_dirty = False
-        # Sample automatic time only when the next drive is about to start. The worker drains
-        # queued user commands before calling pump(), so a user action for the visible wait is
-        # submitted before this timer tick instead of racing a tick left queued by the prior
-        # presentation batch.
-        self._advance_deadline()
-        drive_started = time.perf_counter()
-        report = self.abi.drive()
-        drive_ms = (time.perf_counter() - drive_started) * 1000
-        emitted = False
-        acknowledge_through: int | None = None
-        while data := self.abi.poll():
-            emitted = True
-            runtime_sequence = self._handle_envelope(data)
-            if runtime_sequence is not None:
-                acknowledge_through = runtime_sequence
-        self._flush_presentation_events()
-        # Runtime output acknowledgement is cumulative. Deferring it until the complete poll
-        # batch also ensures an epoch-changing reload is acknowledged with its final epoch,
-        # even when an earlier message in the same batch was emitted before the commit.
-        if acknowledge_through is not None and self.session is not None:
-            self.send_runtime(93, {0: acknowledge_through})
-        pump_ms = (time.perf_counter() - pump_started) * 1000
-        if (
-            self.metrics_threshold_ms is not None
-            and max(drive_ms, pump_ms) >= self.metrics_threshold_ms
-        ):
-            self.events.put(
-                FrontendEvent(
-                    "runtime_metrics",
-                    {
-                        "drive_ms": drive_ms,
-                        "pump_ms": pump_ms,
-                        "vm_instructions": report.vm_instructions,
-                        "runtime_transitions": report.runtime_transitions,
-                        "queued_envelopes": report.queued_envelopes,
-                        "state": report.state,
-                    },
-                )
-            )
-        return emitted or report.state in (1, 2)
 
     def _new_game_start(self) -> dict[int, Any]:
         """Build the normal start request, optionally using a deterministic test seed."""
