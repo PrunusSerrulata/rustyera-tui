@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import queue
 import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -13,12 +12,13 @@ from .log_model import LogLevel, LogMessage
 from .project import ProjectBundle
 from .runtime_types import FrontendCommand, FrontendEvent
 from .startup_telemetry import emit_startup_milestone
+from .worker_project import _WorkerProjectMixin
 
 if TYPE_CHECKING:
     from .runtime import RuntimeClient
 
 
-class RuntimeWorker(threading.Thread):
+class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
     """Serialize all C ABI calls while exposing queue-only communication to Textual."""
 
     def __init__(
@@ -244,50 +244,6 @@ class RuntimeWorker(threading.Thread):
             elif command.kind == "export_diagnosis":
                 client._finish_diagnosis_export(False, str(error))
             self.events.put(FrontendEvent("error", str(error)))
-
-    def _load_project(self, root: Path) -> None:
-        if self.client is None:
-            return
-        self.client.begin_startup_attempt(project_file=False)
-        self.events.put(FrontendEvent("status", f"正在扫描 {root}…"))
-        bundle = ProjectBundle.scan_quick(
-            root,
-            1,
-            self._emit_scan_progress,
-            cancelled=self._stop_requested.is_set,
-        )
-        if self._stop_requested.is_set():
-            return
-        self.client.record_host_metrics(bundle.scan_metrics.telemetry())
-        restore = None
-        if self.initial_state is not None:
-            path, purpose = self.initial_state
-            resolved = path.expanduser().resolve(strict=True)
-            restore = (resolved, resolved.read_bytes(), purpose)
-            self.initial_state = None
-        self.client.recreate(bundle, restore)
-
-    def _load_project_file(self, path: Path) -> None:
-        if self.client is None:
-            return
-        self.client.begin_startup_attempt(project_file=True)
-        started = time.monotonic_ns()
-        resolved = path.expanduser().resolve(strict=True)
-        payload = resolved.read_bytes()
-        manifest = self.client.abi.project_file_manifest(payload)
-        self.client.record_host_duration("cache_read_ms", started)
-        bundle = ProjectBundle.from_project_file_manifest(resolved, manifest)
-        self.events.put(FrontendEvent("status", f"正在载入项目文件 {resolved}…"))
-        self.client.recreate(bundle, project_file_bytes=payload)
-
-    def _emit_scan_progress(self, completed: int, total: int) -> None:
-        self.events.put(FrontendEvent("project_progress", (0, completed, total)))
-
-    def _emit_project_progress(self, stage: int, completed: int, total: int) -> None:
-        if self.client is not None:
-            self.client.report_runtime_project_progress(stage, completed, total)
-        else:
-            self.events.put(FrontendEvent("project_progress", (stage, completed, total)))
 
     def stop(self) -> None:
         self._stop_requested.set()
