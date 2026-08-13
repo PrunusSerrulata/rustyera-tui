@@ -216,6 +216,20 @@ ModalScreen {
     max-height: 90%;
 }
 
+.about-dialog .dialog-title {
+    margin-bottom: 1;
+}
+
+#about-license-note {
+    padding-left: 8;
+    color: #9ca3af;
+    text-style: italic;
+}
+
+#about-game-separator {
+    margin: 0;
+}
+
 .about-section-title {
     text-style: bold;
 }

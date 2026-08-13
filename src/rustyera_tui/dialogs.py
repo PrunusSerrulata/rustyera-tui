@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
@@ -89,18 +90,23 @@ class AboutDialog(ModalScreen[None]):
             yield Static("作者：PrunusSerrulata", markup=False)
             yield Static(f"前端版本：{self.frontend_version}", markup=False)
             yield Static(f"core 版本：{self.core_version}", markup=False)
+            yield Static("许可证：GPL-3.0-only", markup=False)
             yield Static(
-                "许可证：GPL-3.0-only（仅适用于 RustyEra 相关组件；"
-                "游戏本体的许可证以其指定的为准）",
+                "仅适用于 RustyEra 相关组件；游戏本体的许可证以其指定的为准。",
+                id="about-license-note",
                 markup=False,
             )
             yield Static(
-                "core 仓库：https://github.com/PrunusSerrulata/rustyera-core",
-                markup=False,
+                self._repository_link(
+                    "core 仓库", "https://github.com/PrunusSerrulata/rustyera-core"
+                ),
+                id="about-core-repository",
             )
             yield Static(
-                "TUI 仓库：https://github.com/PrunusSerrulata/rustyera-tui",
-                markup=False,
+                self._repository_link(
+                    "TUI 仓库", "https://github.com/PrunusSerrulata/rustyera-tui"
+                ),
+                id="about-tui-repository",
             )
             game_items = self.game_information.display_items()
             if game_items:
@@ -114,6 +120,12 @@ class AboutDialog(ModalScreen[None]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "about-close":
             self.dismiss()
+
+    @staticmethod
+    def _repository_link(label: str, url: str) -> Text:
+        line = Text(f"{label}：")
+        line.append(url, style=f"link {url}")
+        return line
 
 
 class FatalErrorDialog(ModalScreen[None]):

@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from rich.cells import cell_len
+from rich.text import Text
 from textual import events
 from textual.widgets import (
     Button,
@@ -386,6 +387,19 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         assert "仅适用于 RustyEra 相关组件" in contents
         assert "https://github.com/PrunusSerrulata/rustyera-core" in contents
         assert "https://github.com/PrunusSerrulata/rustyera-tui" in contents
+        title = app.screen.query_one(".dialog-title")
+        assert title.styles.margin.bottom == 1
+        note = app.screen.query_one("#about-license-note", Static)
+        assert note.styles.padding.left == 8
+        assert note.styles.color.hex6 == "#9CA3AF"
+        assert note.styles.text_style.italic
+        for widget_id, url in (
+            ("#about-core-repository", "https://github.com/PrunusSerrulata/rustyera-core"),
+            ("#about-tui-repository", "https://github.com/PrunusSerrulata/rustyera-tui"),
+        ):
+            content = app.screen.query_one(widget_id, Static).content
+            assert isinstance(content, Text)
+            assert any(span.style == f"link {url}" for span in content.spans)
         assert len(app.screen.query("#about-game-separator")) == 0
 
 
@@ -401,7 +415,9 @@ async def test_about_information_shows_only_defined_game_metadata(tmp_path: Path
         await pilot.click("#help-about")
 
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
-        assert app.screen.query_one("#about-game-separator", Rule)
+        separator = app.screen.query_one("#about-game-separator", Rule)
+        assert separator.styles.margin.top == 0
+        assert separator.styles.margin.bottom == 0
         assert "游戏名称：Demo" in contents
         assert "游戏版本：1.001" in contents
         assert "备注：Notes" in contents
