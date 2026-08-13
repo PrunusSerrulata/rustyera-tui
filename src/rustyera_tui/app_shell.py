@@ -29,6 +29,11 @@ from .widgets import GameViewport
 from .app_interaction import _InteractionMixin
 from .app_menu import _MenuAndExportMixin
 from .app_worker import _WorkerEventMixin
+from .app_progress import (
+    PROJECT_PROGRESS_LABELS as _PROJECT_PROGRESS_LABELS,
+    PROJECT_PROGRESS_PREFIXES as _PROJECT_PROGRESS_PREFIXES,
+    format_project_progress,
+)
 
 
 class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App[None]):
@@ -84,33 +89,8 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         "debug-stack",
         "debug-step-toggle",
     )
-    PROJECT_PROGRESS_PREFIXES = (
-        "正在创建新的 Runtime session",
-        "正在扫描 ",
-        "正在载入项目缓存",
-        "项目缓存未命中",
-        "正在提交项目并编译脚本",
-        "项目编译完成，正在进入标题画面",
-        "项目缓存命中，正在进入标题画面",
-        "项目缓存已保存，正在进入标题画面",
-        "项目缓存保存失败，正在进入标题画面",
-        "正在热重载",
-    )
-    PROJECT_PROGRESS_LABELS = (
-        "正在读取项目文件",
-        "正在整理项目文件",
-        "正在加载项目数据",
-        "正在解析脚本",
-        "正在分析脚本",
-        "正在编译脚本函数",
-        "正在验证编译结果",
-        "正在整理编译结果",
-        "正在准备 Runtime 资源",
-        "正在打包全量项目文件",
-        "正在解析编译缓存",
-        "正在解码编译缓存",
-        "正在验证编译缓存",
-    )
+    PROJECT_PROGRESS_PREFIXES = _PROJECT_PROGRESS_PREFIXES
+    PROJECT_PROGRESS_LABELS = _PROJECT_PROGRESS_LABELS
     DIAGNOSIS_PROGRESS_LABELS = {
         "waiting": "正在准备诊断信息",
         "input_replay": "正在导出输入回放",
@@ -258,21 +238,24 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
             self._update_prompt()
 
     def _update_project_progress(self, stage: int, completed: int, total: int) -> None:
-        if not 0 <= stage < len(self.PROJECT_PROGRESS_LABELS):
+        progress = format_project_progress(
+            stage,
+            completed,
+            total,
+            project_file_exporting=self.project_file_exporting,
+            labels=self.PROJECT_PROGRESS_LABELS,
+        )
+        if progress is None:
             return
-        if stage == 0 and total <= 0:
-            self._begin_project_progress("正在枚举项目文件…")
-            return
-        completed = max(0, min(completed, total)) if total > 0 else 0
-        percent = min(100, completed * 100 // total) if total > 0 else 100
-        filled = percent * 20 // 100
-        bar = f"[{'█' * filled}{'░' * (20 - filled)}]"
-        message = f"{self.PROJECT_PROGRESS_LABELS[stage]}：{completed}/{total} {bar} {percent}%"
-        if self.project_file_exporting and self.export_progress_dialog is not None:
-            self.export_progress_dialog.update_progress(message)
+        if (
+            progress.updates_export_dialog
+            and self.project_file_exporting
+            and self.export_progress_dialog is not None
+        ):
+            self.export_progress_dialog.update_progress(progress.message)
         self._begin_project_progress(
-            message,
-            blocks_interaction=stage != 9 or self.project_file_exporting,
+            progress.message,
+            blocks_interaction=progress.blocks_interaction,
         )
 
     def _finish_project_progress(self) -> None:
