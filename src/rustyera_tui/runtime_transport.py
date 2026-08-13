@@ -12,7 +12,9 @@ from .runtime_dependencies import (
     RUNTIME_VERSION,
     StorageBackend,
     debug_message,
+    decode_envelope,
     encode_envelope,
+    message_value,
     runtime_message,
     time,
     version_range,
@@ -124,6 +126,36 @@ class _RuntimeTransportMixin:
         if pending:
             self.debug_pending_by_message[message_id] = pending
         return message_id
+
+    def _handle_envelope(self, data: bytes) -> int | None:
+        envelope = decode_envelope(data)
+        # A committed new game, restore, or hot reload may advance the epoch before its first
+        # StateChanged message is observed. The common envelope already carries that authority;
+        # adopt it before acknowledging the message so the acknowledgement cannot be stale.
+        if envelope.epoch is not None:
+            self.epoch = envelope.epoch
+        if envelope.channel == CHANNEL_RUNTIME:
+            if envelope.sequence != self.expected_runtime_output:
+                raise RuntimeError(
+                    f"runtime output sequence gap: expected {self.expected_runtime_output}, "
+                    f"received {envelope.sequence}"
+                )
+            self.expected_runtime_output += 1
+            value = message_value(envelope.payload, envelope.payload_tag)
+            self._handle_runtime(envelope.payload_tag, value, envelope.correlation_id)
+            return envelope.sequence
+        if envelope.channel == CHANNEL_DEBUG:
+            if envelope.sequence != self.expected_debug_output:
+                raise RuntimeError(
+                    f"debug output sequence gap: expected {self.expected_debug_output}, "
+                    f"received {envelope.sequence}"
+                )
+            self.expected_debug_output += 1
+            value = message_value(envelope.payload, envelope.payload_tag)
+            self._handle_debug(envelope.payload_tag, value, envelope.correlation_id)
+        else:
+            raise RuntimeError(f"unknown output channel {envelope.channel}")
+        return None
 
     def pump(self) -> bool:
         pump_started = time.perf_counter()

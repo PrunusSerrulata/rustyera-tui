@@ -5,8 +5,6 @@ from __future__ import annotations
 from .runtime_dependencies import (
     Any,
     AtomicExportStream,
-    CHANNEL_DEBUG,
-    CHANNEL_RUNTIME,
     COMMAND_ERROR_CODES,
     COMPILED_CACHE_RETRY_NS,
     CORE_STARTUP_PHASES,
@@ -31,11 +29,9 @@ from .runtime_dependencies import (
     StorageBackend,
     coalesce_presentation_deltas,
     copy,
-    decode_envelope,
     emit_startup_milestone,
     enum_text,
     log_event,
-    message_value,
     queue,
     runtime_log_level,
     time,
@@ -336,36 +332,6 @@ class RuntimeClient(
                 ),
             )
         )
-
-    def _handle_envelope(self, data: bytes) -> int | None:
-        envelope = decode_envelope(data)
-        # A committed new game, restore, or hot reload may advance the epoch before its first
-        # StateChanged message is observed. The common envelope already carries that authority;
-        # adopt it before acknowledging the message so the acknowledgement cannot be stale.
-        if envelope.epoch is not None:
-            self.epoch = envelope.epoch
-        if envelope.channel == CHANNEL_RUNTIME:
-            if envelope.sequence != self.expected_runtime_output:
-                raise RuntimeError(
-                    f"runtime output sequence gap: expected {self.expected_runtime_output}, "
-                    f"received {envelope.sequence}"
-                )
-            self.expected_runtime_output += 1
-            value = message_value(envelope.payload, envelope.payload_tag)
-            self._handle_runtime(envelope.payload_tag, value, envelope.correlation_id)
-            return envelope.sequence
-        elif envelope.channel == CHANNEL_DEBUG:
-            if envelope.sequence != self.expected_debug_output:
-                raise RuntimeError(
-                    f"debug output sequence gap: expected {self.expected_debug_output}, "
-                    f"received {envelope.sequence}"
-                )
-            self.expected_debug_output += 1
-            value = message_value(envelope.payload, envelope.payload_tag)
-            self._handle_debug(envelope.payload_tag, value, envelope.correlation_id)
-        else:
-            raise RuntimeError(f"unknown output channel {envelope.channel}")
-        return None
 
     def _handle_runtime(self, tag: int, value: Any, correlation_id: int | None) -> None:
         if tag == 1:  # ServerHello
