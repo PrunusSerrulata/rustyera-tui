@@ -302,8 +302,7 @@ def test_erafl_guild_divisions_project_to_terminal_table_geometry() -> None:
     assert button.text == "女仆班米爱尔"
     assert button.title == "选择任务"
     assert any(
-        "┌" in segment.text and segment.style.foreground == "#c0c0c0"
-        for segment in parsed.segments
+        "┌" in segment.text and segment.style.foreground == "#c0c0c0" for segment in parsed.segments
     )
 
 
@@ -324,9 +323,7 @@ def test_positioned_html_keeps_graphemes_and_bounds_clipped_content() -> None:
             )
         ]
     }
-    parsed = parse_line(
-        {0: 16, 1: False, 2: True, 3: True, 4: 0, 5: [variant(2, document)]}
-    )
+    parsed = parse_line({0: 16, 1: False, 2: True, 3: True, 4: 0, 5: [variant(2, document)]})
 
     visible = [segment for segment in parsed.segments if segment.text != "\n"]
     assert "".join(segment.text for segment in visible) == text
@@ -343,9 +340,7 @@ def test_positioned_html_depth_and_source_order_choose_the_top_layer() -> None:
             html_division(500, 0, 100, 100, [html_text("B")]),
         ]
     }
-    parsed = parse_line(
-        {0: 17, 1: False, 2: True, 3: True, 4: 0, 5: [variant(2, document)]}
-    )
+    parsed = parse_line({0: 17, 1: False, 2: True, 3: True, 4: 0, 5: [variant(2, document)]})
     row = "".join(segment.text for segment in parsed.segments).splitlines()[0]
 
     assert row[0] == "P"
@@ -464,9 +459,7 @@ def test_positioned_html_rejects_unbounded_coordinates_and_area() -> None:
             html_division(0, 0, -100, 100, [html_text("negative extent")]),
         ]
     }
-    parsed = parse_line(
-        {0: 22, 1: False, 2: True, 3: True, 4: 0, 5: [variant(2, document)]}
-    )
+    parsed = parse_line({0: 22, 1: False, 2: True, 3: True, 4: 0, 5: [variant(2, document)]})
 
     assert parsed.segments == ()
 

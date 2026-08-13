@@ -8,6 +8,10 @@ from typing import Any, Callable, cast
 
 from rich.cells import cell_len, split_graphemes
 
+from .presentation_helpers import (
+    packed_color_hex as _packed_color_hex,
+    semantic_field as _semantic_field,
+)
 from .presentation_types import DisplaySegment, SegmentStyle
 from .wire import unwrap_variant
 
@@ -35,9 +39,7 @@ def project_html_shape(semantic: Any, context: DisplaySegment) -> list[DisplaySe
     kind = _semantic_field(semantic, 0, "")
     parameters = _semantic_field(semantic, 1, [])
     if str(kind).lower() == "space" and parameters:
-        columns = _project_length(
-            parameters[0], horizontal=True, domain=_LengthDomain.HTML
-        )
+        columns = _project_length(parameters[0], horizontal=True, domain=_LengthDomain.HTML)
         if columns is None or not 0 <= columns <= MAX_TERMINAL_COLUMNS:
             return [replace(context, text="[图形]")]
         return [replace(context, text=" " * columns, logical_columns=columns)]
@@ -103,22 +105,14 @@ def _project_rectangle(
         if not _raw_length_positive(parameters[0]):
             return [replace(context, text="[图形]")]
         x, y, height = 0, 0, 1
-        width = _project_length(
-            parameters[0], horizontal=True, domain=domain, extent=True
-        )
+        width = _project_length(parameters[0], horizontal=True, domain=domain, extent=True)
     else:
-        if not _raw_length_positive(parameters[2]) or not _raw_length_positive(
-            parameters[3]
-        ):
+        if not _raw_length_positive(parameters[2]) or not _raw_length_positive(parameters[3]):
             return [replace(context, text="[图形]")]
         x = _project_length(parameters[0], horizontal=True, domain=domain)
         y = _project_length(parameters[1], horizontal=False, domain=domain)
-        width = _project_length(
-            parameters[2], horizontal=True, domain=domain, extent=True
-        )
-        height = _project_length(
-            parameters[3], horizontal=False, domain=domain, extent=True
-        )
+        width = _project_length(parameters[2], horizontal=True, domain=domain, extent=True)
+        height = _project_length(parameters[3], horizontal=False, domain=domain, extent=True)
     if (
         x is None
         or y is None
@@ -192,9 +186,7 @@ class _TerminalCanvas:
             for start, end, width in spans:
                 grapheme = part[start:end]
                 if width > 0:
-                    self._paint_grapheme(
-                        row, column, grapheme, width, template, clip, priority
-                    )
+                    self._paint_grapheme(row, column, grapheme, width, template, clip, priority)
                     column += width
             if part_index + 1 < len(parts):
                 row += 1
@@ -225,29 +217,19 @@ class _TerminalCanvas:
             )
             for row in range(visible_top, visible_bottom):
                 for column in range(visible_left, visible_right):
-                    self._paint_grapheme(
-                        row, column, " ", 1, fill, clip, priority
-                    )
+                    self._paint_grapheme(row, column, " ", 1, fill, clip, priority)
 
         bottom = top + height - 1
         right = left + width - 1
         top_color, right_color, bottom_color, left_color = border_colors
         if top_color is not None:
-            self._paint_rule(
-                top, left, right, "─", context, top_color, clip, priority
-            )
+            self._paint_rule(top, left, right, "─", context, top_color, clip, priority)
         if bottom_color is not None:
-            self._paint_rule(
-                bottom, left, right, "─", context, bottom_color, clip, priority
-            )
+            self._paint_rule(bottom, left, right, "─", context, bottom_color, clip, priority)
         if left_color is not None:
-            self._paint_column(
-                top, bottom, left, "│", context, left_color, clip, priority
-            )
+            self._paint_column(top, bottom, left, "│", context, left_color, clip, priority)
         if right_color is not None:
-            self._paint_column(
-                top, bottom, right, "│", context, right_color, clip, priority
-            )
+            self._paint_column(top, bottom, right, "│", context, right_color, clip, priority)
         corners = (
             (top_color, left_color, top, left, "┌"),
             (top_color, right_color, top, right, "┐"),
@@ -261,9 +243,7 @@ class _TerminalCanvas:
                     text="",
                     style=replace(context.style, foreground=horizontal),
                 )
-                self._paint_grapheme(
-                    row, column, character, 1, corner, clip, priority
-                )
+                self._paint_grapheme(row, column, character, 1, corner, clip, priority)
 
     def segments(self) -> list[DisplaySegment]:
         if self.max_row < 0:
@@ -348,9 +328,7 @@ class _TerminalCanvas:
             style=replace(context.style, foreground=color),
         )
         for column in range(max(0, left), min(MAX_TERMINAL_COLUMNS, right + 1)):
-            self._paint_grapheme(
-                row, column, character, 1, template, clip, priority
-            )
+            self._paint_grapheme(row, column, character, 1, template, clip, priority)
 
     def _paint_column(
         self,
@@ -369,9 +347,7 @@ class _TerminalCanvas:
             style=replace(context.style, foreground=color),
         )
         for row in range(max(0, top), min(MAX_TERMINAL_ROWS, bottom + 1)):
-            self._paint_grapheme(
-                row, column, character, 1, template, clip, priority
-            )
+            self._paint_grapheme(row, column, character, 1, template, clip, priority)
 
 
 @dataclass(slots=True)
@@ -518,13 +494,7 @@ def _paint_relative_division(
         extent=True,
     )
     declared_depth = _bounded_depth(_semantic_field(semantic, 4, 0))
-    if (
-        x is None
-        or y is None
-        or width is None
-        or height is None
-        or declared_depth is None
-    ):
+    if x is None or y is None or width is None or height is None or declared_depth is None:
         return
     box_model = _semantic_field(semantic, 7, {})
     margin = _project_box_sides(box_model.get(2) if isinstance(box_model, dict) else None)
@@ -552,11 +522,7 @@ def _paint_relative_division(
     colors = box_model.get(4) if isinstance(box_model, dict) else None
     border_colors = _border_colors(border, colors, context.style.foreground)
     background_value = _semantic_field(semantic, 5)
-    background = (
-        _packed_color_hex(background_value)
-        if isinstance(background_value, int)
-        else None
-    )
+    background = _packed_color_hex(background_value) if isinstance(background_value, int) else None
     canvas.paint_box(
         top,
         left,
@@ -699,17 +665,10 @@ def _inside(
     width: int,
     clip: tuple[int, int, int, int] | None,
 ) -> bool:
-    if (
-        row < 0
-        or row >= MAX_TERMINAL_ROWS
-        or column < 0
-        or column + width > MAX_TERMINAL_COLUMNS
-    ):
+    if row < 0 or row >= MAX_TERMINAL_ROWS or column < 0 or column + width > MAX_TERMINAL_COLUMNS:
         return False
     return clip is None or (
-        clip[0] <= row < clip[2]
-        and clip[1] <= column
-        and column + width <= clip[3]
+        clip[0] <= row < clip[2] and clip[1] <= column and column + width <= clip[3]
     )
 
 
@@ -757,16 +716,6 @@ def _is_default_context(segment: DisplaySegment) -> bool:
     )
 
 
-def _semantic_field(semantic: Any, index: int, default: Any = None) -> Any:
-    if semantic is None:
-        return default
-    try:
-        _tag, fields = unwrap_variant(semantic)
-    except (TypeError, ValueError):
-        return default
-    return fields[index] if index < len(fields) else default
-
-
 def _shape_color(value: Any) -> str | None:
     if isinstance(value, dict):
         return _color_hex(value)
@@ -777,7 +726,3 @@ def _shape_color(value: Any) -> str | None:
 
 def _color_hex(color: dict[int, int]) -> str:
     return f"#{color.get(0, 0):02x}{color.get(1, 0):02x}{color.get(2, 0):02x}"
-
-
-def _packed_color_hex(value: int) -> str:
-    return f"#{(value >> 16) & 0xFF:02x}{(value >> 8) & 0xFF:02x}{value & 0xFF:02x}"

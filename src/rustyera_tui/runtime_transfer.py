@@ -1,0 +1,526 @@
+"""Private RuntimeClient responsibilities extracted from the compatibility facade."""
+
+from __future__ import annotations
+
+from .runtime_dependencies import (
+    Any,
+    AtomicExportStream,
+    COMPILED_CACHE_RETRY_NS,
+    Callable,
+    DIAGNOSIS_EXPORT_STAGES,
+    DIAGNOSIS_PROGRESS_STAGE_BY_EXPORT,
+    DiagnosisExport,
+    ExportStage,
+    FrontendEvent,
+    FullProjectExport,
+    LogLevel,
+    Path,
+    RUNTIME_EXPORT_KIND,
+    SNAPSHOT_INELIGIBLE_REASONS,
+    STATE_EXPORT_CHUNK_BYTES,
+    atomic_write,
+    blake3,
+    diagnosis_project_name,
+    emit_startup_milestone,
+    enum_list_text,
+    log_event,
+    time,
+    unwrap_variant,
+    variant,
+)
+
+
+class _RuntimeTransferMixin:
+    def _begin_import(self, payload: bytes, kind: int, purpose: str) -> None:
+        self.import_bytes = payload
+        self.import_purpose = purpose
+        self.send_runtime(
+            62,
+            {0: kind, 1: len(payload), 2: blake3.blake3(payload).digest()},
+        )
+
+    def _stage_project_cache(self, payload: bytes, purpose: str) -> None:
+        stage = getattr(self.abi, "stage_compiled_cache", None)
+        transfer_id = stage(payload) if stage is not None else None
+        if transfer_id is None:
+            self._begin_import(payload, 2, purpose)
+            return
+        self._submit_project(transfer_id)
+
+    def _stage_project_cache_file(self, path: Path, purpose: str) -> None:
+        stage_file = getattr(self.abi, "stage_compiled_cache_file", None)
+        transfer_id = stage_file(path) if stage_file is not None else None
+        if transfer_id is None:
+            self._stage_project_cache(path.read_bytes(), purpose)
+            return
+        self._submit_project(transfer_id)
+
+    def _stage_persistent_cache_or_source(self) -> None:
+        if self.pending_bundle is not None and self.pending_bundle.project_file is not None:
+            self.events.put(FrontendEvent("status", "正在载入项目文件…"))
+            self._stage_project_cache_file(self.pending_bundle.project_file, "project_file")
+            return
+        cache_read_started = time.monotonic_ns()
+        cache_path = (
+            self.storage.compiled_cache_path()
+            if self.storage and self.allow_compiled_cache_load
+            else None
+        )
+        if cache_path is not None:
+            try:
+                if cache_path.stat().st_size > 0:
+                    self.events.put(FrontendEvent("status", "正在载入项目缓存…"))
+                    self._stage_project_cache_file(cache_path, "project_cache")
+                    self.record_host_duration("cache_read_ms", cache_read_started)
+                    return
+            except OSError as error:
+                self.events.put(log_event(f"读取项目缓存失败：{error}", LogLevel.WARNING))
+        self.record_host_duration("cache_read_ms", cache_read_started)
+        if self.pending_bundle is None:
+            return
+        started = time.monotonic_ns()
+        self.pending_bundle = self.pending_bundle.materialize(self._project_scan_progress)
+        self.record_host_duration("source_materialize_ms", started)
+        self._submit_project(None)
+
+    def _refresh_compiled_cache(self, after: str) -> None:
+        self.cache_refresh_pending = False
+        self.cache_ready = False
+        self.pending_cache_after = after
+        self.pending_export_kind = ExportStage.COMPILED_CACHE
+        if self.storage is None:
+            self._finish_cache_export(False)
+            return
+        cache_path = self.storage.compiled_cache_path()
+        if self.pending_cache_stream is None:
+            self.pending_cache_stream = AtomicExportStream.open(cache_path)
+        self.pending_export = (cache_path, bytearray(), None)
+        if not self.cache_preparation_started:
+            self.cache_preparation_started = True
+            self.events.put(
+                FrontendEvent(
+                    "status",
+                    "正在后台生成项目缓存，可继续游戏，但游戏运行和响应速度可能暂时受到影响…",
+                )
+            )
+        self.pending_cache_export_message = self.send_runtime(60, {0: 2, 1: 0})
+
+    def maybe_refresh_compiled_cache(self) -> None:
+        if (
+            self.full_project_export is not None
+            and self.pending_export is None
+            and time.monotonic_ns() >= self.full_project_export.retry_after_ns
+        ):
+            self._request_project_file_export()
+            return
+        if self.pending_diagnosis is not None:
+            if self.pending_diagnosis.stage == "export_wait" and self.pending_export is None:
+                self._start_diagnosis_replay_export()
+            elif (
+                self.pending_diagnosis.stage == "project_wait"
+                and self.pending_export is None
+                and time.monotonic_ns() >= self.pending_diagnosis.retry_after_ns
+            ):
+                self._request_diagnosis_project_export()
+            return
+        if (
+            self.cache_refresh_pending
+            and self.pending_export is None
+            and time.monotonic_ns() >= self.cache_refresh_after_ns
+        ):
+            self._refresh_compiled_cache(self.cache_refresh_after)
+
+    def defer_compiled_cache_refresh(self) -> None:
+        from . import runtime as runtime_facade
+
+        """Keep cache compression out of latency-sensitive gameplay transitions."""
+
+        if self.cache_refresh_pending:
+            self.cache_refresh_after_ns = max(
+                self.cache_refresh_after_ns,
+                time.monotonic_ns() + runtime_facade.COMPILED_CACHE_PERSIST_DELAY_NS,
+            )
+
+    def export_snapshot(self, path: Path, purpose: str) -> None:
+        purpose_id = {"normal": 0, "debug": 1}.get(purpose)
+        if purpose_id is None:
+            raise ValueError(f"unknown snapshot export purpose {purpose}")
+        self.pending_export = (path, bytearray(), None)
+        self.pending_export_kind = ExportStage.SNAPSHOT
+        self.pending_export_message = self.send_runtime(60, {0: 1, 1: purpose_id})
+
+    def export_project_file(self, path: Path, cancelled: Callable[[], bool] | None = None) -> None:
+        if self.bundle is None:
+            raise RuntimeError("no project is active")
+        if self.pending_export_kind == ExportStage.COMPILED_CACHE or self.cache_preparation_started:
+            self.send_runtime(71, {0: 2})
+            self.pending_export = None
+            self.pending_cache_export_message = None
+            self.pending_export_kind = None
+            if self.pending_cache_stream is not None:
+                self.pending_cache_stream.cancel()
+                self.pending_cache_stream = None
+            self.cache_preparation_started = False
+            self.cache_refresh_pending = True
+            self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
+        self._stage_full_project_manifest(cancelled)
+        self.full_project_export = FullProjectExport(path, AtomicExportStream.open(path))
+        self._request_project_file_export()
+
+    def _stage_full_project_manifest(self, cancelled: Callable[[], bool] | None = None) -> None:
+        if self.bundle is None:
+            raise RuntimeError("no project is active")
+        if self.bundle.project_file is None:
+            full_bundle = self.bundle.materialize(self._project_scan_progress, cancelled)
+            self.send_runtime(70, {0: full_bundle.manifest()})
+
+    def _request_project_file_export(self) -> None:
+        export = self.full_project_export
+        if export is None:
+            return
+        self.pending_export = (export.target, bytearray(), None)
+        self.pending_export_kind = ExportStage.PROJECT_FILE
+        self.pending_export_message = self.send_runtime(60, {0: 3, 1: 0})
+
+    def cancel_project_file_export(self) -> None:
+        if (
+            self.pending_export_kind != ExportStage.PROJECT_FILE
+            and self.full_project_export is None
+        ):
+            return
+        self.send_runtime(71, {0: 3})
+        self._finish_project_file_export(None, "已取消导出全量项目文件")
+
+    def export_diagnosis(self, path: Path, logs: str, project_name: str) -> None:
+        if self.bundle is None:
+            raise RuntimeError("no project is active")
+        if self.pending_diagnosis is not None:
+            raise RuntimeError("another diagnosis export is already active")
+        self.pending_diagnosis = DiagnosisExport(
+            target=path,
+            project_name=diagnosis_project_name(project_name),
+            logs=logs,
+            stage="export_wait",
+        )
+        self._report_diagnosis_progress("waiting")
+        if self.pending_export is None:
+            self._start_diagnosis_replay_export()
+
+    def _start_diagnosis_replay_export(self) -> None:
+        diagnosis = self.pending_diagnosis
+        if diagnosis is None:
+            return
+        diagnosis.stage = "replay"
+        self._report_diagnosis_progress("input_replay")
+        self.pending_export = (diagnosis.target, bytearray(), None)
+        self.pending_export_kind = ExportStage.DIAGNOSIS_REPLAY
+        self.pending_export_message = self.send_runtime(60, {0: 4, 1: 0})
+
+    def _start_diagnosis_snapshot_export(self) -> None:
+        diagnosis = self.pending_diagnosis
+        if diagnosis is None:
+            return
+        diagnosis.stage = "snapshot"
+        self._report_diagnosis_progress("vm_snapshot")
+        self.pending_export = (diagnosis.target, bytearray(), None)
+        self.pending_export_kind = ExportStage.DIAGNOSIS_SNAPSHOT
+        self.pending_export_message = self.send_runtime(60, {0: 1, 1: 2})
+
+    def _handle_export_ready(
+        self, ready: dict[int, Any], correlation_id: int | None = None
+    ) -> None:
+        if self.pending_export is None:
+            return
+        stage = self.pending_export_kind
+        expected_kind = RUNTIME_EXPORT_KIND.get(stage) if stage is not None else None
+        if (
+            stage is None
+            or expected_kind is None
+            or (
+                self.pending_export_message is not None
+                and correlation_id != self.pending_export_message
+            )
+            or ready.get(0) != expected_kind
+        ):
+            self._fail_mismatched_export("state export ready does not match the active request")
+            return
+        self.pending_export_message = None
+        result_tag, fields = unwrap_variant(ready[1])
+        if result_tag == 1:
+            reasons = enum_list_text(
+                fields[0], SNAPSHOT_INELIGIBLE_REASONS, "SnapshotIneligibleReason"
+            )
+            self.events.put(FrontendEvent("runtime_error", f"当前状态不能生成快照：{reasons}"))
+            self.pending_export = None
+            self.pending_export_message = None
+            if self.pending_export_kind == ExportStage.COMPILED_CACHE:
+                self._finish_cache_export(False)
+            elif self.pending_export_kind == ExportStage.PROJECT_FILE:
+                self._finish_project_file_export(False)
+            elif self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
+                self._finish_diagnosis_export(False, f"当前状态不能导出：{reasons}")
+            else:
+                self.pending_export_kind = None
+                self.events.put(FrontendEvent("snapshot_export_finished", False))
+            return
+        descriptor = fields[0]
+        if descriptor.get(1) != expected_kind:
+            self._fail_mismatched_export("state export descriptor kind does not match the request")
+            return
+        path, data, _ = self.pending_export
+        self.pending_export = (path, data, descriptor)
+        if stage in DIAGNOSIS_EXPORT_STAGES:
+            self._report_diagnosis_progress(
+                DIAGNOSIS_PROGRESS_STAGE_BY_EXPORT[stage],
+                0,
+                int(descriptor[2]),
+            )
+        self.send_runtime(67, {0: descriptor[0], 1: 0, 2: STATE_EXPORT_CHUNK_BYTES})
+
+    def _handle_export_chunk(self, chunk: dict[int, Any]) -> None:
+        from . import runtime as runtime_facade
+
+        if self.pending_export is None:
+            return
+        path, data, descriptor = self.pending_export
+        stream = (
+            self.full_project_export.stream
+            if self.pending_export_kind == ExportStage.PROJECT_FILE
+            and self.full_project_export is not None
+            else self.pending_cache_stream
+            if self.pending_export_kind == ExportStage.COMPILED_CACHE
+            else None
+        )
+        received = stream.received if stream is not None else len(data)
+        if descriptor is None or chunk[0] != descriptor[0] or chunk[1] != received:
+            if self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
+                self._finish_diagnosis_export(
+                    False, "diagnosis state export chunk is out of sequence"
+                )
+                return
+            raise RuntimeError("snapshot export chunk is out of sequence")
+        if self.pending_export_kind in {
+            ExportStage.COMPILED_CACHE,
+            ExportStage.PROJECT_FILE,
+        }:
+            if stream is None:
+                raise RuntimeError("export stream is missing")
+            stream.write(bytes(chunk[2]))
+        else:
+            data.extend(chunk[2])
+        if self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
+            self._report_diagnosis_progress(
+                DIAGNOSIS_PROGRESS_STAGE_BY_EXPORT[self.pending_export_kind],
+                received + len(chunk[2]),
+                int(descriptor[2]),
+            )
+        if not chunk[3]:
+            self.send_runtime(
+                67,
+                {0: descriptor[0], 1: received + len(chunk[2]), 2: STATE_EXPORT_CHUNK_BYTES},
+            )
+            return
+        if self.pending_export_kind not in {
+            ExportStage.COMPILED_CACHE,
+            ExportStage.PROJECT_FILE,
+        } and (len(data) != descriptor[2] or blake3.blake3(data).digest() != descriptor[3]):
+            if self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
+                self._finish_diagnosis_export(
+                    False, "diagnosis state export size or digest verification failed"
+                )
+                return
+            raise RuntimeError("snapshot export digest verification failed")
+        export_kind = self.pending_export_kind
+        self.pending_export = None
+        self.pending_export_message = None
+        if export_kind == ExportStage.COMPILED_CACHE:
+            if self.pending_cache_stream is None:
+                raise RuntimeError("cache export stream is missing")
+            self.pending_cache_stream.finish(descriptor[2], descriptor[3])
+            self.pending_cache_stream = None
+            self._finish_cache_export(True)
+        elif export_kind == ExportStage.PROJECT_FILE:
+            if self.full_project_export is None:
+                raise RuntimeError("project export stream is missing")
+            self.full_project_export.stream.finish(descriptor[2], descriptor[3])
+            self._finish_project_file_export(True, f"项目文件已导出到 {path}")
+        elif export_kind == ExportStage.DIAGNOSIS_SNAPSHOT:
+            if self.pending_diagnosis is None:
+                raise RuntimeError("diagnosis export state is missing")
+            self.pending_diagnosis.snapshot = bytes(data)
+            self._start_diagnosis_project_export()
+        elif export_kind == ExportStage.DIAGNOSIS_REPLAY:
+            if self.pending_diagnosis is None:
+                raise RuntimeError("diagnosis export state is missing")
+            self.pending_diagnosis.input_replay = bytes(data)
+            self._start_diagnosis_snapshot_export()
+        elif export_kind == ExportStage.DIAGNOSIS_PROJECT:
+            if self.pending_diagnosis is None:
+                raise RuntimeError("diagnosis export state is missing")
+            self.pending_diagnosis.project_file = bytes(data)
+            if (
+                self.pending_diagnosis.input_replay is None
+                or self.pending_diagnosis.snapshot is None
+            ):
+                self._finish_diagnosis_export(False, "diagnosis archive input is missing")
+                return
+            try:
+                self._report_diagnosis_progress("archive")
+                runtime_facade.write_diagnosis_archive(
+                    self.pending_diagnosis.target,
+                    project_name=self.pending_diagnosis.project_name,
+                    snapshot=self.pending_diagnosis.snapshot,
+                    input_replay=self.pending_diagnosis.input_replay,
+                    logs=self.pending_diagnosis.logs,
+                    project_file=self.pending_diagnosis.project_file,
+                    progress=lambda completed, total: self._report_diagnosis_progress(
+                        "archive", completed, total
+                    ),
+                )
+            except Exception as error:  # noqa: BLE001 - report filesystem/compression failures
+                self._finish_diagnosis_export(False, str(error))
+            else:
+                self._finish_diagnosis_export(True, str(self.pending_diagnosis.target))
+        else:
+            atomic_write(path, data)
+            self.pending_export_kind = None
+            self.events.put(FrontendEvent("snapshot_export_finished", True))
+            self.events.put(FrontendEvent("status", f"VM 快照已导出到 {path}"))
+
+    def _start_diagnosis_project_export(self) -> None:
+        diagnosis = self.pending_diagnosis
+        if diagnosis is None:
+            return
+        diagnosis.stage = "project"
+        self._report_diagnosis_progress("project_scanning")
+        try:
+            self._stage_full_project_manifest()
+        except Exception as error:  # noqa: BLE001 - report project scan failures to the UI
+            self._finish_diagnosis_export(False, str(error))
+            return
+        self._request_diagnosis_project_export()
+
+    def _request_diagnosis_project_export(self) -> None:
+        diagnosis = self.pending_diagnosis
+        if diagnosis is None:
+            return
+        self.pending_export = (diagnosis.target, bytearray(), None)
+        self.pending_export_kind = ExportStage.DIAGNOSIS_PROJECT
+        self.pending_export_message = self.send_runtime(60, {0: 3, 1: 0})
+
+    def _finish_diagnosis_export(self, success: bool, message: str) -> None:
+        if not success:
+            descriptor = self.pending_export[2] if self.pending_export is not None else None
+            try:
+                if descriptor is not None:
+                    self.send_runtime(69, {0: descriptor[0]})
+                elif self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
+                    self.send_runtime(71, {0: RUNTIME_EXPORT_KIND[self.pending_export_kind]})
+            except Exception:  # noqa: BLE001 - cleanup must restore frontend interaction
+                pass
+        self.pending_export = None
+        self.pending_export_kind = None
+        self.pending_export_message = None
+        self.pending_diagnosis = None
+        self.events.put(FrontendEvent("diagnosis_export_finished", (success, message)))
+
+    def _fail_mismatched_export(self, message: str) -> None:
+        if self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
+            self._finish_diagnosis_export(False, message)
+            return
+        raise RuntimeError(message)
+
+    def _finish_cache_export(self, success: bool) -> None:
+        self.pending_export = None
+        self.pending_export_message = None
+        if not success and self.pending_cache_stream is not None:
+            self.pending_cache_stream.cancel()
+            self.pending_cache_stream = None
+        after = self.pending_cache_after
+        self.pending_cache_after = None
+        self.pending_export_kind = None
+        self.pending_cache_export_message = None
+        self.cache_preparation_started = False
+        if success and self.storage is not None:
+            emit_startup_milestone(
+                "cache_persisted",
+                attempt_id=self.startup_attempt,
+                scenario=self.startup_scenario,
+            )
+            for obsolete in self.storage.obsolete_compiled_cache_paths():
+                try:
+                    obsolete.unlink(missing_ok=True)
+                except OSError as error:
+                    self.events.put(log_event(f"删除旧编译缓存失败：{error}", LogLevel.WARNING))
+        if after == "start":
+            self.events.put(
+                FrontendEvent(
+                    "status",
+                    "项目缓存已保存，正在进入标题画面…"
+                    if success
+                    else "项目缓存保存失败，正在进入标题画面…",
+                )
+            )
+            self._submit_start(self._new_game_start())
+        elif after == "reload":
+            self.events.put(
+                FrontendEvent("status", "项目缓存已保存。" if success else "项目缓存保存失败。")
+            )
+        elif after == "background":
+            self.events.put(
+                FrontendEvent("status", "项目缓存已保存。" if success else "项目缓存保存失败。")
+            )
+
+    def _finish_project_file_export(self, success: bool | None, status: str | None = None) -> None:
+        export = self.full_project_export
+        if success is not True and export is not None:
+            export.stream.cancel()
+        self.full_project_export = None
+        self.pending_export = None
+        self.pending_export_kind = None
+        self.pending_export_message = None
+        self.events.put(FrontendEvent("project_file_export_finished", success))
+        self.events.put(FrontendEvent("project_progress_finished"))
+        if status is not None:
+            self.events.put(FrontendEvent("status", status))
+
+    def _handle_import_accepted(self, accepted: dict[int, Any]) -> None:
+        from . import runtime as runtime_facade
+
+        if self.import_bytes is None:
+            return
+        transfer_id = accepted[0]
+        self.import_transfer_id = transfer_id
+        offset = 0
+        while offset < len(self.import_bytes):
+            part = self.import_bytes[offset : offset + runtime_facade.STATE_IMPORT_CHUNK_BYTES]
+            self.send_runtime(64, {0: transfer_id, 1: offset, 2: part})
+            offset += len(part)
+        self.send_runtime(65, {0: transfer_id})
+
+    def _handle_import_ready(self, ready: dict[int, Any]) -> None:
+        if self.import_transfer_id != ready[0]:
+            return
+        purpose = self.import_purpose
+        if purpose in {"project_cache", "project_file"}:
+            self._submit_project(ready[0])
+        elif purpose == "traditional_save":
+            self.events.put(FrontendEvent("status", "传统存档传输完成，正在读档…"))
+            self._submit_start({0: variant(1, ready[0])})
+        else:
+            self.events.put(FrontendEvent("status", "快照传输完成，正在恢复 VM…"))
+            self._submit_start({0: variant(2, ready[0])})
+        self.import_bytes = None
+        self.import_transfer_id = None
+        self.import_purpose = None
+        self.pending_restore = None
+
+    def restore_snapshot(self, path: Path) -> None:
+        payload = path.expanduser().resolve(strict=True).read_bytes()
+        self.pending_restore = (path, payload, "snapshot")
+        self._begin_import(payload, 1, "snapshot")
+
+    def restore_save(self, path: Path) -> None:
+        payload = path.expanduser().resolve(strict=True).read_bytes()
+        self.pending_restore = (path, payload, "traditional_save")
+        self._begin_import(payload, 0, "traditional_save")

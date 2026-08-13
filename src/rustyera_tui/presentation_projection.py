@@ -8,6 +8,11 @@ from typing import Any
 
 from rich.cells import cell_len
 
+from .presentation_helpers import (
+    packed_color_hex as _packed_color_hex,
+    segment_columns as _segment_columns,
+    semantic_field as _semantic_field,
+)
 from .presentation_types import (
     DEFAULT_VIEWPORT_COLUMNS,
     ColumnCellLayout,
@@ -251,12 +256,6 @@ def _run_has_system_text_key(run: list[Any], key: int) -> bool:
     return False
 
 
-def _segment_columns(segment: DisplaySegment) -> int:
-    if segment.logical_columns is not None and "\n" not in segment.text:
-        return segment.logical_columns
-    return cell_len(segment.text)
-
-
 def parse_html_document(
     document: dict[int, Any], inherited: DisplaySegment | None = None
 ) -> list[DisplaySegment]:
@@ -389,17 +388,3 @@ def _html_button_context(
         title=title if isinstance(title, str) else None,
         generation=int(interaction.get(4, 0)),
     )
-
-
-def _semantic_field(semantic: Any, index: int, default: Any = None) -> Any:
-    if semantic is None:
-        return default
-    try:
-        _tag, fields = unwrap_variant(semantic)
-    except (TypeError, ValueError):
-        return default
-    return fields[index] if index < len(fields) else default
-
-
-def _packed_color_hex(value: int) -> str:
-    return f"#{(value >> 16) & 0xFF:02x}{(value >> 8) & 0xFF:02x}{value & 0xFF:02x}"

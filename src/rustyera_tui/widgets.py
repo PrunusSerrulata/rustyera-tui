@@ -23,6 +23,7 @@ from .presentation import (
     SegmentStyle,
     SeparatorLayout,
 )
+from .presentation_helpers import segment_columns as _segment_columns
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,12 +399,6 @@ def _last_row_width(segments: list[DisplaySegment]) -> int:
         width += cell_len(segment.text.rsplit("\n", 1)[-1])
         break
     return width
-
-
-def _segment_columns(segment: DisplaySegment) -> int:
-    if segment.logical_columns is not None and "\n" not in segment.text:
-        return segment.logical_columns
-    return cell_len(segment.text)
 
 
 def _terminal_segment_text(segment: DisplaySegment) -> str:

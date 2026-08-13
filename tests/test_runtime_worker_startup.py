@@ -1,0 +1,271 @@
+from __future__ import annotations
+
+from runtime_cabi_test_support import (
+    FrontendCommand,
+    FrontendEvent,
+    Path,
+    PresentationBatch,
+    RuntimeClient,
+    RuntimeWorker,
+    pytest,
+    queue,
+)
+
+
+def test_worker_applies_backpressure_to_presentation_events() -> None:
+    worker = RuntimeWorker(None, None)
+
+    assert worker.events.maxsize == 4_096
+
+
+def test_worker_shutdown_closes_once_when_event_queue_is_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[bool] = []
+
+    class FakeAbi:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append(True)
+
+    class FakeClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr("rustyera_tui.worker.RuntimeAbi", FakeAbi)
+    monkeypatch.setattr("rustyera_tui.runtime.RuntimeClient", FakeClient)
+    worker = RuntimeWorker(None, None)
+    for _ in range(worker.events.maxsize):
+        worker.events.put_nowait(FrontendEvent("status", "queued"))
+    worker.start()
+
+    worker.shutdown()
+    worker.shutdown()
+
+    assert not worker.is_alive()
+    assert closed == [True]
+    assert "worker_stopped" in {
+        worker.events.get_nowait().kind for _ in range(worker.events.qsize())
+    }
+
+
+def test_startup_milestones_cover_waiting_external_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client.phase = 0
+    client.epoch = None
+    client.startup_attempt = 0
+    client.startup_scenario = "cold"
+    client.startup_active = False
+    client.startup_start_submitted = False
+    client.startup_first_phase_reported = False
+    client._presentation_boundary_dirty = False
+    commands: list[tuple[int, object]] = []
+    milestones: list[tuple[str, dict[str, object]]] = []
+    client.send_runtime = lambda tag, value: commands.append((tag, value))  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "rustyera_tui.runtime.emit_startup_milestone",
+        lambda event, **fields: milestones.append((event, fields)),
+    )
+
+    client.begin_startup_attempt(project_file=False)
+    client._submit_start({0: "new-game"})
+    client._handle_runtime(21, {0: 6, 2: 4}, None)
+
+    assert commands == [(20, {0: "new-game"})]
+    assert [event for event, _fields in milestones] == [
+        "attempt_started",
+        "start_submitted",
+        "first_game_phase",
+    ]
+    assert milestones[-1][1]["phase"] == 6
+    assert client.startup_active is False
+
+
+def test_terminal_runtime_phase_fails_active_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client.phase = 0
+    client.epoch = None
+    client.startup_attempt = 0
+    client.startup_scenario = "cold"
+    client.startup_active = False
+    client.startup_start_submitted = False
+    client.startup_first_phase_reported = False
+    client._presentation_boundary_dirty = False
+    milestones: list[str] = []
+    monkeypatch.setattr(
+        "rustyera_tui.runtime.emit_startup_milestone",
+        lambda event, **_fields: milestones.append(event),
+    )
+
+    client.begin_startup_attempt(project_file=True)
+    client._handle_runtime(21, {0: 11, 2: 2}, None)
+
+    assert milestones == ["attempt_started", "failed"]
+    assert client.startup_active is False
+
+
+def test_runtime_progress_records_structured_core_phase_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client.pending_diagnosis = None
+    client.pending_export_kind = None
+    client.startup_attempt = 3
+    client.startup_host_durations = {}
+    client.startup_core_durations = {}
+    client._startup_core_phase_started = {}
+    times = iter((1_000_000_000, 1_075_000_000))
+    milestones: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr("rustyera_tui.runtime.time.monotonic_ns", lambda: next(times))
+    monkeypatch.setattr(
+        "rustyera_tui.runtime.emit_startup_milestone",
+        lambda event, **fields: milestones.append((event, fields)),
+    )
+
+    client.report_runtime_project_progress(11, 0, 1)
+    client.report_runtime_project_progress(11, 1, 1)
+
+    assert client.startup_core_durations == {"cache_decode_ms": 75.0}
+    assert milestones == [
+        (
+            "core_phase",
+            {
+                "attempt_id": 3,
+                "stage": 11,
+                "phase": "cache_decode_ms",
+                "duration_ms": 75.0,
+            },
+        )
+    ]
+
+
+def test_runtime_progress_ignores_duplicate_starts_and_supports_interleaving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client.pending_diagnosis = None
+    client.pending_export_kind = None
+    client.startup_attempt = 4
+    client.startup_core_durations = {}
+    client._startup_core_phase_started = {}
+    times = iter((1_000_000_000, 1_010_000_000, 1_020_000_000, 1_050_000_000, 1_090_000_000))
+    monkeypatch.setattr("rustyera_tui.runtime.time.monotonic_ns", lambda: next(times))
+    monkeypatch.setattr(
+        "rustyera_tui.runtime.emit_startup_milestone", lambda *_args, **_kwargs: None
+    )
+
+    client.report_runtime_project_progress(3, 0, 10)
+    client.report_runtime_project_progress(3, 0, 10)
+    client.report_runtime_project_progress(4, 0, 10)
+    client.report_runtime_project_progress(3, 10, 10)
+    client.report_runtime_project_progress(4, 10, 10)
+
+    assert client.startup_core_durations == {"parse_ms": 50.0, "analyze_ms": 70.0}
+
+
+def test_runtime_progress_ignores_an_end_without_a_start_and_failure_clears_phases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client.pending_diagnosis = None
+    client.pending_export_kind = None
+    client.startup_attempt = 5
+    client.startup_scenario = "cold"
+    client.startup_active = True
+    client.startup_core_durations = {}
+    client._startup_core_phase_started = {3: 1}
+    monkeypatch.setattr(
+        "rustyera_tui.runtime.emit_startup_milestone", lambda *_args, **_kwargs: None
+    )
+
+    client.report_runtime_project_progress(4, 10, 10)
+    client.fail_startup("failed")
+
+    assert client.startup_core_durations == {}
+    assert client._startup_core_phase_started == {}
+
+
+def test_project_scan_failure_terminates_the_attempt_before_recreate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, object]] = []
+
+        def begin_startup_attempt(self, *, project_file: bool) -> None:
+            self.events.append(("begin", project_file))
+
+        def fail_startup(self, error: object) -> None:
+            self.events.append(("failed", str(error)))
+
+    worker = RuntimeWorker(None, None)
+    client = Client()
+    worker.client = client  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "rustyera_tui.worker.ProjectBundle.scan_quick",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("scan failed")),
+    )
+
+    worker._process_command(FrontendCommand("load_project", tmp_path))
+
+    assert client.events == [("begin", False), ("failed", "scan failed")]
+
+
+def test_failed_wait_bound_worker_command_releases_the_app_input_gate() -> None:
+    wait = {0: 17, 1: 2, 11: {0: 1, 1: 4}}
+
+    class Client:
+        active_wait = wait
+
+        @staticmethod
+        def defer_compiled_cache_refresh() -> None:
+            pass
+
+        @staticmethod
+        def submit_text(_text: str) -> None:
+            raise RuntimeError("submission failed")
+
+        @staticmethod
+        def fail_startup(_error: object) -> None:
+            pass
+
+    worker = RuntimeWorker(None, None)
+    worker.client = Client()  # type: ignore[assignment]
+
+    worker._process_command(FrontendCommand("submit_text", "412"))
+
+    assert worker.events.get_nowait() == FrontendEvent("interaction_rejected", wait)
+    assert worker.events.get_nowait() == FrontendEvent("error", "submission failed")
+
+
+def test_worker_delivers_presentation_and_wait_as_one_atomic_batch() -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client._pending_presentation_events = [
+        ("delta", {0: 1, 1: 2, 2: []}),
+        ("delta", {0: 2, 1: 3, 2: []}),
+    ]
+    client._wait_event_dirty = True
+    client._presentation_boundary_dirty = False
+    client.active_wait = {0: 7, 1: 0, 11: {0: 1, 1: 9}}
+
+    client._flush_presentation_events()
+
+    event = client.events.get_nowait()
+    assert event.kind == "presentation_batch"
+    assert event.value == PresentationBatch(
+        None,
+        {0: 1, 1: 3, 2: []},
+        client.active_wait,
+        True,
+    )
+    assert client.events.empty()
