@@ -128,13 +128,15 @@ from .project_scan import (  # noqa: E402
     _normalize_relative_path as _normalize_relative_path,
     _path_sort_key as _path_sort_key,
     _normalize_resource_manifest_paths as _normalize_resource_manifest_paths,
-    _resource_manifest_lines as _resource_manifest_lines,
-    _source_signature as _source_signature,
-    _write_source_index as _write_source_index,
-    _atomic_write_text as _atomic_write_text,
     _canonical_source_roots as _canonical_source_roots,
     _classify_project_path as _classify_project_path,
     _project_paths as _project_paths,
+)
+from .project_source_index import (  # noqa: E402
+    _atomic_write_text as _atomic_write_text,
+    _resource_manifest_lines as _resource_manifest_lines,
+    _source_signature as _source_signature,
+    _write_source_index as _write_source_index,
 )
 from .project_bundle import ProjectBundle as ProjectBundle  # noqa: E402
 
