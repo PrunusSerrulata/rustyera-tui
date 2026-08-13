@@ -14,7 +14,8 @@ from .dialogs import (
     PathDialog,
     PreferencesDialog,
 )
-from .diagnosis import diagnosis_default_path, diagnosis_project_name
+from .app_export_paths import log_default_path, project_file_default_path, snapshot_default_path
+from .diagnosis import diagnosis_default_path
 from .log_model import format_log_entries
 from .presentation import DEFAULT_PRESENTATION_TITLE
 from .runtime import DiagnosisProgress
@@ -213,20 +214,16 @@ class _MenuAndExportMixin:
         )
 
     def _snapshot_default_path(self, now: datetime | None = None) -> Path:
-        timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
-        return (self.project or Path.cwd()) / f"runtime_{timestamp}.snapshot"
+        return snapshot_default_path(self.project, now)
 
     def _project_file_default_path(self) -> Path:
         presentation_title = (
             "" if self.presentation.title == DEFAULT_PRESENTATION_TITLE else self.presentation.title
         )
-        title = presentation_title.strip() or self.project.name or "RustyEra项目"
-        safe_title = diagnosis_project_name(title)
-        return (self.project or Path.cwd()) / f"{safe_title}.reraproj"
+        return project_file_default_path(self.project, presentation_title)
 
     def _log_default_path(self, now: datetime | None = None) -> Path:
-        timestamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
-        return (self.project or Path.cwd()) / f"log_{timestamp}.log"
+        return log_default_path(self.project, now)
 
     def _export_logs(self, path: Path | None, contents: str) -> None:
         if path is None:
