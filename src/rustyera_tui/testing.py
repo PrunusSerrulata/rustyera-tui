@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import queue
 import re
@@ -20,6 +19,7 @@ from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .storage import StorageBackend
 from .testing_reference import ReferenceProcess as ReferenceProcess
+from .testing_scenario import Scenario as _Scenario, StartSpec as StartSpec
 from .testing_support import (
     OutputDelta as OutputDelta,
     TestDriverError as TestDriverError,
@@ -29,97 +29,16 @@ from .testing_support import (
 from .testing_trace import TraceWriter as TraceWriter
 from .wire import unwrap_variant
 
-SCENARIO_VERSION = 1
-DEFAULT_LIMITS = {"max_steps": 100, "timeout_seconds": 300}
 TERMINAL_EVENTS = {"error", "runtime_error", "runtime_fault", "worker_stopped"}
 INDEXED_WATCH = re.compile(r"^([^:@]+):(-?\d+(?:,-?\d+)*)$")
 
 
-@dataclass(frozen=True, slots=True)
-class StartSpec:
-    type: str = "new_game"
-    path: Path | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class Scenario:
-    path: Path
-    project: Path
-    mode: str
-    start: StartSpec
-    seed: int | None
-    inputs: tuple[dict[str, Any], ...]
-    watches: tuple[str, ...]
-    goal: dict[str, Any]
-    limits: dict[str, int]
-    comparison: dict[str, Any]
-    checkpoint: dict[str, Any]
+class Scenario(_Scenario):
+    """Compatibility facade preserving the patchable random source."""
 
     @classmethod
-    def load(cls, path: Path, project_override: Path | None = None) -> Scenario:
-        resolved = path.expanduser().resolve(strict=True)
-        raw = json.loads(resolved.read_text(encoding="utf-8"))
-        if raw.get("schema_version") != SCENARIO_VERSION:
-            raise TestDriverError(f"unsupported scenario schema {raw.get('schema_version')!r}")
-        mode = raw.get("mode", "fixed")
-        if mode not in {"fixed", "autonomous"}:
-            raise TestDriverError("scenario mode must be fixed or autonomous")
-        project_value = project_override or Path(raw.get("project", "."))
-        project = project_value if project_value.is_absolute() else resolved.parent / project_value
-        project = project.expanduser().resolve(strict=True)
-        start_raw = raw.get("start", {"type": "new_game"})
-        start_type = start_raw.get("type", "new_game")
-        if start_type not in {"new_game", "traditional_save", "vm_snapshot"}:
-            raise TestDriverError(f"unknown start type {start_type!r}")
-        start_path = start_raw.get("path")
-        if start_type != "new_game" and not start_path:
-            raise TestDriverError(f"{start_type} start requires path")
-        state_path = None
-        if start_path:
-            candidate = Path(start_path)
-            state_path = candidate if candidate.is_absolute() else resolved.parent / candidate
-            state_path = state_path.expanduser().resolve(strict=True)
-        seed = _scenario_seed(raw.get("seed")) if start_type == "new_game" else None
-        inputs = tuple(
-            {"value": item} if isinstance(item, (str, int)) else dict(item)
-            for item in raw.get("inputs", [])
-        )
-        if any(item.get("action", "input") not in {"input", "skip_message"} for item in inputs):
-            raise TestDriverError("scenario input action must be input or skip_message")
-        if any(item.get("action") == "skip_message" for item in inputs) and raw.get(
-            "comparison", {}
-        ).get("reference"):
-            raise TestDriverError("skip_message scenario inputs cannot be compared by value")
-        limits = {**DEFAULT_LIMITS, **raw.get("limits", {})}
-        if limits["max_steps"] <= 0 or limits["timeout_seconds"] <= 0:
-            raise TestDriverError("scenario limits must be positive")
-        return cls(
-            resolved,
-            project,
-            mode,
-            StartSpec(start_type, state_path),
-            seed,
-            inputs,
-            tuple(str(item) for item in raw.get("watches", [])),
-            dict(raw.get("goal", {})),
-            limits,
-            dict(raw.get("comparison", {})),
-            dict(raw.get("checkpoint", {})),
-        )
-
-
-def _scenario_seed(value: object) -> int:
-    if value is None:
+    def random_seed(cls) -> int:
         return secrets.randbelow(0x8000_0000)
-    if type(value) is int:
-        seed = value
-    elif isinstance(value, str) and value.isascii() and value.isdecimal():
-        seed = int(value)
-    else:
-        raise TestDriverError("seed must be a decimal unsigned 64-bit integer")
-    if not 0 <= seed <= 0xFFFF_FFFF_FFFF_FFFF:
-        raise TestDriverError("seed must be a decimal unsigned 64-bit integer")
-    return seed
 
 
 def plain_output(model: PresentationModel) -> list[str]:
