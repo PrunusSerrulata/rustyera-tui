@@ -157,6 +157,7 @@ class RuntimeClient:
         self.bundle: ProjectBundle | None = None
         self.pending_bundle: ProjectBundle | None = None
         self.reload_candidate: ProjectBundle | None = None
+        self.reload_message_id: int | None = None
         self.storage: StorageBackend | None = None
         self.presentation = ServicePresentationModel()
         self.active_wait: dict[int, Any] | None = None
@@ -174,6 +175,7 @@ class RuntimeClient:
         self.cache_ready = False
         self.cache_refresh_after_ns = 0
         self.cache_preparation_started = False
+        self.cache_refresh_after = "background"
         self.pending_cache_stream: AtomicExportStream | None = None
         self.allow_compiled_cache_load = True
         self.pending_project_file_bytes: bytes | None = None
@@ -240,6 +242,8 @@ class RuntimeClient:
         self._presentation_boundary_dirty = False
         self._projection_messages.clear()
         self._input_messages.clear()
+        self.reload_candidate = None
+        self.reload_message_id = None
         self.pending_export = None
         self.pending_export_kind = None
         self.pending_export_message = None
@@ -250,6 +254,7 @@ class RuntimeClient:
         self.cache_ready = False
         self.cache_refresh_after_ns = 0
         self.cache_preparation_started = False
+        self.cache_refresh_after = "background"
         if self.pending_cache_stream is not None:
             self.pending_cache_stream.cancel()
             self.pending_cache_stream = None
@@ -640,6 +645,10 @@ class RuntimeClient:
                 "no input is pending",
             }
             retried_input = stale_input and self._retry_stale_input(input_request)
+            reload_rejection = correlation_id == getattr(self, "reload_message_id", None)
+            if reload_rejection:
+                self.reload_candidate = None
+                self.reload_message_id = None
             if input_request is not None and not retried_input:
                 self.events.put(
                     FrontendEvent("interaction_rejected", copy.deepcopy(input_request.wait))
@@ -732,6 +741,7 @@ class RuntimeClient:
                     or diagnosis_export_rejection
                     or project_file_export_rejection
                     or configuration_rejection
+                    or reload_rejection
                 )
                 and not (projection_request and value.get(0) == 2 and stale_projection)
                 and not retried_input
@@ -835,14 +845,17 @@ class RuntimeClient:
         if not report[1]:
             self.fail_startup("project load failed")
             self.reload_candidate = None
+            self.reload_message_id = None
             self.events.put(FrontendEvent("runtime_error", "项目加载或热重载失败，请查看日志。"))
             return
         if self.reload_candidate is not None and report[0] == self.reload_candidate.revision:
             self.bundle = self.reload_candidate
             self.reload_candidate = None
+            self.reload_message_id = None
             self.storage = self._storage_for_bundle(self.bundle)
             self.cache_refresh_pending = True
             self.cache_preparation_started = False
+            self.cache_refresh_after = "reload"
             self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
             self.events.put(FrontendEvent("status", "脚本热重载完成。"))
             self._publish_configuration(report.get(4))
@@ -894,6 +907,7 @@ class RuntimeClient:
         else:
             self.cache_refresh_pending = True
             self.cache_preparation_started = False
+            self.cache_refresh_after = "background"
             self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
             self.events.put(FrontendEvent("status", "项目编译完成，正在进入标题画面…"))
             self._submit_start(self._new_game_start())
@@ -1224,7 +1238,7 @@ class RuntimeClient:
             and self.pending_export is None
             and time.monotonic_ns() >= self.cache_refresh_after_ns
         ):
-            self._refresh_compiled_cache("background")
+            self._refresh_compiled_cache(self.cache_refresh_after)
 
     def defer_compiled_cache_refresh(self) -> None:
         """Keep cache compression out of latency-sensitive gameplay transitions."""
@@ -1489,7 +1503,7 @@ class RuntimeClient:
             return
         self.reload_candidate = candidate
         self.events.put(FrontendEvent("status", f"正在热重载 {description}…"))
-        self.send_runtime(12, request)
+        self.reload_message_id = self.send_runtime(12, request)
 
     def export_snapshot(self, path: Path, purpose: str) -> None:
         purpose_id = {"normal": 0, "debug": 1}.get(purpose)
@@ -1788,7 +1802,7 @@ class RuntimeClient:
             )
             self._submit_start(self._new_game_start())
         elif after == "reload":
-            self.events.put(FrontendEvent("status", "脚本热重载完成。"))
+            self.events.put(FrontendEvent("status", "项目缓存已保存。" if success else "项目缓存保存失败。"))
         elif after == "background":
             self.events.put(
                 FrontendEvent("status", "项目缓存已保存。" if success else "项目缓存保存失败。")

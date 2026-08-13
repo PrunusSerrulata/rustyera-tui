@@ -341,6 +341,7 @@ def test_compiled_cache_persistence_waits_until_the_deferred_deadline(
     client.cache_refresh_pending = True
     client.cache_ready = False
     client.cache_refresh_after_ns = 100
+    client.cache_refresh_after = "background"
     client.pending_export = None
     client.full_project_export = None
     client.pending_diagnosis = None
@@ -534,6 +535,25 @@ def test_no_change_reload_refreshes_the_frontend_baseline_without_runtime_work(
     assert "热重载完成" in status.value
 
 
+def test_failed_reload_keeps_the_active_bundle_for_later_diagnosis(tmp_path: Path) -> None:
+    active = ProjectBundle(tmp_path, 7, {})
+    candidate = ProjectBundle(tmp_path, 8, {})
+    client = object.__new__(RuntimeClient)
+    client.bundle = active
+    client.pending_bundle = None
+    client.reload_candidate = candidate
+    client.reload_message_id = 91
+    client.events = queue.Queue()
+    client.fail_startup = lambda _reason: None  # type: ignore[method-assign]
+
+    client._handle_project_report({0: 8, 1: False, 2: []})
+
+    assert client.bundle is active
+    assert client.reload_candidate is None
+    assert client.reload_message_id is None
+    assert client.events.get_nowait().kind == "runtime_error"
+
+
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
 def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -640,7 +660,18 @@ def test_real_c_abi_diagnosis_contains_a_parseable_full_project(
         wait_for_input(worker)
         script = project / "ERB" / "main.erb"
         script.write_text(
-            script.read_text(encoding="utf-8") + "\n@REPLAY_HOT_RELOAD_MARKER\nRETURN\n",
+            script.read_text(encoding="utf-8").replace(
+                "TUI_REPLAY_DIAGNOSIS_READY",
+                "TUI_REPLAY_DIAGNOSIS_RELOADED",
+            ),
+            encoding="utf-8",
+        )
+        unselected = project / "ERB" / "unselected.erb"
+        unselected.write_text(
+            unselected.read_text(encoding="utf-8").replace(
+                "UNSELECTED_ACTIVE",
+                "UNSELECTED_DISK_ONLY",
+            ),
             encoding="utf-8",
         )
         worker.send("reload_file", script)
@@ -696,11 +727,18 @@ def test_real_c_abi_diagnosis_contains_a_parseable_full_project(
     assert project_file.startswith(b"RERAPROJ")
     abi = RuntimeAbi(RUNTIME_LIBRARY, resource_directory=project)
     try:
-        manifest = abi.project_file_manifest(project_file)
+        manifest = abi.full_project_file_manifest(project_file)
     finally:
         abi.destroy_session()
     assert manifest[0] == 2
-    assert manifest[1]
+    submitted_sources = {}
+    for file in manifest[1]:
+        payload = file[2]
+        if payload[0] == 0 and payload[1] and isinstance(payload[1][0], str):
+            submitted_sources[str(file[0])] = payload[1][0]
+    assert "TUI_REPLAY_DIAGNOSIS_RELOADED" in submitted_sources["ERB/main.erb"]
+    assert "UNSELECTED_ACTIVE" in submitted_sources["ERB/unselected.erb"]
+    assert "UNSELECTED_DISK_ONLY" not in submitted_sources["ERB/unselected.erb"]
 
 
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")

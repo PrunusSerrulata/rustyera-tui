@@ -11,12 +11,14 @@ import shutil
 import sys
 import time
 import traceback
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .presentation import PresentationModel
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
+from .storage import StorageBackend
 from .testing_reference import ReferenceProcess as ReferenceProcess
 from .testing_support import (
     OutputDelta as OutputDelta,
@@ -481,3 +483,78 @@ def isolated_project_copy(source: Path, root: Path, name: str) -> Path:
     destination = root / name
     shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".rustyera"))
     return destination
+
+
+def install_test_compiled_cache(project: Path, source: Path | None) -> None:
+    """Install an opaque cross-host cache in an isolated CLI project."""
+
+    if source is None:
+        return
+    cache = source.expanduser().resolve(strict=True)
+    destination = StorageBackend(project).compiled_cache_path()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(cache, destination)
+
+
+def publish_test_handoff(
+    session: RustTestSession,
+    project: Path,
+    source_project: Path,
+    cache_input: Path | None,
+    cache_target: Path | None,
+    project_target: Path | None,
+) -> None:
+    """Atomically publish one successful RuntimeWorker cross-host handoff."""
+
+    if cache_target is None and project_target is None:
+        return
+    client = session.worker.client
+    if client is None or client.storage is None:
+        raise TestDriverError("runtime did not initialize project storage for cache export")
+    cache_source = client.storage.compiled_cache_path()
+    if cache_target is not None and not cache_source.is_file():
+        raise TestDriverError("runtime did not persist a compiled project cache")
+    source_root = source_project.resolve()
+    isolated_root = project.resolve()
+    cache = cache_target.resolve() if cache_target is not None else None
+    output = project_target.resolve() if project_target is not None else None
+    if cache_input is not None and cache is not None and cache_input.resolve() == cache:
+        raise TestDriverError("cache input and output must differ")
+    if cache is not None and output is not None and cache == output:
+        raise TestDriverError("cache and project outputs must differ")
+    for target in (cache, output):
+        if target is not None and (
+            target == source_root
+            or target.is_relative_to(source_root)
+            or source_root.is_relative_to(target)
+            or target == isolated_root
+            or target.is_relative_to(isolated_root)
+            or isolated_root.is_relative_to(target)
+        ):
+            raise TestDriverError("cross-host artifact target overlaps project state")
+    if output is not None and output.exists():
+        if not output.is_dir() or any(output.iterdir()):
+            raise TestDriverError("project output target must be absent or empty")
+    if cache is not None and cache.exists():
+        raise TestDriverError("cache output target must not exist")
+    parents = {target.parent for target in (cache, output) if target is not None}
+    if len(parents) != 1:
+        raise TestDriverError("cross-host cache and project outputs must share a parent directory")
+    parent = next(iter(parents))
+    parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".handoff-", dir=parent) as temporary_name:
+        temporary = Path(temporary_name)
+        if cache is not None:
+            shutil.copy2(cache_source, temporary / "compiled-project.reracache")
+        if output is not None:
+            shutil.copytree(
+                project,
+                temporary / "project",
+                ignore=shutil.ignore_patterns(".rustyera"),
+            )
+        if cache is not None:
+            (temporary / "compiled-project.reracache").replace(cache)
+        if output is not None:
+            if output.exists():
+                output.rmdir()
+            (temporary / "project").replace(output)

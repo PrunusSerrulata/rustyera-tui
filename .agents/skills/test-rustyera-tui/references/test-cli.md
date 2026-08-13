@@ -56,6 +56,11 @@ observation:
 These produce `status_observed`, `source_edited`, or `runtime_action` trace events. They are Rust-only
 frontend operations and must not be used with reference comparison.
 
+Cross-host cache tests may set `RUSTYERA_TEST_COMPILED_CACHE_INPUT` and
+`RUSTYERA_TEST_COMPILED_CACHE_OUTPUT` to explicit opaque cache files. The real RuntimeWorker consumes
+and persists those files through its project storage. `RUSTYERA_TEST_PROJECT_OUTPUT` exports the
+isolated, hot-reloaded source tree without `.rustyera` for a following Browser/WASM run.
+
 By default, the TUI driver records its complete observable state when it reaches a stable input
 wait. It does not emit periodic snapshots or treat equal consecutive observations as a stall unless
 the user explicitly requests that policy. All test commands in a task share the 60-minute

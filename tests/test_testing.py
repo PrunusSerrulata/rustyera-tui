@@ -20,9 +20,11 @@ from rustyera_tui.testing import (
     apply_presentation_event,
     compare_observations,
     goal_status,
+    install_test_compiled_cache,
     isolated_project_copy,
     normalized_lines,
     output_delta,
+    publish_test_handoff,
 )
 from rustyera_tui.wire import unwrap_variant
 
@@ -168,6 +170,48 @@ def test_isolated_project_copy_excludes_generated_rustyera_cache(tmp_path: Path)
 
     assert (copied / "erb" / "main.erb").is_file()
     assert not (copied / ".rustyera").exists()
+
+
+def test_cross_host_cache_handoff_uses_only_the_isolated_test_project(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    incoming = tmp_path / "browser.reracache"
+    incoming.write_bytes(b"browser-cache")
+
+    install_test_compiled_cache(project, incoming)
+
+    installed = project / ".rustyera" / "cache" / "compiled-project.reracache"
+    assert installed.read_bytes() == b"browser-cache"
+    outgoing = tmp_path / "tui.reracache"
+    session = object.__new__(RustTestSession)
+    storage = type("Storage", (), {"compiled_cache_path": lambda _self: installed})()
+    client = type("Client", (), {"storage": storage})()
+    session.worker = type("Worker", (), {"client": client})()
+    (project / "main.erb").write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
+    source_project = tmp_path / "source-project"
+    source_project.mkdir()
+    exported_project = tmp_path / "exported-project"
+    publish_test_handoff(
+        session,
+        project,
+        source_project,
+        incoming,
+        outgoing,
+        exported_project,
+    )
+    assert outgoing.read_bytes() == b"browser-cache"
+    assert (exported_project / "main.erb").is_file()
+    assert not (exported_project / ".rustyera").exists()
+
+    with pytest.raises(TestDriverError, match="must not exist"):
+        publish_test_handoff(
+            session,
+            project,
+            source_project,
+            incoming,
+            outgoing,
+            None,
+        )
 
 
 def test_agent_source_reload_operations_stay_inside_the_isolated_project(

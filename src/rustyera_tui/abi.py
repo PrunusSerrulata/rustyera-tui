@@ -346,6 +346,16 @@ class RuntimeAbi:
         """Decode a validated project-file manifest through the core ABI."""
 
         decoder = getattr(self, "_decode_project_file_frontend", None) or self._decode_project_file
+        return self._decode_project_manifest(data, decoder)
+
+    def full_project_file_manifest(self, data: bytes) -> dict[int, object]:
+        """Decode every embedded payload from a validated project file."""
+
+        return self._decode_project_manifest(data, self._decode_project_file)
+
+    def _decode_project_manifest(
+        self, data: bytes, decoder: SessionDecodeProjectFile | None
+    ) -> dict[int, object]:
         if decoder is None:
             raise AbiError("runtime ABI does not support RustyEra project files")
         buffer = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)

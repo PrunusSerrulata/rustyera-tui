@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
 import tempfile
@@ -22,7 +23,9 @@ from .testing import (
     compare_observations,
     default_trace_path,
     goal_status,
+    install_test_compiled_cache,
     isolated_project_copy,
+    publish_test_handoff,
 )
 
 
@@ -210,14 +213,22 @@ def execute(args: argparse.Namespace) -> int:
     rust: RustTestSession | None = None
     reference: ReferenceProcess | None = None
     isolated: tempfile.TemporaryDirectory[str] | None = None
+    rust_project: Path | None = None
     deadline = time.monotonic() + scenario.limits["timeout_seconds"]
     step = 0
     checkpoint_done = False
+    completed_successfully = False
+    cache_saved = False
     try:
         reference = _reference(args, scenario)
         isolated = tempfile.TemporaryDirectory(prefix="isolated-projects-", dir=trace_path.parent)
         isolated_root = Path(isolated.name)
         rust_project = isolated_project_copy(scenario.project, isolated_root, "rust")
+        cache_input = os.environ.get("RUSTYERA_TEST_COMPILED_CACHE_INPUT")
+        install_test_compiled_cache(
+            rust_project,
+            Path(cache_input) if cache_input else None,
+        )
         reference_project = scenario.project
         if reference is not None:
             reference_project = isolated_project_copy(scenario.project, isolated_root, "reference")
@@ -228,6 +239,8 @@ def execute(args: argparse.Namespace) -> int:
             metrics_threshold_ms=args.metrics_threshold_ms,
         )
         rust_observation = rust.wait_observation(deadline)
+        if cache_input:
+            rust.wait_for_status("项目缓存命中，正在进入标题画面…", deadline)
         reference_observation = reference.start(scenario, reference_project) if reference else None
         decorated = _decorate(rust_observation, reference_observation, scenario, rust, deadline)
         trace.emit(
@@ -296,6 +309,7 @@ def execute(args: argparse.Namespace) -> int:
                 )
                 trace.emit(agent_dispatch.trace_event)
                 if agent_dispatch.terminal:
+                    completed_successfully = True
                     return 0
                 if not agent_dispatch.advances:
                     continue
@@ -316,6 +330,7 @@ def execute(args: argparse.Namespace) -> int:
                 else:
                     status = "goal_not_met"
                 trace.emit({"type": "result", "status": status, "trace": str(trace_path)})
+                completed_successfully = status == "passed"
                 return 0 if status == "passed" else 2 if status == "input_exhausted" else 1
             if agent_dispatch is None:
                 trace.emit(_input_event(step, source, input_action, value))
@@ -343,11 +358,36 @@ def execute(args: argparse.Namespace) -> int:
             )
             decorated = _decorate(rust_observation, reference_observation, scenario, rust, deadline)
             trace.emit({"type": "observation", "step": step, **decorated})
+            if (
+                agent_dispatch is not None
+                and agent_dispatch.completion_status is not None
+                and os.environ.get("RUSTYERA_TEST_COMPILED_CACHE_OUTPUT")
+            ):
+                rust.wait_for_status("项目缓存已保存。", deadline)
+                cache_saved = True
+                trace.emit({"type": "status_observed", "text": "项目缓存已保存。"})
         trace.emit({"type": "result", "status": "budget_exhausted", "trace": str(trace_path)})
         return 2
     finally:
         if rust:
-            rust.close()
+            try:
+                cache_output = os.environ.get("RUSTYERA_TEST_COMPILED_CACHE_OUTPUT")
+                project_output = os.environ.get("RUSTYERA_TEST_PROJECT_OUTPUT")
+                if completed_successfully and rust_project is not None:
+                    if cache_output and not cache_saved:
+                        raise TestDriverError(
+                            "compiled cache output requires an observed successful cache save"
+                        )
+                    publish_test_handoff(
+                        rust,
+                        rust_project,
+                        scenario.project,
+                        Path(cache_input) if cache_input else None,
+                        Path(cache_output) if cache_output else None,
+                        Path(project_output) if project_output else None,
+                    )
+            finally:
+                rust.close()
         if reference:
             reference.close()
         if isolated:
