@@ -18,12 +18,14 @@ from textual.widgets import (
     Label,
     ProgressBar,
     RichLog,
+    Rule,
     Select,
     Static,
 )
 
 from .log_model import LogEntry, LogLevel, filter_log_entries, format_log_entries
 from .preferences import PreferencesDialog as PreferencesDialog
+from .runtime_types import GameInformation
 
 
 class ConfirmDialog(ModalScreen[bool]):
@@ -70,10 +72,16 @@ class ExportProgressDialog(ModalScreen[bool]):
 class AboutDialog(ModalScreen[None]):
     """Display build and licensing information for the frontend and bound core."""
 
-    def __init__(self, frontend_version: str, core_version: str) -> None:
+    def __init__(
+        self,
+        frontend_version: str,
+        core_version: str,
+        game_information: GameInformation | None = None,
+    ) -> None:
         super().__init__()
         self.frontend_version = frontend_version
         self.core_version = core_version
+        self.game_information = game_information or GameInformation()
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog about-dialog"):
@@ -81,7 +89,25 @@ class AboutDialog(ModalScreen[None]):
             yield Static("作者：PrunusSerrulata", markup=False)
             yield Static(f"前端版本：{self.frontend_version}", markup=False)
             yield Static(f"core 版本：{self.core_version}", markup=False)
-            yield Static("许可证：GPL-3.0-only", markup=False)
+            yield Static(
+                "许可证：GPL-3.0-only（仅适用于 RustyEra 相关组件；"
+                "游戏本体的许可证以其指定的为准）",
+                markup=False,
+            )
+            yield Static(
+                "core 仓库：https://github.com/PrunusSerrulata/rustyera-core",
+                markup=False,
+            )
+            yield Static(
+                "TUI 仓库：https://github.com/PrunusSerrulata/rustyera-tui",
+                markup=False,
+            )
+            game_items = self.game_information.display_items()
+            if game_items:
+                yield Rule(id="about-game-separator")
+                yield Label("当前游戏", classes="about-section-title")
+                for label, value in game_items:
+                    yield Static(f"{label}：{value}", markup=False)
             with Horizontal(classes="dialog-buttons"):
                 yield Button("确定", id="about-close", variant="primary")
 

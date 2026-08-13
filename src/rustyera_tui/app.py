@@ -34,9 +34,10 @@ from .input_policy import is_message_skip_wait, is_message_wait
 from .log_model import LogEntry, LogLevel, LogMessage, format_log_entries, make_log_entry
 from .presentation import PresentationModel
 from .runtime import DiagnosisProgress, FrontendEvent, PresentationBatch, RuntimeWorker
+from .runtime_types import GameInformation
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.4.0 (c8f936d8)"
+CORE_VERSION = "0.4.0 (6bd47f27)"
 
 
 def frontend_version() -> str:
@@ -156,6 +157,7 @@ class RustyEraTui(App[None]):
             initial_project_file=project_file,
         )
         self.presentation = PresentationModel()
+        self.game_information = GameInformation()
         self.active_wait: dict[int, Any] | None = None
         self._activated_wait: tuple[int, Any] | None = None
         self._pending_retired_buttons: set[tuple[int, int]] = set()
@@ -365,6 +367,8 @@ class RustyEraTui(App[None]):
             self.project = Path(value) if value else self.project
             self.project_name = ""
             self._set_status(f"项目已加载：{self.project}")
+        elif kind == "game_information" and isinstance(value, GameInformation):
+            self.game_information = value
         elif kind == "configuration":
             self.configuration_snapshot, self.configuration_read_only = value
             self._apply_client_preferences()
@@ -374,6 +378,7 @@ class RustyEraTui(App[None]):
         elif kind == "configuration_cleared":
             self.configuration_snapshot = None
             self.configuration_read_only = False
+            self.game_information = GameInformation()
             self._reset_client_preferences()
             self._refresh_menu_availability()
         elif kind == "configuration_saved":
@@ -997,7 +1002,9 @@ class RustyEraTui(App[None]):
         if item_id == "help-export-diagnosis":
             self._open_diagnosis_export_dialog()
         elif item_id == "help-about":
-            self.push_screen(AboutDialog(frontend_version(), CORE_VERSION))
+            self.push_screen(
+                AboutDialog(frontend_version(), CORE_VERSION, self.game_information)
+            )
 
     def _debug_action(self, item_id: str) -> None:
         if self.snapshot_exporting and item_id != "debug-logs":

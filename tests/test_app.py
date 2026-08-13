@@ -15,6 +15,7 @@ from textual.widgets import (
     Input,
     ProgressBar,
     RichLog,
+    Rule,
     Select,
     Static,
     TabbedContent,
@@ -41,6 +42,7 @@ from rustyera_tui.presentation import (
 from rustyera_tui.color_picker import ColorField, ColorPickerDialog
 from rustyera_tui.preferences_schema import FIELDS, PAGES, FieldSpec
 from rustyera_tui.runtime import DiagnosisProgress, FrontendEvent, PresentationBatch, RuntimeFailure
+from rustyera_tui.runtime_types import GameInformation
 from rustyera_tui.widgets import GameLine, GameViewport
 from rustyera_tui.wire import variant
 
@@ -381,6 +383,30 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         pinned_revision = (Path(__file__).parent.parent / "rustyera-core.rev").read_text().strip()
         assert f"core 版本：0.4.0 ({pinned_revision[:8]})" in contents
         assert "许可证：GPL-3.0-only" in contents
+        assert "仅适用于 RustyEra 相关组件" in contents
+        assert "https://github.com/PrunusSerrulata/rustyera-core" in contents
+        assert "https://github.com/PrunusSerrulata/rustyera-tui" in contents
+        assert len(app.screen.query("#about-game-separator")) == 0
+
+
+async def test_about_information_shows_only_defined_game_metadata(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+    app.game_information = GameInformation.from_wire(
+        {0: "Demo", 1: "   ", 2: "1.001", 4: "Notes"}
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.click("#menu-help")
+        await pilot.click("#help-about")
+
+        contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
+        assert app.screen.query_one("#about-game-separator", Rule)
+        assert "游戏名称：Demo" in contents
+        assert "游戏版本：1.001" in contents
+        assert "备注：Notes" in contents
+        assert "游戏作者：" not in contents
+        assert "游戏开发时间：" not in contents
 
 
 def test_project_file_default_path_sanitizes_the_project_title(tmp_path: Path) -> None:

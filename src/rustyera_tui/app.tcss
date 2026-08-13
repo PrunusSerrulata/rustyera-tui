@@ -211,8 +211,13 @@ ModalScreen {
 }
 
 .dialog.about-dialog {
-    width: 56;
-    height: 12;
+    width: 76;
+    height: auto;
+    max-height: 90%;
+}
+
+.about-section-title {
+    text-style: bold;
 }
 
 .wide-dialog {

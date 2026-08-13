@@ -21,6 +21,7 @@ from rustyera_tui.runtime import (
     RuntimeClient,
     RuntimeWorker,
 )
+from rustyera_tui.runtime_types import GameInformation
 
 try:
     RUNTIME_LIBRARY = discover_library(resource_directory=Path(__file__).parents[1])
@@ -553,6 +554,37 @@ def test_failed_reload_keeps_the_active_bundle_for_later_diagnosis(tmp_path: Pat
     assert client.reload_candidate is None
     assert client.reload_message_id is None
     assert client.events.get_nowait().kind == "runtime_error"
+
+
+def test_successful_reload_projects_game_information_from_the_protocol(tmp_path: Path) -> None:
+    active = ProjectBundle(tmp_path, 7, {})
+    candidate = ProjectBundle(tmp_path, 8, {})
+    client = object.__new__(RuntimeClient)
+    client.bundle = active
+    client.pending_bundle = None
+    client.reload_candidate = candidate
+    client.reload_message_id = 91
+    client.events = queue.Queue()
+    client._publish_configuration = lambda _value: None  # type: ignore[method-assign]
+
+    client._handle_project_report(
+        {
+            0: 8,
+            1: True,
+            2: [],
+            5: {0: "Demo", 1: "   ", 2: "1.001", 3: None, 4: "Notes"},
+        }
+    )
+
+    assert client.bundle is candidate
+    assert client.reload_candidate is None
+    assert client.reload_message_id is None
+    events = [client.events.get_nowait(), client.events.get_nowait()]
+    assert events[0].kind == "status"
+    assert events[1] == FrontendEvent(
+        "game_information",
+        GameInformation(title="Demo", version="1.001", information="Notes"),
+    )
 
 
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")

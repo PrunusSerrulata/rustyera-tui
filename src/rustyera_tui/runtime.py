@@ -60,6 +60,7 @@ from .runtime_types import (
     DiagnosisProgressStage,
     FrontendCommand as FrontendCommand,
     FrontendEvent as FrontendEvent,
+    GameInformation,
     PresentationBatch as PresentationBatch,
 )
 from .wire import (
@@ -892,6 +893,9 @@ class RuntimeClient:
             self.cache_refresh_after = "reload"
             self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_PERSIST_DELAY_NS
             self.events.put(FrontendEvent("status", "脚本热重载完成。"))
+            self.events.put(
+                FrontendEvent("game_information", GameInformation.from_wire(report.get(5)))
+            )
             self._publish_configuration(report.get(4))
             return
         if self.pending_bundle is not None:
@@ -904,6 +908,9 @@ class RuntimeClient:
             self.pending_bundle = None
             self.storage = self._storage_for_bundle(self.bundle)
         self.events.put(FrontendEvent("project_loaded", self.bundle.root if self.bundle else None))
+        self.events.put(
+            FrontendEvent("game_information", GameInformation.from_wire(report.get(5)))
+        )
         self._publish_configuration(report.get(4))
         if self.startup_active:
             self.startup_scenario = (
