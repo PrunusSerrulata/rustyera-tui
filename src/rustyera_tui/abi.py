@@ -8,6 +8,17 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+from .abi_layout import (
+    EraAbiVersion,
+    EraByteSlice,
+    EraCallHeader,
+    EraCreateOptions,
+    EraDriveOptions,
+    EraDriveResult,
+    EraOwnedBuffer,
+    EraProjectProgress,
+    EraSessionHandle,
+)
 from .protocol_text import ERA_STATUSES, enum_text
 from .abi_support import (
     decode_project_manifest,
@@ -37,64 +48,19 @@ class AbiError(RuntimeError):
     """A C ABI call failed before a protocol response could be produced."""
 
 
-class EraAbiVersion(ctypes.Structure):
-    _fields_ = [("major", ctypes.c_uint16), ("minor", ctypes.c_uint16)]
-
-
-class EraCallHeader(ctypes.Structure):
-    _fields_ = [("struct_size", ctypes.c_uint32), ("abi_version", EraAbiVersion)]
-
-
-class EraSessionHandle(ctypes.Structure):
-    _fields_ = [("value", ctypes.c_uint64)]
-
-
-class EraByteSlice(ctypes.Structure):
-    _fields_ = [("data", ctypes.POINTER(ctypes.c_uint8)), ("len", ctypes.c_size_t)]
-
-
-class EraOwnedBuffer(ctypes.Structure):
-    _fields_ = [
-        ("data", ctypes.POINTER(ctypes.c_uint8)),
-        ("len", ctypes.c_size_t),
-        ("token", ctypes.c_uint64),
-    ]
-
-
-class EraCreateOptions(ctypes.Structure):
-    _fields_ = [
-        ("header", EraCallHeader),
-        ("debug_scope_mask", ctypes.c_uint64),
-        ("reserved", ctypes.c_uint64 * 4),
-    ]
-
-
-class EraDriveOptions(ctypes.Structure):
-    _fields_ = [
-        ("header", EraCallHeader),
-        ("maximum_vm_instructions", ctypes.c_uint64),
-        ("maximum_runtime_transitions", ctypes.c_uint32),
-        ("reserved", ctypes.c_uint32),
-    ]
-
-
-class EraDriveResult(ctypes.Structure):
-    _fields_ = [
-        ("header", EraCallHeader),
-        ("state", ctypes.c_uint32),
-        ("vm_instructions", ctypes.c_uint64),
-        ("runtime_transitions", ctypes.c_uint32),
-        ("queued_envelopes", ctypes.c_uint32),
-    ]
-
-
-class EraProjectProgress(ctypes.Structure):
-    _fields_ = [
-        ("header", EraCallHeader),
-        ("stage", ctypes.c_uint32),
-        ("completed", ctypes.c_uint64),
-        ("total", ctypes.c_uint64),
-    ]
+for _layout in (
+    EraAbiVersion,
+    EraCallHeader,
+    EraSessionHandle,
+    EraByteSlice,
+    EraOwnedBuffer,
+    EraCreateOptions,
+    EraDriveOptions,
+    EraDriveResult,
+    EraProjectProgress,
+):
+    _layout.__module__ = __name__
+del _layout
 
 
 SessionCreate = ctypes.CFUNCTYPE(
