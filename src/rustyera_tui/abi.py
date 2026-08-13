@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Callable
 
 from .protocol_text import ERA_STATUSES, enum_text
-from .wire import decode, encode
+from .abi_support import (
+    decode_project_manifest,
+    prepare_project_configuration_update,
+    stage_project_manifest,
+)
 
 ABI_MAJOR = 3
 ABI_MINOR = 8
@@ -342,17 +346,13 @@ class RuntimeAbi:
     def stage_project_manifest(self, manifest: dict[int, object]) -> bool:
         """Stage one encoded manifest when ABI 3.8 is available."""
 
-        stage = getattr(self, "_stage_project_manifest", None)
-        if stage is None:
-            return False
-        data = encode(manifest)
-        status = stage(
-            _header(ctypes.sizeof(EraCallHeader)),
-            self.handle,
-            _borrowed_bytes(data),
+        return stage_project_manifest(
+            self,
+            manifest,
+            header=_header,
+            call_header_size=ctypes.sizeof(EraCallHeader),
+            borrowed_bytes=_borrowed_bytes,
         )
-        self._check(status, "session_stage_project_manifest")
-        return True
 
     def drive(self, maximum_instructions: int = DEFAULT_MAXIMUM_VM_INSTRUCTIONS) -> EraDriveResult:
         options = EraDriveOptions(
@@ -393,26 +393,16 @@ class RuntimeAbi:
     def _decode_project_manifest(
         self, data: bytes, decoder: SessionDecodeProjectFile | None
     ) -> dict[int, object]:
-        if decoder is None:
-            raise AbiError("runtime ABI does not support RustyEra project files")
-        output = EraOwnedBuffer()
-        header = _header(ctypes.sizeof(EraOwnedBuffer))
-        status = decoder(
-            header,
-            self.handle,
-            _borrowed_bytes(data),
-            ctypes.byref(output),
+        return decode_project_manifest(
+            self,
+            data,
+            decoder,
+            owned_buffer_type=EraOwnedBuffer,
+            header=_header,
+            borrowed_bytes=_borrowed_bytes,
+            status_text=_status_text,
+            abi_error=AbiError,
         )
-        self._check(status, "session_decode_project_file")
-        try:
-            decoded = decode(ctypes.string_at(output.data, output.len))
-        finally:
-            release_status = self._release(header, output)
-            if release_status != STATUS_OK:
-                raise AbiError(f"release_buffer failed with status {_status_text(release_status)}")
-        if not isinstance(decoded, dict):
-            raise AbiError("runtime returned an invalid project-file manifest")
-        return decoded
 
     @property
     def supports_project_configuration_updates(self) -> bool:
@@ -425,39 +415,17 @@ class RuntimeAbi:
     ) -> tuple[int, bytes]:
         """Validate a package and return its truncation offset and compact append record."""
 
-        prepare = self._prepare_project_configuration_update
-        if prepare is None:
-            raise AbiError("runtime ABI does not support writable RustyEra project files")
-        contents_bytes = contents.encode("utf-8")
-        project_buffer = ctypes.c_char_p(project_file)
-        expected_buffer = ctypes.c_char_p(expected_digest)
-        contents_buffer = ctypes.c_char_p(contents_bytes)
-        output = EraOwnedBuffer()
-        header = _header(ctypes.sizeof(EraOwnedBuffer))
-        status = prepare(
-            header,
-            self.handle,
-            EraByteSlice(
-                ctypes.cast(project_buffer, ctypes.POINTER(ctypes.c_uint8)), len(project_file)
-            ),
-            EraByteSlice(
-                ctypes.cast(expected_buffer, ctypes.POINTER(ctypes.c_uint8)), len(expected_digest)
-            ),
-            EraByteSlice(
-                ctypes.cast(contents_buffer, ctypes.POINTER(ctypes.c_uint8)), len(contents_bytes)
-            ),
-            ctypes.byref(output),
+        return prepare_project_configuration_update(
+            self,
+            project_file,
+            expected_digest,
+            contents,
+            owned_buffer_type=EraOwnedBuffer,
+            byte_slice_type=EraByteSlice,
+            header=_header,
+            status_text=_status_text,
+            abi_error=AbiError,
         )
-        self._check(status, "prepare_project_configuration_update")
-        try:
-            encoded = ctypes.string_at(output.data, output.len)
-        finally:
-            release_status = self._release(header, output)
-            if release_status != STATUS_OK:
-                raise AbiError(f"release_buffer failed with status {_status_text(release_status)}")
-        if len(encoded) < 8:
-            raise AbiError("runtime returned an invalid project configuration update")
-        return int.from_bytes(encoded[:8], "little"), encoded[8:]
 
     def stage_compiled_cache(self, data: bytes) -> int | None:
         """Stage a contiguous cache without encoding protocol chunks when ABI 3.4 is available."""
