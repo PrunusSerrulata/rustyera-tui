@@ -11,6 +11,7 @@ from typing import Any, Iterable
 import blake3
 
 from .frontend_io import IO_CONFLICT, IO_INVALID_DATA, frontend_error
+from .storage_state import _change_token, _precondition_conflict
 from .wire import variant
 
 
@@ -91,13 +92,6 @@ class StorageBackend:
             raise ValueError("storage path escapes its namespace")
         return resolved
 
-    @staticmethod
-    def _revision(path: Path) -> str | None:
-        try:
-            return blake3.blake3(path.read_bytes()).hexdigest()
-        except FileNotFoundError:
-            return None
-
     def handle(self, request: dict[int, Any]) -> dict[int, Any]:
         request_id = request[0]
         namespace = request[1]
@@ -129,7 +123,7 @@ class StorageBackend:
             return variant(0, data, blake3.blake3(data).hexdigest())
         if operation_tag == 1:  # Write
             data, atomic_replace, precondition = fields
-            conflict = self._precondition_conflict(path, precondition)
+            conflict = _precondition_conflict(path, precondition)
             if conflict is not None:
                 return conflict
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,12 +156,12 @@ class StorageBackend:
                         0: candidate_relative,
                         1: stat.st_size,
                         2: None,
-                        3: self._change_token(stat),
+                        3: _change_token(stat),
                     }
                 )
             return variant(2, entries)
         if operation_tag == 3:  # Delete
-            conflict = self._precondition_conflict(path, fields[0])
+            conflict = _precondition_conflict(path, fields[0])
             if conflict is not None:
                 return conflict
             path.unlink()
@@ -178,39 +172,16 @@ class StorageBackend:
         if operation_tag == 5:  # ReadRange
             offset, maximum_bytes, expected_token = fields
             before = path.stat()
-            token = self._change_token(before)
+            token = _change_token(before)
             if expected_token is not None and expected_token != token:
                 return variant(4, {0: IO_CONFLICT, 1: "storage file changed during metadata read"})
             with path.open("rb") as stream:
                 stream.seek(offset)
                 data = stream.read(maximum_bytes)
             after = path.stat()
-            after_token = self._change_token(after)
+            after_token = _change_token(after)
             if token != after_token:
                 return variant(4, {0: IO_CONFLICT, 1: "storage file changed during metadata read"})
             complete = offset + len(data) >= after.st_size
             return variant(6, data, offset, complete, token)
         raise ValueError(f"unknown storage operation {operation_tag}")
-
-    @staticmethod
-    def _change_token(stat: os.stat_result) -> str:
-        return ":".join(
-            str(value)
-            for value in (
-                getattr(stat, "st_dev", 0),
-                getattr(stat, "st_ino", 0),
-                stat.st_size,
-                stat.st_mtime_ns,
-                stat.st_ctime_ns,
-            )
-        )
-
-    def _precondition_conflict(self, path: Path, precondition: list[Any]) -> list[Any] | None:
-        tag, fields = precondition
-        revision = self._revision(path)
-        conflict = tag == 1 and revision is not None
-        conflict = conflict or (tag == 2 and (not fields or revision != fields[0]))
-        if not conflict:
-            return None
-        error = {0: IO_CONFLICT, 1: "storage precondition did not hold"}
-        return variant(4, error)
