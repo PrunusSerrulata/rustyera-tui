@@ -3,13 +3,33 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+DiagnosisProgressStage = Literal[
+    "waiting",
+    "input_replay",
+    "vm_snapshot",
+    "project_scanning",
+    "project_preparing",
+    "project_packaging",
+    "project_transfer",
+    "archive",
+]
 
 
 @dataclass(frozen=True, slots=True)
 class FrontendEvent:
     kind: str
     value: Any = None
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosisProgress:
+    """One observable unit of the frontend-owned diagnosis export pipeline."""
+
+    stage: DiagnosisProgressStage
+    completed: int = 0
+    total: int = 0
 
 
 @dataclass(frozen=True, slots=True)

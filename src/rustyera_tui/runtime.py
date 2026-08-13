@@ -56,6 +56,8 @@ from .runtime_export import (
 )
 from .startup_telemetry import emit_startup_milestone
 from .runtime_types import (
+    DiagnosisProgress,
+    DiagnosisProgressStage,
     FrontendCommand as FrontendCommand,
     FrontendEvent as FrontendEvent,
     PresentationBatch as PresentationBatch,
@@ -77,6 +79,12 @@ from .wire import (
     version_range,
 )
 from .worker import RuntimeWorker as RuntimeWorker
+
+DIAGNOSIS_PROGRESS_STAGE_BY_EXPORT: dict[ExportStage, DiagnosisProgressStage] = {
+    ExportStage.DIAGNOSIS_REPLAY: "input_replay",
+    ExportStage.DIAGNOSIS_SNAPSHOT: "vm_snapshot",
+    ExportStage.DIAGNOSIS_PROJECT: "project_transfer",
+}
 
 COMPILED_CACHE_PERSIST_DELAY_NS = 10_000_000_000
 COMPILED_CACHE_RETRY_NS = 250_000_000
@@ -212,7 +220,33 @@ class RuntimeClient:
         self._send_hello()
 
     def _project_scan_progress(self, completed: int, total: int) -> None:
-        self.events.put(FrontendEvent("project_progress", (0, completed, total)))
+        if self.pending_diagnosis is not None and self.pending_diagnosis.stage == "project":
+            self._report_diagnosis_progress("project_scanning", completed, total)
+        else:
+            self.events.put(FrontendEvent("project_progress", (0, completed, total)))
+
+    def _report_diagnosis_progress(
+        self, stage: DiagnosisProgressStage, completed: int = 0, total: int = 0
+    ) -> None:
+        self.events.put(
+            FrontendEvent(
+                "diagnosis_progress",
+                DiagnosisProgress(stage, max(0, completed), max(0, total)),
+            )
+        )
+
+    def report_runtime_project_progress(self, stage: int, completed: int, total: int) -> None:
+        if (
+            self.pending_diagnosis is not None
+            and self.pending_export_kind == ExportStage.DIAGNOSIS_PROJECT
+        ):
+            self._report_diagnosis_progress(
+                "project_packaging" if stage == 9 else "project_preparing",
+                completed,
+                total,
+            )
+        else:
+            self.events.put(FrontendEvent("project_progress", (stage, completed, total)))
 
     def _reset_wire_state(self) -> None:
         self.runtime_sequence = 0
@@ -1566,6 +1600,7 @@ class RuntimeClient:
             logs=logs,
             stage="export_wait",
         )
+        self._report_diagnosis_progress("waiting")
         if self.pending_export is None:
             self._start_diagnosis_replay_export()
 
@@ -1574,6 +1609,7 @@ class RuntimeClient:
         if diagnosis is None:
             return
         diagnosis.stage = "replay"
+        self._report_diagnosis_progress("input_replay")
         self.pending_export = (diagnosis.target, bytearray(), None)
         self.pending_export_kind = ExportStage.DIAGNOSIS_REPLAY
         self.pending_export_message = self.send_runtime(60, {0: 4, 1: 0})
@@ -1583,6 +1619,7 @@ class RuntimeClient:
         if diagnosis is None:
             return
         diagnosis.stage = "snapshot"
+        self._report_diagnosis_progress("vm_snapshot")
         self.pending_export = (diagnosis.target, bytearray(), None)
         self.pending_export_kind = ExportStage.DIAGNOSIS_SNAPSHOT
         self.pending_export_message = self.send_runtime(60, {0: 1, 1: 2})
@@ -1630,6 +1667,12 @@ class RuntimeClient:
             return
         path, data, _ = self.pending_export
         self.pending_export = (path, data, descriptor)
+        if stage in DIAGNOSIS_EXPORT_STAGES:
+            self._report_diagnosis_progress(
+                DIAGNOSIS_PROGRESS_STAGE_BY_EXPORT[stage],
+                0,
+                int(descriptor[2]),
+            )
         self.send_runtime(67, {0: descriptor[0], 1: 0, 2: 1024 * 1024})
 
     def _handle_export_chunk(self, chunk: dict[int, Any]) -> None:
@@ -1661,6 +1704,12 @@ class RuntimeClient:
             stream.write(bytes(chunk[2]))
         else:
             data.extend(chunk[2])
+        if self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
+            self._report_diagnosis_progress(
+                DIAGNOSIS_PROGRESS_STAGE_BY_EXPORT[self.pending_export_kind],
+                received + len(chunk[2]),
+                int(descriptor[2]),
+            )
         if not chunk[3]:
             self.send_runtime(67, {0: descriptor[0], 1: received + len(chunk[2]), 2: 1024 * 1024})
             return
@@ -1709,6 +1758,7 @@ class RuntimeClient:
                 self._finish_diagnosis_export(False, "diagnosis archive input is missing")
                 return
             try:
+                self._report_diagnosis_progress("archive")
                 write_diagnosis_archive(
                     self.pending_diagnosis.target,
                     project_name=self.pending_diagnosis.project_name,
@@ -1716,6 +1766,9 @@ class RuntimeClient:
                     input_replay=self.pending_diagnosis.input_replay,
                     logs=self.pending_diagnosis.logs,
                     project_file=self.pending_diagnosis.project_file,
+                    progress=lambda completed, total: self._report_diagnosis_progress(
+                        "archive", completed, total
+                    ),
                 )
             except Exception as error:  # noqa: BLE001 - report filesystem/compression failures
                 self._finish_diagnosis_export(False, str(error))
@@ -1731,12 +1784,13 @@ class RuntimeClient:
         diagnosis = self.pending_diagnosis
         if diagnosis is None:
             return
+        diagnosis.stage = "project"
+        self._report_diagnosis_progress("project_scanning")
         try:
             self._stage_full_project_manifest()
         except Exception as error:  # noqa: BLE001 - report project scan failures to the UI
             self._finish_diagnosis_export(False, str(error))
             return
-        diagnosis.stage = "project"
         self._request_diagnosis_project_export()
 
     def _request_diagnosis_project_export(self) -> None:
@@ -1802,7 +1856,9 @@ class RuntimeClient:
             )
             self._submit_start(self._new_game_start())
         elif after == "reload":
-            self.events.put(FrontendEvent("status", "项目缓存已保存。" if success else "项目缓存保存失败。"))
+            self.events.put(
+                FrontendEvent("status", "项目缓存已保存。" if success else "项目缓存保存失败。")
+            )
         elif after == "background":
             self.events.put(
                 FrontendEvent("status", "项目缓存已保存。" if success else "项目缓存保存失败。")

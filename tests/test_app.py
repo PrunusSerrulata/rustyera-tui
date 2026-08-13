@@ -13,6 +13,7 @@ from textual.widgets import (
     Checkbox,
     DataTable,
     Input,
+    ProgressBar,
     RichLog,
     Select,
     Static,
@@ -39,7 +40,7 @@ from rustyera_tui.presentation import (
 )
 from rustyera_tui.color_picker import ColorField, ColorPickerDialog
 from rustyera_tui.preferences_schema import FIELDS, PAGES, FieldSpec
-from rustyera_tui.runtime import FrontendEvent, PresentationBatch, RuntimeFailure
+from rustyera_tui.runtime import DiagnosisProgress, FrontendEvent, PresentationBatch, RuntimeFailure
 from rustyera_tui.widgets import GameLine, GameViewport
 from rustyera_tui.wire import variant
 
@@ -399,21 +400,38 @@ async def test_manual_diagnosis_export_reuses_fatal_export_payload(tmp_path: Pat
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
     app.worker = worker  # type: ignore[assignment]
-    async with app.run_test(size=(100, 30)):
+    async with app.run_test(size=(100, 30)) as pilot:
         app.presentation.title = "eraThe World"
         app._log("manual diagnosis detail", LogLevel.WARNING)
         target = tmp_path / "manual.tar.zst"
 
         app._start_diagnosis_export(target)
+        await pilot.pause()
 
         assert app.diagnosis_exporting
         assert app.query_one("#prompt", Input).disabled
+        diagnosis_progress = app.query_one("#diagnosis-progress")
+        assert diagnosis_progress.has_class("visible")
+        assert diagnosis_progress.region.bottom <= app.query_one("#prompt-row").region.y
+        assert app.query_one(GameViewport).region.bottom <= diagnosis_progress.region.y
+        app._handle_worker_event(
+            FrontendEvent("diagnosis_progress", DiagnosisProgress("vm_snapshot", 3, 4))
+        )
+        assert "75%" in str(app.query_one("#diagnosis-progress-label", Static).render())
+        progress = app.query_one("#diagnosis-progress-bar", ProgressBar)
+        assert progress.progress == 3
+        assert progress.total == 4
         assert not app.query_one(GameViewport).interactions_enabled
         assert "manual diagnosis detail" in app.fault_logs
         assert (
             "export_diagnosis",
             (target, app.fault_logs, "eraThe World"),
         ) in worker.commands
+        app._handle_worker_event(
+            FrontendEvent("diagnosis_export_finished", (False, "archive failed"))
+        )
+        assert not app.diagnosis_exporting
+        assert not diagnosis_progress.has_class("visible")
 
 
 async def test_prompt_submits_through_worker(tmp_path: Path) -> None:
@@ -1780,12 +1798,23 @@ async def test_fatal_fault_dialog_exports_diagnosis_and_gates_recovery_actions(
             (target, app.fault_logs, "eraThe World"),
         ) in worker.commands
         assert all(button.disabled for button in dialog.query(".fatal-buttons Button"))
-        assert "正在导出" in str(dialog.query_one("#fatal-export-status", Static).render())
+        assert str(dialog.query_one("#fatal-export-status", Static).render()) == (
+            "正在准备诊断信息…"
+        )
+        app._handle_worker_event(
+            FrontendEvent("diagnosis_progress", DiagnosisProgress("project_transfer", 1, 4))
+        )
+        assert "25%" in str(dialog.query_one("#fatal-export-status", Static).render())
+        fatal_progress = dialog.query_one("#fatal-export-progress", ProgressBar)
+        assert fatal_progress.has_class("visible")
+        assert fatal_progress.progress == 1
+        assert fatal_progress.total == 4
 
         app._handle_worker_event(FrontendEvent("diagnosis_export_finished", (True, str(target))))
         assert not app.diagnosis_exporting
         assert all(not button.disabled for button in dialog.query(".fatal-buttons Button"))
         assert "导出成功" in str(dialog.query_one("#fatal-export-status", Static).render())
+        assert not fatal_progress.has_class("visible")
 
         app.on_fatal_error_dialog_action(FatalErrorDialog.Action("recompile"))
         assert ("restart_recompile", None) in worker.commands

@@ -8,11 +8,13 @@ from typing import Any
 import blake3
 import pytest
 
+import rustyera_tui.runtime as runtime_module
 from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
 from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile, StorageBackend
 from rustyera_tui.presentation import ServicePresentationModel
 from rustyera_tui.runtime import (
     AtomicExportStream,
+    DiagnosisProgress,
     FrontendEvent,
     FullProjectExport,
     PendingConfigurationPrepare,
@@ -20,6 +22,7 @@ from rustyera_tui.runtime import (
     RuntimeClient,
     RuntimeFailure,
 )
+from rustyera_tui.runtime_export import DiagnosisExport, ExportStage
 from rustyera_tui.wire import decode, encode, unwrap_variant, variant
 
 
@@ -60,6 +63,13 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
         lambda tag, value, **_kwargs: captured.append((tag, value)) or 1
     )
     return client, captured
+
+
+def next_event_of_kind(client: RuntimeClient, kind: str) -> FrontendEvent:
+    while True:
+        event = client.events.get_nowait()
+        if event.kind == kind:
+            return event
 
 
 def test_full_project_export_preempts_cache_and_cleans_up_on_cancel(tmp_path: Path) -> None:
@@ -395,8 +405,8 @@ def test_snapshot_export_purposes_and_restore_warnings_are_frontend_visible(
         },
         None,
     )
-    assert client.events.get_nowait().kind == "log"
-    warning = client.events.get_nowait()
+    assert next_event_of_kind(client, "log").kind == "log"
+    warning = next_event_of_kind(client, "snapshot_restore_warning")
     assert warning.kind == "snapshot_restore_warning"
     assert "诊断信息" in warning.value
 
@@ -423,6 +433,37 @@ def test_diagnosis_export_waits_for_an_existing_state_transfer(tmp_path: Path) -
     assert captured == [(60, {0: 4, 1: 0})]
     assert client.pending_export_kind == 6
     assert client.pending_diagnosis.stage == "replay"
+
+
+def test_diagnosis_transfer_progress_uses_the_runtime_descriptor_bytes(tmp_path: Path) -> None:
+    client, _captured = client_with_capture()
+    client.bundle = SimpleNamespace(root=tmp_path / "eraTW")
+    payload = b"four"
+    client.export_diagnosis(
+        tmp_path / "diagnosis.tar.zst",
+        "fault log\n",
+        "eraThe World",
+    )
+    assert next_event_of_kind(client, "diagnosis_progress").value == DiagnosisProgress("waiting")
+    assert next_event_of_kind(client, "diagnosis_progress").value == DiagnosisProgress(
+        "input_replay"
+    )
+
+    descriptor = {
+        0: 10,
+        1: 4,
+        2: len(payload),
+        3: blake3.blake3(payload).digest(),
+    }
+    client._handle_export_ready({0: 4, 1: [0, [descriptor]]}, correlation_id=1)
+    assert next_event_of_kind(client, "diagnosis_progress").value == DiagnosisProgress(
+        "input_replay", 0, 4
+    )
+
+    client._handle_export_chunk({0: 10, 1: 0, 2: b"fo", 3: False})
+    assert next_event_of_kind(client, "diagnosis_progress").value == DiagnosisProgress(
+        "input_replay", 2, 4
+    )
 
 
 def test_diagnosis_export_blocks_input_undo_and_deadline_advancement(tmp_path: Path) -> None:
@@ -479,7 +520,9 @@ def test_diagnosis_ready_mismatch_cancels_and_restores_interaction(
     assert client.pending_diagnosis is None
     assert client.pending_export is None
     assert captured[-1] == (71, {0: 4})
-    assert client.events.get_nowait().kind == "diagnosis_export_finished"
+    assert next_event_of_kind(client, "diagnosis_export_finished").kind == (
+        "diagnosis_export_finished"
+    )
 
 
 @pytest.mark.parametrize(
@@ -505,7 +548,7 @@ def test_diagnosis_chunk_validation_failure_is_local_and_restores_interaction(
     assert client.pending_diagnosis is None
     assert client.pending_export is None
     assert captured[-1] == (69, {0: 10})
-    finished = client.events.get_nowait()
+    finished = next_event_of_kind(client, "diagnosis_export_finished")
     assert finished.kind == "diagnosis_export_finished"
     assert finished.value[0] is False
 
@@ -529,8 +572,52 @@ def test_diagnosis_cleanup_restores_interaction_when_cancel_send_fails(tmp_path:
 
     assert client.pending_diagnosis is None
     assert client.pending_export is None
-    assert client.events.get_nowait() == FrontendEvent(
+    assert next_event_of_kind(client, "diagnosis_export_finished") == FrontendEvent(
         "diagnosis_export_finished", (False, "failed")
+    )
+
+
+def test_diagnosis_archive_failure_clears_progress_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _captured = client_with_capture()
+    target = tmp_path / "diagnosis.tar.zst"
+    payload = b"RERAPROJproject"
+    client.pending_diagnosis = DiagnosisExport(
+        target=target,
+        project_name="eraFL",
+        logs="fault\n",
+        input_replay=b"replay",
+        snapshot=b"snapshot",
+        stage="project",
+    )
+    client.pending_export_kind = ExportStage.DIAGNOSIS_PROJECT
+    client.pending_export = (
+        target,
+        bytearray(),
+        {
+            0: 12,
+            1: 3,
+            2: len(payload),
+            3: blake3.blake3(payload).digest(),
+        },
+    )
+
+    def fail_archive(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(runtime_module, "write_diagnosis_archive", fail_archive)
+
+    client._handle_export_chunk({0: 12, 1: 0, 2: payload, 3: True})
+
+    assert client.pending_diagnosis is None
+    assert client.pending_export is None
+    assert next_event_of_kind(client, "diagnosis_progress").value == DiagnosisProgress(
+        "project_transfer", len(payload), len(payload)
+    )
+    assert next_event_of_kind(client, "diagnosis_progress").value == DiagnosisProgress("archive")
+    assert next_event_of_kind(client, "diagnosis_export_finished") == FrontendEvent(
+        "diagnosis_export_finished", (False, "disk full")
     )
 
 
@@ -596,9 +683,8 @@ def test_diagnosis_exports_a_full_project_and_retries_without_rescanning(
     assert target.exists()
     assert client.pending_diagnosis is None
     assert client.pending_export_kind is None
-    assert client.events.get_nowait() == FrontendEvent(
-        "diagnosis_export_finished", (True, str(target))
-    )
+    finished = next_event_of_kind(client, "diagnosis_export_finished")
+    assert finished == FrontendEvent("diagnosis_export_finished", (True, str(target)))
 
 
 def test_diagnosis_project_scan_failure_releases_the_export_state(tmp_path: Path) -> None:
@@ -636,7 +722,7 @@ def test_diagnosis_project_scan_failure_releases_the_export_state(tmp_path: Path
     assert client.pending_diagnosis is None
     assert client.pending_export is None
     assert client.pending_export_kind is None
-    assert client.events.get_nowait() == FrontendEvent(
+    assert next_event_of_kind(client, "diagnosis_export_finished") == FrontendEvent(
         "diagnosis_export_finished", (False, "scan failed")
     )
 

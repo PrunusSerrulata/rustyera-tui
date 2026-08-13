@@ -265,7 +265,10 @@ class RuntimeWorker(threading.Thread):
         self.events.put(FrontendEvent("project_progress", (0, completed, total)))
 
     def _emit_project_progress(self, stage: int, completed: int, total: int) -> None:
-        self.events.put(FrontendEvent("project_progress", (stage, completed, total)))
+        if self.client is not None:
+            self.client.report_runtime_project_progress(stage, completed, total)
+        else:
+            self.events.put(FrontendEvent("project_progress", (stage, completed, total)))
 
     def stop(self) -> None:
         self.send("force_stop")

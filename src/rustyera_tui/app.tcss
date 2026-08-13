@@ -133,6 +133,27 @@ Screen {
     background: #111827;
 }
 
+#diagnosis-progress {
+    display: none;
+    height: 3;
+    width: 100%;
+    padding: 0 2;
+    background: #111827;
+}
+
+#diagnosis-progress.visible {
+    display: block;
+}
+
+#diagnosis-progress-label {
+    height: 1;
+    color: #e2e8f0;
+}
+
+#diagnosis-progress-bar {
+    height: 1;
+}
+
 #prompt-label {
     width: 2;
     height: 1;
@@ -404,7 +425,7 @@ ModalScreen {
 
 .fatal-dialog {
     width: 100;
-    height: 24;
+    height: 25;
     border: round #ef4444;
 }
 
@@ -428,6 +449,16 @@ ModalScreen {
     height: 2;
     color: #fbbf24;
     padding: 0 1;
+}
+
+#fatal-export-progress {
+    display: none;
+    height: 1;
+    margin: 0 1;
+}
+
+#fatal-export-progress.visible {
+    display: block;
 }
 
 .fatal-buttons {

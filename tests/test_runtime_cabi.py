@@ -14,6 +14,7 @@ import zstandard
 from rustyera_tui.abi import DEFAULT_MAXIMUM_VM_INSTRUCTIONS, AbiError, RuntimeAbi, discover_library
 from rustyera_tui.project import ProjectBundle, StorageBackend
 from rustyera_tui.runtime import (
+    DiagnosisProgress,
     FrontendCommand,
     FrontendEvent,
     PresentationBatch,
@@ -683,8 +684,26 @@ def test_real_c_abi_diagnosis_contains_a_parseable_full_project(
         worker.send("submit_text", "8")
         wait_for_input(worker)
         worker.send("export_diagnosis", (target, "complete log\n", "TUI Replay Diagnosis"))
-        finished = wait_for(worker, lambda event: event.kind == "diagnosis_export_finished")
+        progress: list[DiagnosisProgress] = []
+
+        def diagnosis_finished(event: FrontendEvent) -> bool:
+            if event.kind == "diagnosis_progress":
+                progress.append(event.value)
+            return event.kind == "diagnosis_export_finished"
+
+        finished = wait_for(worker, diagnosis_finished)
         assert finished.value == (True, str(target))
+        stages = {item.stage for item in progress}
+        assert {"input_replay", "vm_snapshot", "project_transfer", "archive"} <= stages
+        assert all(item.total <= 0 or 0 <= item.completed <= item.total for item in progress)
+        assert any(
+            item.stage == "project_transfer" and item.total > 0 and item.completed == item.total
+            for item in progress
+        )
+        assert any(
+            item.stage == "archive" and item.total > 0 and item.completed == item.total
+            for item in progress
+        )
         wait_for_path(worker, target)
     finally:
         worker.stop()

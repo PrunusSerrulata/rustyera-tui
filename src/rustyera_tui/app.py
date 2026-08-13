@@ -13,7 +13,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
-from textual.widgets import Button, Input, Rule, Static
+from textual.widgets import Button, Input, ProgressBar, Rule, Static
 
 from .configuration import ConfigurationSnapshot
 from .dialogs import (
@@ -33,7 +33,7 @@ from .diagnosis import diagnosis_default_path, diagnosis_project_name
 from .input_policy import is_message_skip_wait, is_message_wait
 from .log_model import LogEntry, LogLevel, LogMessage, format_log_entries, make_log_entry
 from .presentation import PresentationModel
-from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
+from .runtime import DiagnosisProgress, FrontendEvent, PresentationBatch, RuntimeWorker
 from .widgets import GameLine, GameViewport
 
 CORE_VERSION = "0.4.0 (c8f936d8)"
@@ -123,6 +123,16 @@ class RustyEraTui(App[None]):
         "正在准备 Runtime 资源",
         "正在打包全量项目文件",
     )
+    DIAGNOSIS_PROGRESS_LABELS = {
+        "waiting": "正在准备诊断信息",
+        "input_replay": "正在导出输入回放",
+        "vm_snapshot": "正在导出 VM 快照",
+        "project_scanning": "正在读取项目文件",
+        "project_preparing": "正在准备全量项目文件",
+        "project_packaging": "正在打包全量项目文件",
+        "project_transfer": "正在传输全量项目文件",
+        "archive": "正在写入诊断归档",
+    }
 
     def __init__(
         self,
@@ -163,6 +173,7 @@ class RustyEraTui(App[None]):
         self.project_file_exporting = False
         self.export_progress_dialog: ExportProgressDialog | None = None
         self.diagnosis_exporting = False
+        self.diagnosis_export_at_fault = False
         self.presentation_rendering = False
         self._presentation_dirty = False
         self._presentation_commit_ready = False
@@ -187,6 +198,9 @@ class RustyEraTui(App[None]):
                 yield Button("帮助", id="menu-help", classes="menu-button")
             yield GameViewport()
             yield Rule(id="separator-line")
+            with Vertical(id="diagnosis-progress"):
+                yield Static("正在准备诊断信息…", id="diagnosis-progress-label", markup=False)
+                yield ProgressBar(total=None, show_eta=False, id="diagnosis-progress-bar")
             with Horizontal(id="prompt-row"):
                 yield Static("> ", id="prompt-label", classes="prompt-running")
                 yield Input(placeholder="等待 Runtime…", id="prompt", disabled=True)
@@ -334,6 +348,7 @@ class RustyEraTui(App[None]):
                 self.notify("项目文件导出失败", severity="error")
         elif kind == "diagnosis_export_finished":
             self.diagnosis_exporting = False
+            self._hide_diagnosis_progress()
             self._update_prompt()
             self._refresh_interaction_lock()
             success, message = value
@@ -343,6 +358,9 @@ class RustyEraTui(App[None]):
                 self.notify(f"诊断信息已导出：{message}")
             else:
                 self.notify(f"诊断信息导出失败：{message}", severity="error")
+            self.diagnosis_export_at_fault = False
+        elif kind == "diagnosis_progress" and isinstance(value, DiagnosisProgress):
+            self._update_diagnosis_progress(value)
         elif kind == "project_loaded":
             self.project = Path(value) if value else self.project
             self.project_name = ""
@@ -443,8 +461,10 @@ class RustyEraTui(App[None]):
                 self._refresh_interaction_lock()
             if self.diagnosis_exporting:
                 self.diagnosis_exporting = False
+                self._hide_diagnosis_progress()
                 if self.fatal_dialog is not None and self.fatal_dialog.is_mounted:
                     self.fatal_dialog.finish_export(False, "Runtime worker 已停止")
+                self.diagnosis_export_at_fault = False
                 self._update_prompt()
                 self._refresh_interaction_lock()
             if self.exit_pending:
@@ -903,15 +923,55 @@ class RustyEraTui(App[None]):
         if path is None or self.diagnosis_exporting:
             return
         self.diagnosis_exporting = True
+        self.diagnosis_export_at_fault = bool(
+            self.fatal_dialog is not None and self.fatal_dialog.is_mounted
+        )
         self._update_prompt()
         self._refresh_interaction_lock()
-        if self.fatal_dialog is not None and self.fatal_dialog.is_mounted:
+        if self.diagnosis_export_at_fault and self.fatal_dialog is not None:
             self.fatal_dialog.set_exporting()
+        else:
+            self._show_diagnosis_progress()
         self.fault_logs = format_log_entries(self.logs)
         self.worker.send(
             "export_diagnosis",
             (path, self.fault_logs, self._diagnosis_project_name()),
         )
+
+    def _update_diagnosis_progress(self, progress: DiagnosisProgress) -> None:
+        if not self.diagnosis_exporting:
+            return
+        label = self.DIAGNOSIS_PROGRESS_LABELS.get(progress.stage, "正在导出诊断信息")
+        if progress.total > 0:
+            completed = min(progress.completed, progress.total)
+            percent = min(100, completed * 100 // progress.total)
+            message = f"{label}（{percent}%）"
+        else:
+            completed = 0
+            message = f"{label}…"
+        if self.diagnosis_export_at_fault and self.fatal_dialog is not None:
+            if self.fatal_dialog.is_mounted:
+                self.fatal_dialog.update_export_progress(
+                    message,
+                    completed,
+                    progress.total,
+                )
+                return
+            self.diagnosis_export_at_fault = False
+        self._show_diagnosis_progress()
+        self.query_one("#diagnosis-progress-label", Static).update(message)
+        self.query_one("#diagnosis-progress-bar", ProgressBar).update(
+            progress=completed,
+            total=progress.total if progress.total > 0 else None,
+        )
+
+    def _show_diagnosis_progress(self) -> None:
+        if self.is_mounted:
+            self.query_one("#diagnosis-progress").add_class("visible")
+
+    def _hide_diagnosis_progress(self) -> None:
+        if self.is_mounted:
+            self.query_one("#diagnosis-progress").remove_class("visible")
 
     def _open_diagnosis_export_dialog(self) -> None:
         initial = diagnosis_default_path(

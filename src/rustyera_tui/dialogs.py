@@ -16,6 +16,7 @@ from textual.widgets import (
     DirectoryTree,
     Input,
     Label,
+    ProgressBar,
     RichLog,
     Select,
     Static,
@@ -117,6 +118,11 @@ class FatalErrorDialog(ModalScreen[None]):
                 markup=False,
                 id="fatal-export-status",
             )
+            yield ProgressBar(
+                total=None,
+                show_eta=False,
+                id="fatal-export-progress",
+            )
             with Horizontal(classes="dialog-buttons fatal-buttons"):
                 yield Button("导出诊断信息…", id="fatal-export", variant="primary")
                 yield Static(classes="fatal-buttons-spacer")
@@ -134,13 +140,22 @@ class FatalErrorDialog(ModalScreen[None]):
         if action is not None:
             self.post_message(self.Action(action))
 
-    def set_exporting(self) -> None:
-        self.query_one("#fatal-export-status", Static).update("正在导出诊断信息……")
+    def set_exporting(self, message: str = "正在准备诊断信息…") -> None:
+        self.query_one("#fatal-export-status", Static).update(message)
+        self.query_one("#fatal-export-progress", ProgressBar).add_class("visible")
         self._set_buttons_disabled(True)
+
+    def update_export_progress(self, message: str, completed: int, total: int) -> None:
+        self.set_exporting(message)
+        self.query_one("#fatal-export-progress", ProgressBar).update(
+            progress=completed,
+            total=total if total > 0 else None,
+        )
 
     def finish_export(self, success: bool, message: str) -> None:
         status = f"导出成功：{message}" if success else f"导出失败：{message}"
         self.query_one("#fatal-export-status", Static).update(status)
+        self.query_one("#fatal-export-progress", ProgressBar).remove_class("visible")
         self._set_buttons_disabled(False)
 
     def _set_buttons_disabled(self, disabled: bool) -> None:
