@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .abi import discover_library
+from .test_cli_arguments import build_parser
 from .testing import (
     ReferenceProcess,
     RustTestSession,
@@ -29,19 +30,7 @@ from .testing import (
 )
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="rustyera-test")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("run", "serve"):
-        command = subparsers.add_parser(name)
-        command.add_argument("--scenario", type=Path, required=True)
-        command.add_argument("--project", type=Path)
-        command.add_argument("--runtime-library", type=Path)
-        command.add_argument("--trace", type=Path)
-        command.add_argument("--reference-command")
-        command.add_argument("--reference-path-command")
-        command.add_argument("--metrics-threshold-ms", type=float)
-    return parser
+build_parser.__module__ = __name__
 
 
 def _reference(args: argparse.Namespace, scenario: Scenario) -> ReferenceProcess | None:
