@@ -18,10 +18,11 @@ from .dialogs import (
     VariableRefresh,
 )
 from .input_policy import is_message_skip_wait, is_message_wait
+from .app_viewport import _ViewportProjectionMixin
 from .widgets import GameLine, GameViewport
 
 
-class _InteractionMixin:
+class _InteractionMixin(_ViewportProjectionMixin):
     def _debug_action(self, item_id: str) -> None:
         if self.snapshot_exporting and item_id != "debug-logs":
             self.notify("VM 快照导出完成前不能执行调试操作", severity="warning")
@@ -238,33 +239,6 @@ class _InteractionMixin:
 
     def on_resize(self, _event: events.Resize) -> None:
         self._schedule_viewport_projection()
-
-    def _schedule_viewport_projection(self) -> None:
-        if not self._projection_refresh_scheduled:
-            self._projection_refresh_scheduled = True
-            self.call_after_refresh(self._send_viewport_projection)
-
-    def _send_viewport_projection(self) -> None:
-        self._projection_refresh_scheduled = False
-        if not self.is_mounted:
-            return
-        viewport = self.query_one(GameViewport)
-        self._send_projection(*viewport.content_dimensions)
-
-    def _send_projection(self, width: int, height: int) -> None:
-        # Each observation is bound to the currently applied presentation revision. The
-        # runtime therefore treats this as a causal observation revision, even when only
-        # presentation content (rather than terminal geometry) changed.
-        self.environment_revision += 1
-        self.worker.send(
-            "projection",
-            (
-                max(1, width),
-                max(1, height),
-                self.environment_revision,
-                self.presentation.revision,
-            ),
-        )
 
     def action_input_undo(self) -> None:
         if self.input_undo_token is not None:
