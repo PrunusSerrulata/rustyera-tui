@@ -16,10 +16,7 @@ from .configuration import (
     ConfigurationSnapshot,
 )
 from .preferences_schema import FIELDS, PAGES, FieldSpec, PageSpec
-
-
-def _field_id(code: str) -> str:
-    return f"preference-{code.lower().replace('_', '-')}"
+from .preferences_values import _field_id, control_value, set_control_value
 
 
 class PreferenceField(Horizontal):
@@ -168,34 +165,6 @@ class PreferencesDialog(ModalScreen[None]):
         active = self.query_one("#preferences-tabs", TabbedContent).active
         return next(page for page in PAGES if active == f"preferences-{page.id}")
 
-    def _control_value(self, field: FieldSpec) -> str:
-        control = self.query_one(f"#{_field_id(field.code)}")
-        if isinstance(control, Checkbox):
-            return "YES" if control.value else "NO"
-        if isinstance(control, Select):
-            return str(control.value)
-        if isinstance(control, ColorField):
-            return control.value
-        if isinstance(control, Input):
-            if field.kind == "integer":
-                value = int(control.value)
-                if not field.minimum <= value <= field.maximum:
-                    raise ValueError(f"必须在 {field.minimum} 到 {field.maximum} 之间")
-                return str(value)
-            return control.value
-        raise TypeError(f"unknown settings control for {field.code}")
-
-    def _set_control_value(self, field: FieldSpec, value: str) -> None:
-        control = self.query_one(f"#{_field_id(field.code)}")
-        if isinstance(control, Checkbox):
-            control.value = value == "YES"
-        elif isinstance(control, ColorField):
-            control.value = value
-        elif isinstance(control, Select):
-            control.value = value
-        elif isinstance(control, Input):
-            control.value = value
-
     def _changes(self) -> list[ConfigurationChange] | None:
         changes: list[ConfigurationChange] = []
         for page in PAGES:
@@ -205,7 +174,7 @@ class PreferencesDialog(ModalScreen[None]):
                     continue
                 field = FIELDS[code]
                 try:
-                    value = self._control_value(field)
+                    value = control_value(self.query_one, field)
                 except ValueError as error:
                     self.notify(f"{field.label}：{error}", severity="error")
                     return None
@@ -237,7 +206,7 @@ class PreferencesDialog(ModalScreen[None]):
             if field is None:
                 continue
             try:
-                value = self._control_value(field)
+                value = control_value(self.query_one, field)
             except ValueError:
                 return True
             if value != entry.value:
@@ -268,7 +237,7 @@ class PreferencesDialog(ModalScreen[None]):
         for code, entry in self.entries.items():
             field = FIELDS.get(code)
             if field is not None:
-                self._set_control_value(field, entry.value)
+                set_control_value(self.query_one, field, entry.value)
         self.set_busy(False)
         self._update_status()
 
@@ -306,7 +275,7 @@ class PreferencesDialog(ModalScreen[None]):
             for code in self._active_page().codes:
                 entry = self.entries.get(code)
                 if entry is not None and self._entry_editable(entry):
-                    self._set_control_value(FIELDS[code], entry.default_value)
+                    set_control_value(self.query_one, FIELDS[code], entry.default_value)
             self._update_zip_dependency()
             self._refresh_action_buttons()
             return
