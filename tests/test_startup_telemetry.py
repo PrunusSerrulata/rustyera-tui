@@ -25,6 +25,8 @@ def test_emits_compact_startup_milestone_to_inherited_descriptor(monkeypatch) ->
     assert message["attempt_id"] == 3
     assert message["cache_hit"] is True
     assert isinstance(message["runtime_monotonic_ns"], int)
+    assert isinstance(message["peak_rss_bytes"], int)
+    assert message["peak_rss_bytes"] > 0
 
 
 def test_invalid_telemetry_descriptor_never_breaks_startup(monkeypatch) -> None:

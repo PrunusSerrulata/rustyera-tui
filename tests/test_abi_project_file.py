@@ -12,9 +12,15 @@ from rustyera_tui.abi import (
     STATUS_INVALID_ARGUMENT,
     STATUS_OK,
     AbiError,
+    EraCallHeader,
+    EraAbiVersion,
     EraOwnedBuffer,
+    EraRuntimeApi,
     EraSessionHandle,
     RuntimeAbi,
+    SessionStageProjectManifest,
+    _borrowed_bytes,
+    _project_manifest_stage_entry,
 )
 from rustyera_tui.wire import encode, variant
 
@@ -132,6 +138,59 @@ def test_abi_33_without_the_reserved_entry_reports_no_staging_support() -> None:
     abi._stage_compiled_cache = None
 
     assert abi.stage_compiled_cache(b"cache") is None
+
+
+def test_abi_38_stages_one_encoded_project_manifest() -> None:
+    captured: list[bytes] = []
+
+    def stage(_header: Any, _handle: Any, input_value: Any) -> int:
+        captured.append(ctypes.string_at(input_value.data, input_value.len))
+        return STATUS_OK
+
+    abi = RuntimeAbi.__new__(RuntimeAbi)
+    abi.handle = EraSessionHandle(1)
+    abi._stage_project_manifest = stage
+    abi._check = lambda status, _operation: assert_status_ok(status)
+    manifest = {0: 7, 1: [{0: "main.erb", 1: 2, 2: variant(0, "@MAIN\nRETURN\n")}]}
+
+    assert abi.stage_project_manifest(manifest) is True
+    assert captured == [encode(manifest)]
+
+
+def test_old_abi_falls_back_when_project_manifest_staging_is_missing() -> None:
+    abi = RuntimeAbi.__new__(RuntimeAbi)
+    abi._stage_project_manifest = None
+
+    assert abi.stage_project_manifest({0: 1, 1: []}) is False
+
+
+def test_abi_37_ignores_reserved_manifest_slot_even_when_non_null() -> None:
+    api = EraRuntimeApi()
+    api.abi_version = EraAbiVersion(3, 7)
+    api.reserved[7] = 1
+
+    assert _project_manifest_stage_entry(api) is None
+
+
+def test_abi_38_discovers_and_invokes_the_reserved_manifest_slot() -> None:
+    calls: list[int] = []
+
+    @SessionStageProjectManifest
+    def stage(_header: Any, _handle: Any, payload: Any) -> int:
+        calls.append(payload.len)
+        return STATUS_OK
+
+    api = EraRuntimeApi()
+    api.abi_version = EraAbiVersion(3, 8)
+    api.reserved[7] = ctypes.cast(stage, ctypes.c_void_p).value
+
+    discovered = _project_manifest_stage_entry(api)
+
+    assert discovered is not None
+    assert (
+        discovered(EraCallHeader(), EraSessionHandle(1), _borrowed_bytes(b"manifest")) == STATUS_OK
+    )
+    assert calls == [8]
 
 
 def test_abi_35_reads_a_cache_into_runtime_owned_memory(tmp_path: Path) -> None:

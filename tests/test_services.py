@@ -72,6 +72,54 @@ def next_event_of_kind(client: RuntimeClient, kind: str) -> FrontendEvent:
             return event
 
 
+def test_project_submission_stages_manifest_once_and_sends_a_small_load_request() -> None:
+    client, captured = client_with_capture()
+    manifest = {0: 1, 1: [{0: "main.erb", 1: 2, 2: variant(0, "@MAIN\nRETURN\n")}]}
+    staged: list[dict[int, Any]] = []
+    client.pending_bundle = SimpleNamespace(
+        is_materialized=True,
+        identity=lambda: {0: 1, 1: bytes(32)},
+        manifest=lambda: manifest,
+    )
+    client.abi.stage_project_manifest = lambda value: staged.append(value) or True
+
+    client._submit_project(None)
+
+    assert staged == [manifest]
+    assert captured == [(19, {0: {0: 1, 1: bytes(32)}})]
+
+
+def test_project_submission_keeps_the_legacy_envelope_fallback() -> None:
+    client, captured = client_with_capture()
+    manifest = {0: 1, 1: []}
+    client.pending_bundle = SimpleNamespace(
+        is_materialized=True,
+        identity=lambda: {0: 1, 1: bytes(32)},
+        manifest=lambda: manifest,
+    )
+    client.abi.stage_project_manifest = lambda _value: False
+
+    client._submit_project(None)
+
+    assert captured == [(19, {0: {0: 1, 1: bytes(32)}, 1: manifest})]
+
+
+def test_cache_lookup_duration_is_recorded_when_no_cache_exists(tmp_path: Path) -> None:
+    client, _captured = client_with_capture()
+    client.pending_bundle = ProjectBundle(tmp_path, 1, {})
+    client.storage = StorageBackend(tmp_path)
+    client.allow_compiled_cache_load = True
+    recorded: list[str] = []
+    client.record_host_duration = (  # type: ignore[method-assign]
+        lambda field, _started: recorded.append(field)
+    )
+    client._submit_project = lambda _transfer: None  # type: ignore[method-assign]
+
+    client._stage_persistent_cache_or_source()
+
+    assert recorded == ["cache_read_ms", "source_materialize_ms"]
+
+
 def test_full_project_export_preempts_cache_and_cleans_up_on_cancel(tmp_path: Path) -> None:
     client, captured = client_with_capture()
     manifest = {0: 1, 1: []}

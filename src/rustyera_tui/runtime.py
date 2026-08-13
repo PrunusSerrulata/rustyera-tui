@@ -81,6 +81,20 @@ from .wire import (
 )
 from .worker import RuntimeWorker as RuntimeWorker
 
+CORE_STARTUP_PHASES = {
+    1: "normalize_ms",
+    2: "csv_ms",
+    3: "parse_ms",
+    4: "analyze_ms",
+    5: "compile_ms",
+    6: "validate_ms",
+    7: "compile_finalize_ms",
+    8: "prepare_ms",
+    10: "cache_parse_ms",
+    11: "cache_decode_ms",
+    12: "cache_validate_ms",
+}
+
 DIAGNOSIS_PROGRESS_STAGE_BY_EXPORT: dict[ExportStage, DiagnosisProgressStage] = {
     ExportStage.DIAGNOSIS_REPLAY: "input_replay",
     ExportStage.DIAGNOSIS_SNAPSHOT: "vm_snapshot",
@@ -215,6 +229,9 @@ class RuntimeClient:
         self.startup_active = False
         self.startup_start_submitted = False
         self.startup_first_phase_reported = False
+        self.startup_host_durations: dict[str, float | bool | int] = {}
+        self.startup_core_durations: dict[str, float] = {}
+        self._startup_core_phase_started: dict[int, int] = {}
         self._pending_presentation_events: list[tuple[str, dict[int, Any]]] = []
         self._wait_event_dirty = False
         self._presentation_boundary_dirty = False
@@ -239,6 +256,22 @@ class RuntimeClient:
         )
 
     def report_runtime_project_progress(self, stage: int, completed: int, total: int) -> None:
+        phase_name = CORE_STARTUP_PHASES.get(stage)
+        now = time.monotonic_ns()
+        if phase_name is not None and completed == 0:
+            self._startup_core_phase_started.setdefault(stage, now)
+        if phase_name is not None and total > 0 and completed >= total:
+            started = self._startup_core_phase_started.pop(stage, None)
+            if started is not None:
+                duration_ms = (now - started) / 1e6
+                self.startup_core_durations[phase_name] = duration_ms
+                emit_startup_milestone(
+                    "core_phase",
+                    attempt_id=self.startup_attempt,
+                    stage=stage,
+                    phase=phase_name,
+                    duration_ms=duration_ms,
+                )
         if (
             self.pending_diagnosis is not None
             and self.pending_export_kind == ExportStage.DIAGNOSIS_PROJECT
@@ -330,11 +363,28 @@ class RuntimeClient:
         self.startup_active = True
         self.startup_start_submitted = False
         self.startup_first_phase_reported = False
+        self.startup_host_durations = {}
+        self.startup_core_durations = {}
+        self._startup_core_phase_started = {}
         emit_startup_milestone(
             "attempt_started",
             attempt_id=self.startup_attempt,
             scenario=self.startup_scenario,
         )
+
+    def record_host_metrics(self, metrics: dict[str, float | bool | int]) -> None:
+        if not hasattr(self, "startup_host_durations"):
+            self.startup_host_durations = {}
+        self.startup_host_durations.update(metrics)
+        emit_startup_milestone(
+            "host_metrics",
+            attempt_id=getattr(self, "startup_attempt", 0),
+            **metrics,
+        )
+
+    def record_host_duration(self, field: str, started_ns: int) -> None:
+        duration_ms = (time.monotonic_ns() - started_ns) / 1e6
+        self.record_host_metrics({field: duration_ms})
 
     def fail_startup(self, error: object) -> None:
         if not self.startup_active:
@@ -346,6 +396,7 @@ class RuntimeClient:
             error=str(error),
         )
         self.startup_active = False
+        self._startup_core_phase_started.clear()
 
     def _send_hello(self) -> None:
         service_capabilities = [
@@ -876,7 +927,9 @@ class RuntimeClient:
                 self.events.put(FrontendEvent("error", "Runtime 请求源码，但没有待载入项目。"))
                 return
             self.events.put(FrontendEvent("status", "项目缓存未命中，正在读取项目源码…"))
+            materialize_started = time.monotonic_ns()
             self.pending_bundle = self.pending_bundle.materialize(self._project_scan_progress)
+            self.record_host_duration("source_materialize_ms", materialize_started)
             self._submit_project(None)
             return
         if not report[1]:
@@ -902,7 +955,6 @@ class RuntimeClient:
             return
         if self.pending_bundle is not None:
             if cache_hit:
-                self.pending_bundle = self.pending_bundle.materialize(self._project_scan_progress)
                 self.pending_bundle.reload_baseline_pending = True
             else:
                 self.pending_bundle.reload_baseline_pending = False
@@ -915,9 +967,7 @@ class RuntimeClient:
                 (self.bundle.root, self.bundle.project_file) if self.bundle else None,
             )
         )
-        self.events.put(
-            FrontendEvent("game_information", GameInformation.from_wire(report.get(5)))
-        )
+        self.events.put(FrontendEvent("game_information", GameInformation.from_wire(report.get(5))))
         self._publish_configuration(report.get(4))
         if self.startup_active:
             self.startup_scenario = (
@@ -1186,13 +1236,18 @@ class RuntimeClient:
     def _submit_project(self, cache_transfer_id: int | None) -> None:
         if self.pending_bundle is None:
             return
+        started = time.monotonic_ns()
         self.events.put(FrontendEvent("status", "正在提交项目并编译脚本…"))
         request: dict[int, Any] = {0: self.pending_bundle.identity()}
         if self.pending_bundle.is_materialized:
-            request[1] = self.pending_bundle.manifest()
+            manifest = self.pending_bundle.manifest()
+            stage_manifest = getattr(self.abi, "stage_project_manifest", None)
+            if stage_manifest is None or not stage_manifest(manifest):
+                request[1] = manifest
         if cache_transfer_id is not None:
             request[2] = cache_transfer_id
         self.send_runtime(19, request)
+        self.record_host_duration("submission_transfer_ms", started)
 
     def _begin_import(self, payload: bytes, kind: int, purpose: str) -> None:
         self.import_bytes = payload
@@ -1223,6 +1278,7 @@ class RuntimeClient:
             self.events.put(FrontendEvent("status", "正在载入项目文件…"))
             self._stage_project_cache_file(self.pending_bundle.project_file, "project_file")
             return
+        cache_read_started = time.monotonic_ns()
         cache_path = (
             self.storage.compiled_cache_path()
             if self.storage and self.allow_compiled_cache_load
@@ -1233,12 +1289,16 @@ class RuntimeClient:
                 if cache_path.stat().st_size > 0:
                     self.events.put(FrontendEvent("status", "正在载入项目缓存…"))
                     self._stage_project_cache_file(cache_path, "project_cache")
+                    self.record_host_duration("cache_read_ms", cache_read_started)
                     return
             except OSError as error:
                 self.events.put(log_event(f"读取项目缓存失败：{error}", LogLevel.WARNING))
+        self.record_host_duration("cache_read_ms", cache_read_started)
         if self.pending_bundle is None:
             return
+        started = time.monotonic_ns()
         self.pending_bundle = self.pending_bundle.materialize(self._project_scan_progress)
+        self.record_host_duration("source_materialize_ms", started)
         self._submit_project(None)
 
     def _refresh_compiled_cache(self, after: str) -> None:

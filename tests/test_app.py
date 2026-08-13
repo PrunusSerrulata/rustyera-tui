@@ -55,9 +55,13 @@ class FakeWorker:
         self.events: queue.Queue[Any] = queue.Queue()
         self.commands: list[tuple[str, Any]] = []
         self.started = False
+        self.ident: int | None = None
+        self.start_calls = 0
 
     def start(self) -> None:
+        self.start_calls += 1
         self.started = True
+        self.ident = 1
 
     def is_alive(self) -> bool:
         return self.started
@@ -70,6 +74,20 @@ class FakeWorker:
 
     def join(self, timeout: float | None = None) -> None:
         del timeout
+
+    def shutdown(self) -> None:
+        self.stop()
+
+
+async def test_mount_does_not_restart_a_prestarted_runtime_worker(tmp_path: Path) -> None:
+    worker = FakeWorker()
+    worker.start()
+    app = RustyEraTui(tmp_path, None, worker=worker)  # type: ignore[arg-type]
+
+    async with app.run_test(size=(100, 30)):
+        assert worker.ident == 1
+        assert worker.started
+        assert worker.start_calls == 1
 
 
 def test_project_settings_schema_contains_exactly_39_visible_fields() -> None:
@@ -406,9 +424,7 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
 async def test_about_information_shows_only_defined_game_metadata(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     app.worker = FakeWorker()  # type: ignore[assignment]
-    app.game_information = GameInformation.from_wire(
-        {0: "Demo", 1: "   ", 2: "1.001", 4: "Notes"}
-    )
+    app.game_information = GameInformation.from_wire({0: "Demo", 1: "   ", 2: "1.001", 4: "Notes"})
 
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.click("#menu-help")

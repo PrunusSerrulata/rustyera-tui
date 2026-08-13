@@ -37,7 +37,7 @@ from .runtime import DiagnosisProgress, FrontendEvent, PresentationBatch, Runtim
 from .runtime_types import GameInformation
 from .widgets import GameLine, GameViewport
 
-CORE_VERSION = "0.4.0 (6bd47f27)"
+CORE_VERSION = "0.4.0 (da8225a1)"
 
 
 def frontend_version() -> str:
@@ -123,6 +123,9 @@ class RustyEraTui(App[None]):
         "正在整理编译结果",
         "正在准备 Runtime 资源",
         "正在打包全量项目文件",
+        "正在解析编译缓存",
+        "正在解码编译缓存",
+        "正在验证编译缓存",
     )
     DIAGNOSIS_PROGRESS_LABELS = {
         "waiting": "正在准备诊断信息",
@@ -140,6 +143,7 @@ class RustyEraTui(App[None]):
         resource_directory: Path | None,
         runtime_library: Path | None,
         project_file: Path | None = None,
+        worker: RuntimeWorker | None = None,
     ) -> None:
         super().__init__()
         self.project = (
@@ -151,10 +155,8 @@ class RustyEraTui(App[None]):
         )
         self.project_file = project_file.expanduser() if project_file else None
         self.runtime_library = runtime_library
-        self.worker = RuntimeWorker(
-            runtime_library,
-            resource_directory,
-            initial_project_file=project_file,
+        self.worker = worker or RuntimeWorker(
+            runtime_library, resource_directory, initial_project_file=project_file
         )
         self.presentation = PresentationModel()
         self.game_information = GameInformation()
@@ -226,7 +228,8 @@ class RustyEraTui(App[None]):
             yield Button("关于…", id="help-about", classes="menu-item")
 
     def on_mount(self) -> None:
-        self.worker.start()
+        if self.worker.ident is None:
+            self.worker.start()
         self.set_interval(0.03, self._drain_worker_events)
         self.set_interval(0.5, self._toggle_prompt_blink)
         self._update_prompt()
@@ -234,9 +237,7 @@ class RustyEraTui(App[None]):
         self.query_one("#prompt", Input).focus()
 
     def on_unmount(self) -> None:
-        if self.worker.is_alive():
-            self.worker.stop()
-            self.worker.join(timeout=2)
+        self.worker.shutdown()
 
     async def _drain_worker_events(self) -> None:
         queue_exhausted = False
@@ -878,9 +879,7 @@ class RustyEraTui(App[None]):
 
     def _project_file_default_path(self) -> Path:
         presentation_title = (
-            ""
-            if self.presentation.title == DEFAULT_PRESENTATION_TITLE
-            else self.presentation.title
+            "" if self.presentation.title == DEFAULT_PRESENTATION_TITLE else self.presentation.title
         )
         title = presentation_title.strip() or self.project.name or "RustyEra项目"
         safe_title = diagnosis_project_name(title)
@@ -994,13 +993,9 @@ class RustyEraTui(App[None]):
 
     def _diagnosis_project_title(self) -> str:
         presentation_title = (
-            ""
-            if self.presentation.title == DEFAULT_PRESENTATION_TITLE
-            else self.presentation.title
+            "" if self.presentation.title == DEFAULT_PRESENTATION_TITLE else self.presentation.title
         )
-        project_path_name = (
-            self.project_file.stem if self.project_file else self.project.name
-        )
+        project_path_name = self.project_file.stem if self.project_file else self.project.name
         return next(
             (
                 candidate.strip()
@@ -1018,9 +1013,7 @@ class RustyEraTui(App[None]):
         if item_id == "help-export-diagnosis":
             self._open_diagnosis_export_dialog()
         elif item_id == "help-about":
-            self.push_screen(
-                AboutDialog(frontend_version(), CORE_VERSION, self.game_information)
-            )
+            self.push_screen(AboutDialog(frontend_version(), CORE_VERSION, self.game_information))
 
     def _debug_action(self, item_id: str) -> None:
         if self.snapshot_exporting and item_id != "debug-logs":

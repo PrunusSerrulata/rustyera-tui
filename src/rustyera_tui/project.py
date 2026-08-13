@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any, Callable, Sequence, TypeVar, cast
 
 import blake3
 
@@ -25,7 +26,7 @@ from .frontend_io import (
     frontend_error,
 )
 from .storage import StorageBackend as StorageBackend
-from .wire import unwrap_variant, variant
+from .wire import variant
 
 FILE_CSV = 0
 FILE_ERH = 1
@@ -44,16 +45,167 @@ PROJECT_ENVELOPE_HEADROOM_BYTES = 1024 * 1024
 PROJECT_FILE_WIRE_OVERHEAD_BYTES = 256
 ProjectScanProgress = Callable[[int, int], None]
 ProjectConfigurationUpdate = Callable[[bytes, bytes, str], tuple[int, bytes]]
+PROJECT_IO_WORKERS = min(8, os.cpu_count() or 1)
+STABLE_READ_ATTEMPTS = 3
+Input = TypeVar("Input")
+Output = TypeVar("Output")
+
+
+@dataclass(slots=True)
+class ProjectScanMetrics:
+    enumerate_ms: float = 0.0
+    index_read_ms: float = 0.0
+    index_write_ms: float = 0.0
+    stat_ms: float = 0.0
+    source_read_decode_hash_ms: float = 0.0
+    source_index_present: bool = False
+    source_files_reused: int = 0
+    source_files_hashed: int = 0
+
+    def telemetry(self) -> dict[str, float | bool | int]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class _IndexedCandidate:
+    path: Path
+    category: int
+    relative_path: str
+    source_signature: tuple[int, int, int, int, int]
+    content_hash: bytes | None
+    content_size: int
+
+
+class _ProjectChangedDuringScan(RuntimeError):
+    pass
+
+
+def _read_error_file(
+    root: Path, path: Path, category: int, error: OSError | UnicodeError
+) -> ProjectFile:
+    relative = _normalize_relative_path(path.relative_to(root).as_posix())
+    return ProjectFile(relative, category, variant(2, frontend_error(error)), None)
+
+
+def _stable_read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
+    """Read one file from a stable native signature or return a deterministic error payload."""
+
+    for _attempt in range(STABLE_READ_ATTEMPTS):
+        try:
+            before = _source_signature(path)
+        except OSError as error:
+            return _read_error_file(root, path, category, error)
+        loaded = read_project_file(root, path, category)
+        try:
+            after = _source_signature(path)
+        except OSError as error:
+            return _read_error_file(root, path, category, error)
+        if before == after:
+            return ProjectFile(
+                loaded.relative_path,
+                loaded.category,
+                loaded.payload,
+                loaded.content_hash,
+                loaded.content_size,
+                loaded.source_path or path,
+                after,
+            )
+    return ProjectFile(
+        _normalize_relative_path(path.relative_to(root).as_posix()),
+        category,
+        variant(
+            2,
+            frontend_error(
+                OSError("project file changed repeatedly while it was being read"), IO_CONFLICT
+            ),
+        ),
+        None,
+    )
+
+
+def _verify_stable_files(files: Sequence[ProjectFile]) -> None:
+    for item in files:
+        if item.source_path is None or item.source_signature is None:
+            continue
+        try:
+            current = _source_signature(item.source_path)
+        except OSError as error:
+            raise _ProjectChangedDuringScan(str(error)) from error
+        if current != item.source_signature:
+            raise _ProjectChangedDuringScan(
+                f"project file changed during scan: {item.relative_path}"
+            )
+
+
+def _parallel_ordered(
+    items: Sequence[Input],
+    operation: Callable[[Input], Output],
+    *,
+    progress: ProjectScanProgress | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> list[Output]:
+    """Run file work concurrently and publish deterministic coordinator-thread progress."""
+
+    if not items:
+        return []
+    if cancelled is not None and cancelled():
+        raise InterruptedError("project file operation cancelled")
+    results: list[Output | BaseException | None] = [None] * len(items)
+    pool = ThreadPoolExecutor(
+        max_workers=PROJECT_IO_WORKERS,
+        thread_name_prefix="rustyera-project-io",
+    )
+    pending: dict[Future[Output], int] = {}
+    next_index = 0
+    completed = 0
+    failed = False
+    try:
+        while pending or (next_index < len(items) and not failed):
+            while len(pending) < PROJECT_IO_WORKERS and next_index < len(items) and not failed:
+                if cancelled is not None and cancelled():
+                    raise InterruptedError("project file operation cancelled")
+                pending[pool.submit(operation, items[next_index])] = next_index
+                next_index += 1
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                index = pending.pop(future)
+                try:
+                    results[index] = future.result()
+                except BaseException as error:  # preserve the first failure in input order
+                    results[index] = error
+                    failed = True
+                completed += 1
+                _report_scan_progress(progress, completed, len(items))
+            if cancelled is not None and cancelled():
+                raise InterruptedError("project file operation cancelled")
+    finally:
+        for future in pending:
+            future.cancel()
+        pool.shutdown(wait=True, cancel_futures=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return [cast(Output, result) for result in results]
+
+
+def _parallel_project_reads(
+    root: Path,
+    candidates: list[tuple[Path, int]],
+    progress: ProjectScanProgress | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> list[ProjectFile]:
+    return _parallel_ordered(
+        candidates,
+        lambda candidate: _stable_read_project_file(root, candidate[0], candidate[1]),
+        progress=progress,
+        cancelled=cancelled,
+    )
 
 
 def _report_scan_progress(progress: ProjectScanProgress | None, completed: int, total: int) -> None:
     if progress is None:
         return
-    if (
-        total == 0
-        or completed == total
-        or completed * 100 // total > (completed - 1) * 100 // total
-    ):
+    if total == 0 or completed == total or completed * 30 // total > (completed - 1) * 30 // total:
         progress(completed, total)
 
 
@@ -119,6 +271,7 @@ class ProjectBundle:
     project_file: Path | None = None
     quick_scan_pending: bool = False
     reload_baseline_pending: bool = False
+    scan_metrics: ProjectScanMetrics = field(default_factory=ProjectScanMetrics)
 
     @classmethod
     def from_project_file_manifest(
@@ -161,13 +314,17 @@ class ProjectBundle:
         root: Path,
         revision: int = 1,
         progress: ProjectScanProgress | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        _attempt: int = 0,
     ) -> ProjectBundle:
         root = root.expanduser().resolve(strict=True)
         if not root.is_dir():
             raise NotADirectoryError(root)
         if progress is not None:
             progress(0, 0)
-        files: dict[str, ProjectFile] = {}
+        if cancelled is not None and cancelled():
+            raise InterruptedError("project file operation cancelled")
+        started = time.perf_counter()
         paths = _project_paths(root)
         canonical_roots = _canonical_source_roots(root)
         candidates = [
@@ -175,13 +332,33 @@ class ProjectBundle:
             for path in paths
             if (category := _classify_project_path(root, path, canonical_roots)) is not None
         ]
+        if cancelled is not None and cancelled():
+            raise InterruptedError("project file operation cancelled")
+        enumerate_ms = (time.perf_counter() - started) * 1000
         if progress is not None:
             progress(0, len(candidates))
-        for index, (path, category) in enumerate(candidates, 1):
-            item = read_project_file(root, path, category)
-            files[item.relative_path] = item
-            _report_scan_progress(progress, index, len(candidates))
-        return cls(root=root, revision=revision, files=files)
+        started = time.perf_counter()
+        files = {
+            item.relative_path: item
+            for item in _parallel_project_reads(root, candidates, progress, cancelled)
+        }
+        try:
+            _verify_stable_files(list(files.values()))
+        except _ProjectChangedDuringScan:
+            if _attempt + 1 >= STABLE_READ_ATTEMPTS:
+                raise
+            return cls.scan(root, revision, progress, cancelled, _attempt + 1)
+        source_ms = (time.perf_counter() - started) * 1000
+        return cls(
+            root=root,
+            revision=revision,
+            files=files,
+            scan_metrics=ProjectScanMetrics(
+                enumerate_ms=enumerate_ms,
+                source_read_decode_hash_ms=source_ms,
+                source_files_hashed=len(files),
+            ),
+        )
 
     @classmethod
     def scan_quick(
@@ -189,6 +366,8 @@ class ProjectBundle:
         root: Path,
         revision: int = 1,
         progress: ProjectScanProgress | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        _attempt: int = 0,
     ) -> ProjectBundle:
         """Build a content identity using a persistent stat index without retaining source text."""
 
@@ -197,77 +376,138 @@ class ProjectBundle:
             raise NotADirectoryError(root)
         if progress is not None:
             progress(0, 0)
+        if cancelled is not None and cancelled():
+            raise InterruptedError("project file operation cancelled")
+        metrics = ProjectScanMetrics()
         index_path = root / ".rustyera" / "cache" / "source-index-v1.json"
         index_current = False
+        started = time.perf_counter()
         try:
             stored = json.loads(index_path.read_text(encoding="utf-8"))
             index_current = stored.get("version") == 1 and isinstance(stored.get("files"), dict)
             previous = stored["files"] if index_current else {}
         except (OSError, ValueError, TypeError):
             previous = {}
-        files: dict[str, ProjectFile] = {}
-        next_index: dict[str, Any] = {}
+        metrics.index_read_ms = (time.perf_counter() - started) * 1000
+        metrics.source_index_present = index_current
+        started = time.perf_counter()
         canonical_roots = _canonical_source_roots(root)
         candidates = [
             (path, category)
             for path in _project_paths(root)
             if (category := _classify_project_path(root, path, canonical_roots)) is not None
         ]
+        if cancelled is not None and cancelled():
+            raise InterruptedError("project file operation cancelled")
+        metrics.enumerate_ms = (time.perf_counter() - started) * 1000
         if progress is not None:
             progress(0, len(candidates))
-        for index, (path, category) in enumerate(candidates, 1):
+
+        def inspect(candidate: tuple[Path, int]) -> _IndexedCandidate:
+            path, category = candidate
             relative = _normalize_relative_path(path.relative_to(root).as_posix())
-            try:
-                source_signature = _source_signature(path)
-                signature = list(source_signature)
-                prior = previous.get(relative)
-                item: ProjectFile | None = None
-                if (
-                    prior
-                    and prior.get("signature") == signature
-                    and prior.get("category") == category
-                    and isinstance(prior.get("size"), int)
-                ):
+            source_signature = _source_signature(path)
+            signature = list(source_signature)
+            prior = previous.get(relative)
+            if (
+                isinstance(prior, dict)
+                and prior.get("signature") == signature
+                and prior.get("category") == category
+                and isinstance(prior.get("size"), int)
+            ):
+                try:
                     digest = bytes.fromhex(prior["hash"])
-                    content_size = prior["size"]
-                else:
-                    loaded = read_project_file(root, path, category)
-                    item = ProjectFile(
-                        loaded.relative_path,
-                        loaded.category,
-                        loaded.payload,
-                        loaded.content_hash,
-                        loaded.content_size,
-                        loaded.source_path,
-                        source_signature,
+                except (TypeError, ValueError):
+                    digest = None
+                if digest is not None and len(digest) == 32:
+                    return _IndexedCandidate(
+                        path, category, relative, source_signature, digest, prior["size"]
                     )
-                    digest = item.content_hash
-                    if digest is None:
-                        raise ValueError(f"project file {relative} has no content hash")
-                    content_size = item.content_size
-                files[relative] = item or ProjectFile(
-                    relative,
-                    category,
+            return _IndexedCandidate(path, category, relative, source_signature, None, 0)
+
+        try:
+            started = time.perf_counter()
+            inspected = _parallel_ordered(candidates, inspect, cancelled=cancelled)
+            metrics.stat_ms = (time.perf_counter() - started) * 1000
+            invalid = [item for item in inspected if item.content_hash is None]
+            started = time.perf_counter()
+            loaded = _parallel_ordered(
+                invalid,
+                lambda item: _stable_read_project_file(root, item.path, item.category),
+                cancelled=cancelled,
+            )
+            metrics.source_read_decode_hash_ms = (time.perf_counter() - started) * 1000
+        except InterruptedError:
+            raise
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            # Error payloads and malformed index entries need the normal scanner's precise
+            # diagnostic, so do not attempt a cache-only project load.
+            return cls.scan(root, revision, progress, cancelled)
+        loaded_by_path = {item.relative_path: item for item in loaded}
+        if any(item.content_hash is None for item in loaded):
+            return cls.scan(root, revision, progress, cancelled)
+        indexed: list[tuple[ProjectFile, dict[str, Any]]] = []
+        for completed, item in enumerate(inspected, 1):
+            project_file = loaded_by_path.get(item.relative_path)
+            if project_file is None:
+                digest = item.content_hash
+                if digest is None:
+                    raise RuntimeError(f"project file {item.relative_path} was not read")
+                project_file = ProjectFile(
+                    item.relative_path,
+                    item.category,
                     None,
                     digest,
-                    content_size,
-                    source_path=path,
-                    source_signature=source_signature,
+                    item.content_size,
+                    source_path=item.path,
+                    source_signature=item.source_signature,
                 )
-                next_index[relative] = {
-                    "category": category,
-                    "signature": signature,
-                    "hash": digest.hex(),
-                    "size": content_size,
-                }
-                _report_scan_progress(progress, index, len(candidates))
-            except (OSError, UnicodeError, ValueError):
-                # Error payloads and malformed index entries need the normal scanner's
-                # precise diagnostic, so do not attempt a cache-only project load.
-                return cls.scan(root, revision, progress)
+            else:
+                project_file = ProjectFile(
+                    project_file.relative_path,
+                    project_file.category,
+                    project_file.payload,
+                    project_file.content_hash,
+                    project_file.content_size,
+                    project_file.source_path,
+                    item.source_signature,
+                )
+            digest = project_file.content_hash
+            if digest is None:
+                raise ValueError(f"project file {item.relative_path} has no content hash")
+            indexed.append(
+                (
+                    project_file,
+                    {
+                        "category": item.category,
+                        "signature": list(item.source_signature),
+                        "hash": digest.hex(),
+                        "size": project_file.content_size,
+                    },
+                )
+            )
+            _report_scan_progress(progress, completed, len(inspected))
+        files = {item.relative_path: item for item, _ in indexed}
+        try:
+            _verify_stable_files(list(files.values()))
+        except _ProjectChangedDuringScan:
+            if _attempt + 1 >= STABLE_READ_ATTEMPTS:
+                raise
+            return cls.scan_quick(root, revision, progress, cancelled, _attempt + 1)
+        next_index = {item.relative_path: entry for item, entry in indexed}
         if not index_current or previous != next_index:
+            started = time.perf_counter()
             _write_source_index(index_path, {"version": 1, "files": next_index})
-        return cls(root=root, revision=revision, files=files, quick_scan_pending=True)
+            metrics.index_write_ms = (time.perf_counter() - started) * 1000
+        metrics.source_files_reused = len(inspected) - len(invalid)
+        metrics.source_files_hashed = len(invalid)
+        return cls(
+            root=root,
+            revision=revision,
+            files=files,
+            quick_scan_pending=True,
+            scan_metrics=metrics,
+        )
 
     @property
     def is_materialized(self) -> bool:
@@ -284,8 +524,9 @@ class ProjectBundle:
             return self
         if progress is not None:
             progress(0, len(self.files))
-        files: dict[str, ProjectFile] = {}
-        for index, item in enumerate(self.files.values(), 1):
+        items = list(self.files.values())
+
+        def materialize_one(item: ProjectFile) -> ProjectFile:
             if cancelled is not None and cancelled():
                 raise InterruptedError("full project export cancelled")
             materialized = item
@@ -297,9 +538,18 @@ class ProjectBundle:
             except OSError:
                 signature_matches = False
             if materialized.payload is None or not signature_matches:
-                materialized = read_project_file(self.root, source_path, materialized.category)
-            files[materialized.relative_path] = materialized
-            _report_scan_progress(progress, index, len(self.files))
+                materialized = _stable_read_project_file(
+                    self.root, source_path, materialized.category
+                )
+            return materialized
+
+        materialized = _parallel_ordered(
+            items,
+            materialize_one,
+            progress=progress,
+            cancelled=cancelled,
+        )
+        files = {item.relative_path: item for item in materialized}
         return ProjectBundle(self.root, self.revision, files, self.project_file)
 
     def identity(self) -> dict[int, Any]:
@@ -466,8 +716,7 @@ class ProjectBundle:
         folder: str,
         progress: ProjectScanProgress | None,
     ) -> dict[str, ProjectFile]:
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="rustyera-project-scan") as pool:
-            return pool.submit(self._scan_folder_sync, folder, progress).result()
+        return self._scan_folder_sync(folder, progress)
 
     def _scan_folder_sync(
         self,
@@ -487,12 +736,10 @@ class ProjectBundle:
         ]
         if progress is not None:
             progress(0, len(candidates))
-        files: dict[str, ProjectFile] = {}
-        for index, (source, category) in enumerate(candidates, 1):
-            item = read_project_file(self.root, source, category)
-            files[item.relative_path] = item
-            _report_scan_progress(progress, index, len(candidates))
-        return files
+        return {
+            item.relative_path: item
+            for item in _parallel_project_reads(self.root, candidates, progress)
+        }
 
     def _reload_selected(
         self,
@@ -528,7 +775,7 @@ class ProjectBundle:
         category = _classify_project_path(self.root, lexical, _canonical_source_roots(self.root))
         if category not in (FILE_CSV, FILE_ERH, FILE_ERB, FILE_CONFIGURATION):
             raise ValueError("only project source and configuration files can be reloaded")
-        item = read_project_file(self.root, lexical, category)
+        item = _stable_read_project_file(self.root, lexical, category)
         files = dict(self.files)
         files[relative] = item
         candidate = ProjectBundle(
@@ -551,15 +798,19 @@ class ProjectBundle:
     ) -> tuple[ProjectBundle, dict[int, Any]]:
         if not self.reload_baseline_pending:
             return candidate, request
-        removals = [change for change in request[2] if unwrap_variant(change)[0] == 1]
-        request[2] = [
-            variant(0, item.submitted())
-            for item in sorted(
-                candidate.files.values(),
-                key=lambda value: _path_sort_key(value.relative_path),
-            )
-        ] + removals
-        candidate.reload_baseline_pending = False
+        sparse = [item for item in candidate.files.values() if item.payload is None]
+
+        def hydrate_if_unchanged(item: ProjectFile) -> ProjectFile:
+            source_path = item.source_path or self.root / PurePosixPath(item.relative_path)
+            loaded = _stable_read_project_file(self.root, source_path, item.category)
+            return loaded if loaded.content_hash == item.content_hash else item
+
+        hydrated = _parallel_ordered(sparse, hydrate_if_unchanged)
+        files = dict(candidate.files)
+        files.update((item.relative_path, item) for item in hydrated)
+        candidate.files = files
+        candidate.quick_scan_pending = any(item.payload is None for item in files.values())
+        candidate.reload_baseline_pending = candidate.quick_scan_pending
         return candidate, request
 
     def _project_relative_path(self, path: Path, *, expected: str) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ctypes
 import queue
 import shutil
 import tarfile
@@ -11,7 +12,16 @@ from typing import Callable
 import pytest
 import zstandard
 
-from rustyera_tui.abi import DEFAULT_MAXIMUM_VM_INSTRUCTIONS, AbiError, RuntimeAbi, discover_library
+from rustyera_tui.abi import (
+    DEFAULT_MAXIMUM_VM_INSTRUCTIONS,
+    STATUS_INVALID_ARGUMENT,
+    AbiError,
+    EraCallHeader,
+    RuntimeAbi,
+    _borrowed_bytes,
+    _header,
+    discover_library,
+)
 from rustyera_tui.project import ProjectBundle, StorageBackend
 from rustyera_tui.runtime import (
     DiagnosisProgress,
@@ -178,6 +188,39 @@ def test_worker_applies_backpressure_to_presentation_events() -> None:
     assert worker.events.maxsize == 4_096
 
 
+def test_worker_shutdown_closes_once_when_event_queue_is_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[bool] = []
+
+    class FakeAbi:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append(True)
+
+    class FakeClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr("rustyera_tui.worker.RuntimeAbi", FakeAbi)
+    monkeypatch.setattr("rustyera_tui.runtime.RuntimeClient", FakeClient)
+    worker = RuntimeWorker(None, None)
+    for _ in range(worker.events.maxsize):
+        worker.events.put_nowait(FrontendEvent("status", "queued"))
+    worker.start()
+
+    worker.shutdown()
+    worker.shutdown()
+
+    assert not worker.is_alive()
+    assert closed == [True]
+    assert "worker_stopped" in {
+        worker.events.get_nowait().kind for _ in range(worker.events.qsize())
+    }
+
+
 def test_startup_milestones_cover_waiting_external_in_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -235,6 +278,90 @@ def test_terminal_runtime_phase_fails_active_startup(monkeypatch: pytest.MonkeyP
 
     assert milestones == ["attempt_started", "failed"]
     assert client.startup_active is False
+
+
+def test_runtime_progress_records_structured_core_phase_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client.pending_diagnosis = None
+    client.pending_export_kind = None
+    client.startup_attempt = 3
+    client.startup_host_durations = {}
+    client.startup_core_durations = {}
+    client._startup_core_phase_started = {}
+    times = iter((1_000_000_000, 1_075_000_000))
+    milestones: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr("rustyera_tui.runtime.time.monotonic_ns", lambda: next(times))
+    monkeypatch.setattr(
+        "rustyera_tui.runtime.emit_startup_milestone",
+        lambda event, **fields: milestones.append((event, fields)),
+    )
+
+    client.report_runtime_project_progress(11, 0, 1)
+    client.report_runtime_project_progress(11, 1, 1)
+
+    assert client.startup_core_durations == {"cache_decode_ms": 75.0}
+    assert milestones == [
+        (
+            "core_phase",
+            {
+                "attempt_id": 3,
+                "stage": 11,
+                "phase": "cache_decode_ms",
+                "duration_ms": 75.0,
+            },
+        )
+    ]
+
+
+def test_runtime_progress_ignores_duplicate_starts_and_supports_interleaving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client.pending_diagnosis = None
+    client.pending_export_kind = None
+    client.startup_attempt = 4
+    client.startup_core_durations = {}
+    client._startup_core_phase_started = {}
+    times = iter((1_000_000_000, 1_010_000_000, 1_020_000_000, 1_050_000_000, 1_090_000_000))
+    monkeypatch.setattr("rustyera_tui.runtime.time.monotonic_ns", lambda: next(times))
+    monkeypatch.setattr(
+        "rustyera_tui.runtime.emit_startup_milestone", lambda *_args, **_kwargs: None
+    )
+
+    client.report_runtime_project_progress(3, 0, 10)
+    client.report_runtime_project_progress(3, 0, 10)
+    client.report_runtime_project_progress(4, 0, 10)
+    client.report_runtime_project_progress(3, 10, 10)
+    client.report_runtime_project_progress(4, 10, 10)
+
+    assert client.startup_core_durations == {"parse_ms": 50.0, "analyze_ms": 70.0}
+
+
+def test_runtime_progress_ignores_an_end_without_a_start_and_failure_clears_phases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client.pending_diagnosis = None
+    client.pending_export_kind = None
+    client.startup_attempt = 5
+    client.startup_scenario = "cold"
+    client.startup_active = True
+    client.startup_core_durations = {}
+    client._startup_core_phase_started = {3: 1}
+    monkeypatch.setattr(
+        "rustyera_tui.runtime.emit_startup_milestone", lambda *_args, **_kwargs: None
+    )
+
+    client.report_runtime_project_progress(4, 10, 10)
+    client.fail_startup("failed")
+
+    assert client.startup_core_durations == {}
+    assert client._startup_core_phase_started == {}
 
 
 def test_project_scan_failure_terminates_the_attempt_before_recreate(
@@ -614,9 +741,65 @@ def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
             lambda event: event.kind == "log" and "runtime.compiled_cache_hit" in str(event.value),
         )
         assert "compiled_cache_hit" in cache_hit.value
+        assert second.client is not None
+        assert second.client.bundle is not None
+        assert not second.client.bundle.is_materialized
+        assert second.client.bundle.reload_baseline_pending
     finally:
         second.stop()
         second.join(timeout=5)
+
+
+@pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
+def test_real_abi_38_manifest_staging_reports_success_busy_and_invalid_cbor() -> None:
+    with RuntimeAbi(RUNTIME_LIBRARY) as abi:
+        assert abi.stage_project_manifest({0: 1, 1: []})
+        with pytest.raises(AbiError, match="Busy"):
+            abi.stage_project_manifest({0: 1, 1: []})
+
+    malformed_values = (
+        b"\xa2\x00\x01\x01\x81",  # truncated
+        b"\xa2\x00\x01\x01\x80\x00",  # trailing data
+        b"\xa2\x00\x18\x01\x01\x80",  # non-minimal integer
+        b"\xa2\x01\x80\x00\x01",  # non-canonical map order
+    )
+    for malformed in malformed_values:
+        with RuntimeAbi(RUNTIME_LIBRARY) as abi:
+            status = abi._stage_project_manifest(
+                _header(ctypes.sizeof(EraCallHeader)),
+                abi.handle,
+                _borrowed_bytes(malformed),
+            )
+            assert status == STATUS_INVALID_ARGUMENT
+
+
+@pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
+def test_real_abi_cache_failure_retries_with_staged_source_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "minimal"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "minimal", project)
+    ProjectBundle.scan_quick(project)
+    cache_path = StorageBackend(project).compiled_cache_path()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(b"invalid compiled cache")
+    worker = RuntimeWorker(RUNTIME_LIBRARY, project)
+    worker.start()
+    try:
+        ignored = wait_for(
+            worker,
+            lambda event: (
+                event.kind == "log" and "runtime.compiled_cache_ignored" in str(event.value)
+            ),
+        )
+        assert "compiled_cache_ignored" in str(ignored.value)
+        wait_for(worker, lambda event: event.kind == "project_loaded")
+        assert worker.client is not None and worker.client.bundle is not None
+        assert worker.client.bundle.is_materialized
+    finally:
+        worker.stop()
+        worker.join(timeout=5)
 
 
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")

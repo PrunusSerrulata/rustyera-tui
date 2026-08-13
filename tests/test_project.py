@@ -1,8 +1,11 @@
 import unicodedata
+import threading
+import time
 from pathlib import Path
 
 import blake3
 import pytest
+import rustyera_tui.project as project_module
 
 from rustyera_tui.project import (
     FILE_ERB,
@@ -14,6 +17,72 @@ from rustyera_tui.project import (
     StorageBackend,
 )
 from rustyera_tui.wire import unwrap_variant, variant
+
+
+def test_parallel_ordered_merges_out_of_order_results_and_reports_on_coordinator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(project_module, "PROJECT_IO_WORKERS", 2)
+    second_finished = threading.Event()
+    coordinator = threading.get_ident()
+    progress_threads: list[int] = []
+
+    def operation(value: int) -> str:
+        if value == 0:
+            assert second_finished.wait(timeout=1)
+        else:
+            second_finished.set()
+        return str(value)
+
+    result = project_module._parallel_ordered(
+        [0, 1],
+        operation,
+        progress=lambda _completed, _total: progress_threads.append(threading.get_ident()),
+    )
+
+    assert result == ["0", "1"]
+    assert progress_threads and set(progress_threads) == {coordinator}
+
+
+def test_parallel_ordered_raises_the_first_input_error_not_the_first_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(project_module, "PROJECT_IO_WORKERS", 2)
+    later_failed = threading.Event()
+
+    def operation(value: int) -> int:
+        if value == 0:
+            assert later_failed.wait(timeout=1)
+            raise ValueError("first input")
+        later_failed.set()
+        raise ValueError("second input")
+
+    with pytest.raises(ValueError, match="first input"):
+        project_module._parallel_ordered([0, 1], operation)
+
+
+def test_parallel_ordered_cancellation_does_not_start_queued_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(project_module, "PROJECT_IO_WORKERS", 2)
+    cancelled = threading.Event()
+    started: list[int] = []
+    lock = threading.Lock()
+
+    def operation(value: int) -> int:
+        with lock:
+            started.append(value)
+        if value == 1:
+            cancelled.set()
+        else:
+            while not cancelled.is_set():
+                time.sleep(0.001)
+        return value
+
+    with pytest.raises(InterruptedError, match="cancelled"):
+        project_module._parallel_ordered(list(range(20)), operation, cancelled=cancelled.is_set)
+
+    assert sorted(started) == [0, 1]
 
 
 def test_project_scanner_is_utf8_and_deterministic(tmp_path: Path) -> None:
@@ -448,26 +517,156 @@ def test_cache_hit_baseline_hydrates_the_first_scoped_reload_without_leaking_dis
     unselected = unselected_folder / "command.erb"
     selected.write_text("PRINTL FOLDER_VERSION=1\n", encoding="utf-8")
     unselected.write_text("PRINTL SINGLE_VERSION=1\n", encoding="utf-8")
-    baseline = ProjectBundle.scan_quick(tmp_path).materialize()
+    ProjectBundle.scan_quick(tmp_path)
+    baseline = ProjectBundle.scan_quick(tmp_path)
     baseline.reload_baseline_pending = True
+    old_unselected_hash = baseline.files["ERB/single/command.erb"].content_hash
     selected.write_text("PRINTL FOLDER_VERSION=2\n", encoding="utf-8")
     unselected.write_text("PRINTL SINGLE_VERSION=2\n", encoding="utf-8")
 
     candidate, request = baseline.reload_folder(selected_folder)
 
-    submitted = {
-        fields[0][0]: fields[0][2] for tag, fields in map(unwrap_variant, request[2]) if tag == 0
-    }
-    assert submitted == {
-        "ERB/folder/command.erb": variant(0, "PRINTL FOLDER_VERSION=2\n"),
-        "ERB/single/command.erb": variant(0, "PRINTL SINGLE_VERSION=1\n"),
-    }
-    assert candidate.reload_baseline_pending is False
+    submitted = [fields[0][0] for tag, fields in map(unwrap_variant, request[2]) if tag == 0]
+    assert submitted == ["ERB/folder/command.erb"]
+    untouched = candidate.files["ERB/single/command.erb"]
+    assert untouched.payload is None
+    assert untouched.content_hash == old_unselected_hash
+    assert candidate.reload_baseline_pending is True
 
     _, second_request = candidate.reload_file(unselected)
 
     assert len(second_request[2]) == 1
     assert unwrap_variant(second_request[2][0])[1][0][2] == variant(0, "PRINTL SINGLE_VERSION=2\n")
+
+
+def test_stable_read_retries_when_signature_changes_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "main.erb"
+    source.write_text("@OLD\nRETURN\n", encoding="utf-8")
+    original = project_module._source_signature
+    calls = 0
+
+    def changing_signature(path: Path) -> tuple[int, int, int, int, int]:
+        nonlocal calls
+        calls += 1
+        signature = original(path)
+        if calls == 2:
+            return (*signature[:-1], signature[-1] + 1)
+        return signature
+
+    monkeypatch.setattr(project_module, "_source_signature", changing_signature)
+
+    loaded = project_module._stable_read_project_file(tmp_path, source, FILE_ERB)
+
+    assert loaded.payload == variant(0, "@OLD\nRETURN\n")
+    assert calls >= 4
+
+
+def test_stable_read_reports_conflict_after_repeated_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "main.erb"
+    source.write_text("@MAIN\nRETURN\n", encoding="utf-8")
+    counter = 0
+
+    def always_changes(_path: Path) -> tuple[int, int, int, int, int]:
+        nonlocal counter
+        counter += 1
+        return (1, 1, 1, 1, counter)
+
+    monkeypatch.setattr(project_module, "_source_signature", always_changes)
+
+    loaded = project_module._stable_read_project_file(tmp_path, source, FILE_ERB)
+
+    tag, fields = unwrap_variant(loaded.payload)
+    assert tag == 2
+    assert fields[0][0] == IO_CONFLICT
+
+
+@pytest.mark.parametrize("replacement", ["deleted", "directory"])
+def test_stable_read_reports_delete_and_type_change_during_read(
+    replacement: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "main.erb"
+    source.write_text("@MAIN\nRETURN\n", encoding="utf-8")
+    original = project_module.read_project_file
+    replaced = False
+
+    def replace_then_read(root: Path, path: Path, category: int) -> ProjectFile:
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            path.unlink()
+            if replacement == "directory":
+                path.mkdir()
+        return original(root, path, category)
+
+    monkeypatch.setattr(project_module, "read_project_file", replace_then_read)
+
+    loaded = project_module._stable_read_project_file(tmp_path, source, FILE_ERB)
+
+    assert unwrap_variant(loaded.payload)[0] == 2
+
+
+def test_parallel_scan_preserves_multiple_io_errors_in_path_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "a.erb"
+    second = tmp_path / "b.erb"
+    first.write_text("@A", encoding="utf-8")
+    second.write_text("@B", encoding="utf-8")
+    original = Path.read_bytes
+
+    def fail_sources(path: Path) -> bytes:
+        if path == first:
+            raise PermissionError("first denied")
+        if path == second:
+            raise OSError("second failed")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_sources)
+
+    bundle = ProjectBundle.scan(tmp_path)
+
+    assert list(bundle.files) == ["a.erb", "b.erb"]
+    assert "first denied" in str(bundle.files["a.erb"].payload)
+    assert "second failed" in str(bundle.files["b.erb"].payload)
+
+
+@pytest.mark.parametrize("mode", ["scan", "quick", "materialize"])
+def test_project_read_failures_are_preserved_as_deterministic_payloads(
+    mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "main.erb"
+    source.write_text("@MAIN\nRETURN\n", encoding="utf-8")
+    if mode == "quick":
+        ProjectBundle.scan_quick(tmp_path)
+        source.write_text("@CHANGED\nRETURN\n", encoding="utf-8")
+    if mode == "materialize":
+        ProjectBundle.scan_quick(tmp_path)
+        baseline = ProjectBundle.scan_quick(tmp_path)
+    else:
+        baseline = None
+    original = Path.read_bytes
+
+    def fail_target(path: Path) -> bytes:
+        if path == source:
+            raise PermissionError("read denied")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_target)
+    bundle = (
+        baseline.materialize()
+        if baseline is not None
+        else ProjectBundle.scan_quick(tmp_path)
+        if mode == "quick"
+        else ProjectBundle.scan(tmp_path)
+    )
+
+    tag, fields = unwrap_variant(bundle.files["main.erb"].payload)
+    assert tag == 2
+    assert "read denied" in str(fields)
 
 
 def test_quick_scan_reuses_stat_index_and_materializes_on_demand(
@@ -492,11 +691,33 @@ def test_quick_scan_reuses_stat_index_and_materializes_on_demand(
     repeated = ProjectBundle.scan_quick(tmp_path)
     assert not repeated.is_materialized
     assert repeated.identity() == quick.identity()
+    assert repeated.scan_metrics.source_index_present
+    assert repeated.scan_metrics.source_files_reused == 1
+    assert repeated.scan_metrics.source_files_hashed == 0
     monkeypatch.undo()
 
     materialized = repeated.materialize()
     assert materialized.is_materialized
     assert materialized.identity() == quick.identity()
+
+
+def test_sparse_cache_hit_baseline_materializes_only_for_the_first_reload(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "ERB" / "main.erb"
+    source.parent.mkdir()
+    source.write_text("PRINTL VERSION=1\n", encoding="utf-8")
+    ProjectBundle.scan_quick(tmp_path)
+    baseline = ProjectBundle.scan_quick(tmp_path)
+    baseline.reload_baseline_pending = True
+
+    assert not baseline.is_materialized
+
+    candidate, request = baseline.reload_file(source)
+
+    assert candidate.is_materialized
+    assert candidate.reload_baseline_pending is False
+    assert [unwrap_variant(change)[0] for change in request[2]] == [0]
 
 
 def test_quick_scan_rechecks_a_new_source_before_reusing_its_payload(tmp_path: Path) -> None:

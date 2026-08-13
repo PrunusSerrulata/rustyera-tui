@@ -47,6 +47,140 @@ def test_project_file_scenario_accepts_exact_and_recompiled_packages() -> None:
     assert benchmark.cache_proof_matches("warm", True)
 
 
+def test_small_sample_percentiles_use_nearest_rank() -> None:
+    benchmark = load_benchmark_module()
+
+    assert benchmark.percentile([5.0, 1.0, 4.0, 2.0, 3.0], 0.5) == 3.0
+    assert benchmark.percentile([5.0, 1.0, 4.0, 2.0, 3.0], 0.95) == 5.0
+
+
+def test_source_index_proof_distinguishes_exact_scenarios() -> None:
+    benchmark = load_benchmark_module()
+
+    assert benchmark.source_index_proof_matches(
+        "cold-no-index",
+        {
+            "source_index_present": False,
+            "index_existed_before_launch": False,
+            "source_files_reused": 0,
+            "source_files_hashed": 3,
+        },
+    )
+    assert benchmark.source_index_proof_matches(
+        "cold-indexed",
+        {
+            "source_index_present": True,
+            "index_existed_before_launch": True,
+            "source_files_reused": 3,
+            "source_files_hashed": 0,
+        },
+    )
+    assert not benchmark.source_index_proof_matches(
+        "warm",
+        {
+            "source_index_present": False,
+            "index_existed_before_launch": True,
+            "source_files_reused": 0,
+            "source_files_hashed": 3,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("scenario", "cache_hit"),
+    [
+        ("cold-no-index", False),
+        ("cold-indexed", False),
+        ("warm", True),
+        ("project_file", True),
+        ("project_file", False),
+    ],
+)
+def test_each_scenario_accepts_complete_metrics(scenario: str, cache_hit: bool) -> None:
+    benchmark = load_benchmark_module()
+    durations = {
+        field: 1.0
+        for field in benchmark.DIRECTORY_HOST_FIELDS
+        | benchmark.COLD_CORE_FIELDS
+        | benchmark.CACHE_CORE_FIELDS
+        | {"source_materialize_ms"}
+    }
+    result = {
+        "cache_hit": cache_hit,
+        "durations": durations,
+        "milestones": {field: 1.0 for field in benchmark.MILESTONE_FIELDS},
+        "peak_rss_bytes": 1024,
+    }
+
+    benchmark.validate_sample(scenario, result)
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("milestones", "start_submitted_ms"),
+        ("durations", "submission_transfer_ms"),
+        ("durations", "cache_decode_ms"),
+    ],
+)
+def test_incomplete_metrics_are_rejected(section: str, field: str) -> None:
+    benchmark = load_benchmark_module()
+    result = {
+        "cache_hit": True,
+        "durations": {
+            field_name: 1.0
+            for field_name in benchmark.DIRECTORY_HOST_FIELDS | benchmark.CACHE_CORE_FIELDS
+        },
+        "milestones": {field_name: 1.0 for field_name in benchmark.MILESTONE_FIELDS},
+        "peak_rss_bytes": 1024,
+    }
+    result[section].pop(field)
+
+    with pytest.raises(RuntimeError, match=field):
+        benchmark.validate_sample("warm", result)
+
+
+def test_missing_peak_memory_is_rejected() -> None:
+    benchmark = load_benchmark_module()
+    result = {
+        "cache_hit": True,
+        "durations": {
+            field: 1.0 for field in benchmark.DIRECTORY_HOST_FIELDS | benchmark.CACHE_CORE_FIELDS
+        },
+        "milestones": {field: 1.0 for field in benchmark.MILESTONE_FIELDS},
+        "peak_rss_bytes": 0,
+    }
+
+    with pytest.raises(RuntimeError, match="peak_rss_bytes"):
+        benchmark.validate_sample("warm", result)
+
+
+def test_phase_metrics_are_merged_from_small_telemetry_events() -> None:
+    benchmark = load_benchmark_module()
+    host: dict[str, object] = {}
+    core: dict[str, object] = {}
+
+    benchmark.merge_phase_metrics(
+        {
+            "event": "host_metrics",
+            "attempt_id": 1,
+            "peak_rss_bytes": 10,
+            "enumerate_ms": 12.5,
+            "source_files_hashed": 3,
+        },
+        host,
+        core,
+    )
+    benchmark.merge_phase_metrics(
+        {"event": "core_phase", "phase": "parse_ms", "duration_ms": 20.0},
+        host,
+        core,
+    )
+
+    assert host == {"enumerate_ms": 12.5, "source_files_hashed": 3}
+    assert core == {"parse_ms": 20.0}
+
+
 def test_selector_initialization_failure_cleans_process_and_descriptors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

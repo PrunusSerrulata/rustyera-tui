@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import resource
 import stat
+import sys
 import time
 from typing import Any
 
@@ -21,10 +23,13 @@ def emit_startup_milestone(event: str, **fields: Any) -> None:
         fd = int(raw_fd)
         if os.get_blocking(fd) or not stat.S_ISFIFO(os.fstat(fd).st_mode):
             return
+        peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        peak_rss_bytes = peak_rss if sys.platform == "darwin" else peak_rss * 1024
         payload = {
             "event": event,
             "client": "tui",
             "runtime_monotonic_ns": time.monotonic_ns(),
+            "peak_rss_bytes": peak_rss_bytes,
             **fields,
         }
         encoded = (json.dumps(payload, separators=(",", ":")) + "\n").encode()

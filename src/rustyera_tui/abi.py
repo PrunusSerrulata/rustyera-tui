@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Callable
 
 from .protocol_text import ERA_STATUSES, enum_text
-from .wire import decode
+from .wire import decode, encode
 
 ABI_MAJOR = 3
-ABI_MINOR = 7
+ABI_MINOR = 8
 
 STATUS_OK = 0
 STATUS_EMPTY = 1
@@ -137,6 +137,12 @@ SessionStageCompiledCache = ctypes.CFUNCTYPE(
     EraByteSlice,
     ctypes.POINTER(ctypes.c_uint64),
 )
+SessionStageProjectManifest = ctypes.CFUNCTYPE(
+    ctypes.c_uint32,
+    EraCallHeader,
+    EraSessionHandle,
+    EraByteSlice,
+)
 SessionAllocateCompiledCache = ctypes.CFUNCTYPE(
     ctypes.c_uint32,
     EraCallHeader,
@@ -181,6 +187,23 @@ class EraRuntimeApi(ctypes.Structure):
 
 def _header(size: int) -> EraCallHeader:
     return EraCallHeader(size, EraAbiVersion(ABI_MAJOR, ABI_MINOR))
+
+
+_py_bytes_as_string = ctypes.pythonapi.PyBytes_AsString
+_py_bytes_as_string.argtypes = [ctypes.py_object]
+_py_bytes_as_string.restype = ctypes.POINTER(ctypes.c_uint8)
+
+
+def _borrowed_bytes(data: bytes) -> EraByteSlice:
+    """Borrow CPython's immutable bytes storage for one synchronous C ABI call."""
+
+    return EraByteSlice(_py_bytes_as_string(data), len(data))
+
+
+def _project_manifest_stage_entry(api: EraRuntimeApi) -> SessionStageProjectManifest | None:
+    if api.abi_version.minor < 8 or not api.reserved[7]:
+        return None
+    return SessionStageProjectManifest(api.reserved[7])
 
 
 def discover_library(
@@ -274,6 +297,7 @@ class RuntimeAbi:
             if api.abi_version.minor >= 6 and api.reserved[6]
             else None
         )
+        self._stage_project_manifest = _project_manifest_stage_entry(api)
         self.debug_scope_mask = debug_scope_mask
         self.handle = EraSessionHandle()
         self.create_session()
@@ -308,14 +332,27 @@ class RuntimeAbi:
         self.create_session()
 
     def submit(self, data: bytes) -> None:
-        buffer = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
-        pointer = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_uint8))
         status = self._submit(
             _header(ctypes.sizeof(EraCallHeader)),
             self.handle,
-            EraByteSlice(pointer, len(data)),
+            _borrowed_bytes(data),
         )
         self._check(status, "session_submit")
+
+    def stage_project_manifest(self, manifest: dict[int, object]) -> bool:
+        """Stage one encoded manifest when ABI 3.8 is available."""
+
+        stage = getattr(self, "_stage_project_manifest", None)
+        if stage is None:
+            return False
+        data = encode(manifest)
+        status = stage(
+            _header(ctypes.sizeof(EraCallHeader)),
+            self.handle,
+            _borrowed_bytes(data),
+        )
+        self._check(status, "session_stage_project_manifest")
+        return True
 
     def drive(self, maximum_instructions: int = DEFAULT_MAXIMUM_VM_INSTRUCTIONS) -> EraDriveResult:
         options = EraDriveOptions(
@@ -358,13 +395,12 @@ class RuntimeAbi:
     ) -> dict[int, object]:
         if decoder is None:
             raise AbiError("runtime ABI does not support RustyEra project files")
-        buffer = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
         output = EraOwnedBuffer()
         header = _header(ctypes.sizeof(EraOwnedBuffer))
         status = decoder(
             header,
             self.handle,
-            EraByteSlice(ctypes.cast(buffer, ctypes.POINTER(ctypes.c_uint8)), len(data)),
+            _borrowed_bytes(data),
             ctypes.byref(output),
         )
         self._check(status, "session_decode_project_file")

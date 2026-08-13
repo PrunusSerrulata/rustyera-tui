@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,7 +31,7 @@ class RuntimeWorker(threading.Thread):
         initial_state: tuple[Path, str] | None = None,
         initial_project_file: Path | None = None,
     ):
-        super().__init__(name="rustyera-runtime", daemon=True)
+        super().__init__(name="rustyera-runtime", daemon=False)
         self.runtime_library = runtime_library
         self.initial_project = initial_project
         self.new_game_seed = new_game_seed
@@ -43,6 +44,8 @@ class RuntimeWorker(threading.Thread):
         self.events: queue.Queue[FrontendEvent] = queue.Queue(maxsize=4_096)
         self._stop_requested = threading.Event()
         self._project_export_cancelled = threading.Event()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_complete = False
         self.client: RuntimeClient | None = None
 
     def send(self, kind: str, value: Any = None) -> None:
@@ -82,6 +85,12 @@ class RuntimeWorker(threading.Thread):
                     except queue.Empty:
                         continue
                     self._process_command(command)
+        except InterruptedError as error:
+            if not self._stop_requested.is_set():
+                emit_startup_milestone("failed", attempt_id=0, scenario="unknown", error=str(error))
+                self._emit_terminal_event(
+                    FrontendEvent("error", f"前端 Runtime worker 失败：{error}")
+                )
         except Exception as error:  # noqa: BLE001 - worker must report all boundary failures
             if self.client is not None:
                 if self.client.full_project_export is not None:
@@ -93,19 +102,19 @@ class RuntimeWorker(threading.Thread):
                 self.client.fail_startup(error)
             else:
                 emit_startup_milestone("failed", attempt_id=0, scenario="unknown", error=str(error))
-            self.events.put(FrontendEvent("error", f"前端 Runtime worker 失败：{error}"))
+            self._emit_terminal_event(FrontendEvent("error", f"前端 Runtime worker 失败：{error}"))
         finally:
             if abi is not None:
                 try:
                     abi.close()
                 except Exception as error:  # noqa: BLE001
-                    self.events.put(
+                    self._emit_terminal_event(
                         FrontendEvent(
                             "log",
                             LogMessage(LogLevel.WARNING, f"关闭 Runtime session 失败：{error}"),
                         )
                     )
-            self.events.put(FrontendEvent("worker_stopped"))
+            self._emit_terminal_event(FrontendEvent("worker_stopped"))
 
     def _process_commands(self) -> None:
         for _ in range(64):
@@ -241,7 +250,15 @@ class RuntimeWorker(threading.Thread):
             return
         self.client.begin_startup_attempt(project_file=False)
         self.events.put(FrontendEvent("status", f"正在扫描 {root}…"))
-        bundle = ProjectBundle.scan_quick(root, 1, self._emit_scan_progress)
+        bundle = ProjectBundle.scan_quick(
+            root,
+            1,
+            self._emit_scan_progress,
+            cancelled=self._stop_requested.is_set,
+        )
+        if self._stop_requested.is_set():
+            return
+        self.client.record_host_metrics(bundle.scan_metrics.telemetry())
         restore = None
         if self.initial_state is not None:
             path, purpose = self.initial_state
@@ -254,9 +271,11 @@ class RuntimeWorker(threading.Thread):
         if self.client is None:
             return
         self.client.begin_startup_attempt(project_file=True)
+        started = time.monotonic_ns()
         resolved = path.expanduser().resolve(strict=True)
         payload = resolved.read_bytes()
         manifest = self.client.abi.project_file_manifest(payload)
+        self.client.record_host_duration("cache_read_ms", started)
         bundle = ProjectBundle.from_project_file_manifest(resolved, manifest)
         self.events.put(FrontendEvent("status", f"正在载入项目文件 {resolved}…"))
         self.client.recreate(bundle, project_file_bytes=payload)
@@ -271,4 +290,35 @@ class RuntimeWorker(threading.Thread):
             self.events.put(FrontendEvent("project_progress", (stage, completed, total)))
 
     def stop(self) -> None:
-        self.send("force_stop")
+        self._stop_requested.set()
+        # Once the UI is exiting, presentation events are no longer useful. Freeing the
+        # bounded queue also releases a producer blocked while publishing its final batch.
+        while True:
+            try:
+                self.events.get_nowait()
+            except queue.Empty:
+                break
+
+    def shutdown(self) -> None:
+        """Stop and join exactly once so the C ABI session is closed before returning."""
+
+        with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            self.stop()
+            if self.ident is not None and threading.current_thread() is not self:
+                self.join()
+            self._shutdown_complete = not self.is_alive()
+
+    def _emit_terminal_event(self, event: FrontendEvent) -> None:
+        """Publish shutdown/error state even if the presentation queue was saturated."""
+
+        while True:
+            try:
+                self.events.put_nowait(event)
+                return
+            except queue.Full:
+                try:
+                    self.events.get_nowait()
+                except queue.Empty:
+                    continue
