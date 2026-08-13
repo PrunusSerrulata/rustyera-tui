@@ -275,7 +275,7 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         await pilot.click("#path-accept")
         assert ("reload_file", source) in worker.commands
 
-        app.project_name = "测试项目"
+        app.presentation.title = "测试项目"
         await pilot.click("#menu-file")
         await pilot.click("#file-export-project")
         assert isinstance(app.screen, PathDialog)
@@ -411,9 +411,49 @@ async def test_about_information_shows_only_defined_game_metadata(tmp_path: Path
 
 def test_project_file_default_path_sanitizes_the_project_title(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
-    app.project_name = 'bad<>:"/\\|?* name. '
+    app.presentation.title = 'bad<>:"/\\|?* name. '
 
     assert app._project_file_default_path() == tmp_path / "bad_________ name.reraproj"
+
+
+def test_diagnosis_project_title_uses_shared_fallback_order(tmp_path: Path) -> None:
+    project = tmp_path / "folder-name"
+    app = RustyEraTui(project, None)
+    app.presentation.title = "Presentation title"
+    app.game_information = GameInformation(title="GameBase title")
+
+    assert app._diagnosis_project_title() == "GameBase title"
+
+    app.game_information = GameInformation()
+    assert app._diagnosis_project_title() == "Presentation title"
+
+    app.presentation.title = "RustyEra"
+    assert app._diagnosis_project_title() == "folder-name"
+
+    packaged = RustyEraTui(None, None, tmp_path / "packed-game.reraproj")
+    assert packaged._diagnosis_project_title() == "packed-game"
+
+    unnamed = RustyEraTui(Path("/"), None)
+    assert unnamed._diagnosis_project_title() == "project"
+
+
+async def test_project_loaded_updates_diagnosis_path_identity(tmp_path: Path) -> None:
+    initial_file = tmp_path / "old-game.reraproj"
+    app = RustyEraTui(None, None, initial_file)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+
+    async with app.run_test(size=(100, 30)):
+        assert app._diagnosis_project_title() == "old-game"
+
+        current_file = tmp_path / "current-game.reraproj"
+        app._handle_worker_event(
+            FrontendEvent("project_loaded", (current_file.parent, current_file))
+        )
+        assert app._diagnosis_project_title() == "current-game"
+
+        directory = tmp_path / "directory-game"
+        app._handle_worker_event(FrontendEvent("project_loaded", (directory, None)))
+        assert app._diagnosis_project_title() == "directory-game"
 
 
 def test_displayed_core_revision_matches_the_build_pin() -> None:

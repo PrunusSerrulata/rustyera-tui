@@ -32,7 +32,7 @@ from .dialogs import (
 from .diagnosis import diagnosis_default_path, diagnosis_project_name
 from .input_policy import is_message_skip_wait, is_message_wait
 from .log_model import LogEntry, LogLevel, LogMessage, format_log_entries, make_log_entry
-from .presentation import PresentationModel
+from .presentation import DEFAULT_PRESENTATION_TITLE, PresentationModel
 from .runtime import DiagnosisProgress, FrontendEvent, PresentationBatch, RuntimeWorker
 from .runtime_types import GameInformation
 from .widgets import GameLine, GameViewport
@@ -149,7 +149,7 @@ class RustyEraTui(App[None]):
             if project_file
             else Path.cwd()
         )
-        self.project_name = ""
+        self.project_file = project_file.expanduser() if project_file else None
         self.runtime_library = runtime_library
         self.worker = RuntimeWorker(
             runtime_library,
@@ -287,7 +287,6 @@ class RustyEraTui(App[None]):
             dirty = False
             if value.snapshot is not None:
                 self.presentation.apply_snapshot(value.snapshot)
-                self._capture_project_name()
                 dirty = True
             if value.delta is not None:
                 try:
@@ -295,7 +294,6 @@ class RustyEraTui(App[None]):
                 except ValueError as error:
                     self._log(str(error), LogLevel.WARNING)
                 else:
-                    self._capture_project_name()
                     dirty = True
             self._set_active_wait(value.active_wait)
             self._presentation_commit_ready = value.render
@@ -364,8 +362,9 @@ class RustyEraTui(App[None]):
         elif kind == "diagnosis_progress" and isinstance(value, DiagnosisProgress):
             self._update_diagnosis_progress(value)
         elif kind == "project_loaded":
-            self.project = Path(value) if value else self.project
-            self.project_name = ""
+            root, project_file = value
+            self.project = Path(root)
+            self.project_file = Path(project_file) if project_file else None
             self._set_status(f"项目已加载：{self.project}")
         elif kind == "game_information" and isinstance(value, GameInformation):
             self.game_information = value
@@ -878,7 +877,12 @@ class RustyEraTui(App[None]):
         return (self.project or Path.cwd()) / f"runtime_{timestamp}.snapshot"
 
     def _project_file_default_path(self) -> Path:
-        title = self.project_name.strip() or self.project.name or "RustyEra项目"
+        presentation_title = (
+            ""
+            if self.presentation.title == DEFAULT_PRESENTATION_TITLE
+            else self.presentation.title
+        )
+        title = presentation_title.strip() or self.project.name or "RustyEra项目"
         safe_title = diagnosis_project_name(title)
         return (self.project or Path.cwd()) / f"{safe_title}.reraproj"
 
@@ -940,7 +944,7 @@ class RustyEraTui(App[None]):
         self.fault_logs = format_log_entries(self.logs)
         self.worker.send(
             "export_diagnosis",
-            (path, self.fault_logs, self._diagnosis_project_name()),
+            (path, self.fault_logs, self._diagnosis_project_title()),
         )
 
     def _update_diagnosis_progress(self, progress: DiagnosisProgress) -> None:
@@ -981,22 +985,34 @@ class RustyEraTui(App[None]):
     def _open_diagnosis_export_dialog(self) -> None:
         initial = diagnosis_default_path(
             self.project or Path.cwd(),
-            project_name=self._diagnosis_project_name(),
+            project_name=self._diagnosis_project_title(),
         )
         self.push_screen(
             PathDialog("导出诊断信息", "save", initial),
             self._start_diagnosis_export,
         )
 
-    def _capture_project_name(self) -> None:
-        title = self.presentation.title.strip()
-        if not self.project_name and title and title != self.TITLE:
-            self.project_name = title
-
-    def _diagnosis_project_name(self) -> str:
-        if self.project_name:
-            return self.project_name
-        return "" if self.presentation.title == self.TITLE else self.presentation.title
+    def _diagnosis_project_title(self) -> str:
+        presentation_title = (
+            ""
+            if self.presentation.title == DEFAULT_PRESENTATION_TITLE
+            else self.presentation.title
+        )
+        project_path_name = (
+            self.project_file.stem if self.project_file else self.project.name
+        )
+        return next(
+            (
+                candidate.strip()
+                for candidate in (
+                    self.game_information.title,
+                    presentation_title,
+                    project_path_name,
+                    "project",
+                )
+                if candidate and candidate.strip()
+            )
+        )
 
     def _help_action(self, item_id: str) -> None:
         if item_id == "help-export-diagnosis":

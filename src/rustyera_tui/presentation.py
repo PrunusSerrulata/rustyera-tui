@@ -30,12 +30,13 @@ from .wire import unwrap_variant, variant
 
 VIEWPORT_BUFFER_LINES = 1_000
 DEFAULT_BUTTON_FOCUS = "#ffff00"
+DEFAULT_PRESENTATION_TITLE = "RustyEra"
 
 
 @dataclass(slots=True)
 class PresentationModel:
     revision: int = 0
-    title: str = "RustyEra"
+    title: str = DEFAULT_PRESENTATION_TITLE
     lines: list[DisplayLineModel] = field(default_factory=list)
     input_wait: dict[int, Any] | None = None
     background: str = "#000000"

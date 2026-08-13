@@ -907,7 +907,12 @@ class RuntimeClient:
             self.bundle = self.pending_bundle
             self.pending_bundle = None
             self.storage = self._storage_for_bundle(self.bundle)
-        self.events.put(FrontendEvent("project_loaded", self.bundle.root if self.bundle else None))
+        self.events.put(
+            FrontendEvent(
+                "project_loaded",
+                (self.bundle.root, self.bundle.project_file) if self.bundle else None,
+            )
+        )
         self.events.put(
             FrontendEvent("game_information", GameInformation.from_wire(report.get(5)))
         )
