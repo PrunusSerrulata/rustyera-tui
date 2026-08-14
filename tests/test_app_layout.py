@@ -14,7 +14,9 @@ from app_test_support import (
     cell_len,
     erafl_guild_line,
     parse_line,
+    variant,
 )
+from rustyera_tui.game_line_layout import terminal_segment_text
 
 
 async def test_horizontal_scrollbar_replaces_the_prompt_separator(tmp_path: Path) -> None:
@@ -265,6 +267,87 @@ async def test_runtime_text_columns_control_terminal_advance(tmp_path: Path) -> 
         assert cell_len(rendered) == 10
         assert rendered_bar == "▅" * 64 + "│ "
         assert rendered_bar.index("│") == 64
+
+
+def test_runtime_wide_box_cells_only_continue_right_facing_strokes() -> None:
+    def render(character: str) -> str:
+        return terminal_segment_text(DisplaySegment(character, logical_columns=2))
+
+    assert [render(character) for character in ("┌", "┏", "╔")] == ["┌─", "┏━", "╔═"]
+    assert [render(character) for character in ("│", "┐", "╱")] == ["│ ", "┐ ", "╱ "]
+
+
+async def test_tagged_html_table_edges_stay_continuous_and_aligned(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+
+    def html_text(text: str) -> list[object]:
+        return variant(0, text, 0, len(text))
+
+    def html_button(text: str, token_id: int) -> list[object]:
+        return variant(
+            1,
+            7,
+            [],
+            [html_text(text)],
+            {0: 8, 1: token_id, 4: 3, 5: True},
+            0,
+            0,
+            variant(4, str(token_id), text, None),
+        )
+
+    def html_line(line_id: int, nodes: list[object]) -> DisplayLineModel:
+        return parse_line(
+            {
+                0: line_id,
+                1: False,
+                2: True,
+                3: True,
+                4: 0,
+                5: [variant(2, {0: nodes})],
+            }
+        )
+
+    def visible_columns(row: str, character: str) -> list[int]:
+        return [cell_len(row[:index]) for index, value in enumerate(row) if value == character]
+
+    role_token = {0: 8, 1: 21}
+    page_token = {0: 8, 1: 22}
+    content_line = html_line(
+        1,
+        [
+            html_text("│"),
+            html_button("角色", role_token[1]),
+            html_text("        ││"),
+            html_button("友人", 23),
+            html_text("│"),
+        ],
+    )
+    footer_line = html_line(
+        2,
+        [
+            html_text("└──"),
+            html_button(" ◀页码▶ ", page_token[1]),
+            html_text("┘└─"),
+            html_button("▶ ", 24),
+            html_text("┘"),
+        ],
+    )
+
+    async with app.run_test(size=(40, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([content_line, footer_line])
+        await pilot.pause()
+        content, footer = [item.render().plain for item in app.query(GameLine)]
+
+        assert footer.startswith("└─────")
+        assert visible_columns(content, "│") == [0, 14, 16, 22]
+        assert visible_columns(footer, "┘") == [14, 22]
+        game_lines = list(app.query(GameLine))
+        assert any(region.token == role_token for region in game_lines[0].regions)
+        assert any(region.token == page_token for region in game_lines[-1].regions)
 
 
 async def test_full_width_space_replacement_hotly_rerenders_existing_and_new_lines(

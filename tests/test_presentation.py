@@ -257,6 +257,34 @@ def test_structured_html_preserves_rows_styles_spaces_and_buttons() -> None:
     assert plain_line(raw) == "\n  [  0] 选择\n"
 
 
+def test_tagged_html_preserves_wide_box_drawing_cells_for_terminal_tables() -> None:
+    raw = {
+        0: 10,
+        1: False,
+        2: True,
+        3: True,
+        4: 0,
+        5: [
+            variant(
+                2,
+                {
+                    0: [
+                        html_text("┌──"),
+                        html_button([html_text("角色")], {0: 8, 1: 14}, "选择角色"),
+                        html_text("┐"),
+                    ]
+                },
+            )
+        ],
+    }
+
+    parsed = parse_line(raw)
+
+    assert "".join(segment.text for segment in parsed.segments) == "┌──角色┐"
+    assert "".join(segment.text for segment in parsed.segments if segment.token) == "角色"
+    assert sum(segment.logical_columns or cell_len(segment.text) for segment in parsed.segments) == 12
+
+
 def test_erafl_guild_divisions_project_to_terminal_table_geometry() -> None:
     """Mirror QUEST_MENU's real UIC parent/left/right/party relative divisions."""
 

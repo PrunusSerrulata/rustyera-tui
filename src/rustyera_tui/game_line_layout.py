@@ -17,6 +17,30 @@ from .presentation import (
 )
 from .presentation_helpers import segment_columns as _segment_columns
 
+_BOX_RIGHT_CONTINUATIONS = {
+    "─": "─",
+    "┌": "─",
+    "└": "─",
+    "├": "─",
+    "┬": "─",
+    "┴": "─",
+    "┼": "─",
+    "━": "━",
+    "┏": "━",
+    "┗": "━",
+    "┣": "━",
+    "┳": "━",
+    "┻": "━",
+    "╋": "━",
+    "═": "═",
+    "╔": "═",
+    "╚": "═",
+    "╠": "═",
+    "╦": "═",
+    "╩": "═",
+    "╬": "═",
+}
+
 
 def project_responsive_segments(line: DisplayLineModel, width: int) -> tuple[DisplaySegment, ...]:
     if not line.layout:
@@ -152,4 +176,14 @@ def terminal_segment_text(segment: DisplaySegment) -> str:
     if segment.logical_columns == 0 and segment.text.isspace():
         return ""
     padding = max(0, segment.logical_columns - cell_len(segment.text))
+    if padding and len(segment.text) == 1:
+        continuation = _box_drawing_continuation(segment.text)
+        if continuation is not None:
+            return segment.text + continuation * padding
     return segment.text + " " * padding
+
+
+def _box_drawing_continuation(character: str) -> str | None:
+    """Continue a wide Era box glyph across its narrow terminal cell."""
+
+    return _BOX_RIGHT_CONTINUATIONS.get(character)

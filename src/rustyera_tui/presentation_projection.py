@@ -203,7 +203,7 @@ def parse_html_document(
 def _parse_html_node(node: list[Any], context: DisplaySegment) -> list[DisplaySegment]:
     tag, fields = unwrap_variant(node)
     if tag == 0:  # Text
-        return [replace(context, text=fields[0])]
+        return _html_text_segments(str(fields[0]), context)
     if tag != 1:
         return []
 
@@ -249,6 +249,25 @@ def _parse_html_node(node: list[Any], context: DisplaySegment) -> list[DisplaySe
     for child in children:
         result.extend(_parse_html_node(child, nested))
     return result
+
+
+def _html_text_segments(text: str, context: DisplaySegment) -> list[DisplaySegment]:
+    """Preserve the full Era cell occupied by box drawing inside tagged HTML."""
+
+    if not text:
+        return [replace(context, text="")]
+    segments: list[DisplaySegment] = []
+    plain_start = 0
+    for index, character in enumerate(text):
+        if not "\u2500" <= character <= "\u257f":
+            continue
+        if plain_start < index:
+            segments.append(replace(context, text=text[plain_start:index]))
+        segments.append(replace(context, text=character, logical_columns=2))
+        plain_start = index + 1
+    if plain_start < len(text):
+        segments.append(replace(context, text=text[plain_start:]))
+    return segments
 
 
 def _html_font_context(semantic: Any, context: DisplaySegment) -> DisplaySegment:
