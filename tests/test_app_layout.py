@@ -350,6 +350,72 @@ async def test_tagged_html_table_edges_stay_continuous_and_aligned(
         assert any(region.token == page_token for region in game_lines[-1].regions)
 
 
+async def test_runtime_page_navigation_triangles_keep_the_footer_corner_aligned(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+
+    def text_runs(text: str) -> list[list[object]]:
+        return [
+            variant(
+                8,
+                character,
+                None,
+                None,
+                2 if "\u2500" <= character <= "\u257f" or character in "页码" else 1,
+            )
+            for character in text
+        ]
+
+    def button(text: str, token_id: int) -> list[object]:
+        return variant(1, text_runs(text), {0: 8, 1: token_id}, None, None, None, 0, True)
+
+    content = parse_line(
+        {
+            0: 1,
+            1: False,
+            2: True,
+            3: True,
+            4: 0,
+            5: [*text_runs("│"), variant(8, " " * 78, None, None, 78), *text_runs("│")],
+        }
+    )
+    footer = parse_line(
+        {
+            0: 2,
+            1: False,
+            2: True,
+            3: True,
+            4: 0,
+            5: [
+                *text_runs("└" + "─" * 28),
+                button(" [--] ◀", 21_001),
+                *text_runs(" 页码. 1 "),
+                button("▶ [++]", 21_002),
+                *text_runs("┘"),
+            ],
+        }
+    )
+
+    async with app.run_test(size=(90, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([content, footer])
+        await pilot.pause()
+        content_text, footer_text = [item.render().plain for item in app.query(GameLine)]
+
+        assert [
+            cell_len(content_text[:index])
+            for index, value in enumerate(content_text)
+            if value == "│"
+        ] == [0, 80]
+        assert [
+            cell_len(footer_text[:index])
+            for index, value in enumerate(footer_text)
+            if value == "┘"
+        ] == [80]
+
+
 async def test_full_width_space_replacement_hotly_rerenders_existing_and_new_lines(
     tmp_path: Path,
 ) -> None:
