@@ -9,12 +9,19 @@ from .runtime_dependencies import (
     DIAGNOSIS_EXPORT_STAGES,
     ExportStage,
     FrontendEvent,
+    LogLevel,
     PendingConfigurationFinalize,
     PendingConfigurationPrepare,
     copy,
     enum_text,
+    log_event,
     time,
 )
+
+_NON_NOTIFIED_INPUT_WARNINGS = {
+    "input wait identity is stale",
+    "input value does not match the active wait",
+}
 
 
 class _RuntimeRejectionMixin:
@@ -22,6 +29,7 @@ class _RuntimeRejectionMixin:
 
     def _handle_command_rejection(self, value: dict[int, Any], correlation_id: int | None) -> None:
         rejection = value.get(1, "")
+        non_notified_input_warning = rejection in _NON_NOTIFIED_INPUT_WARNINGS
         stale_projection = rejection in {
             "projection environment revision is not newer",
             "projection observation does not match the canonical presentation",
@@ -125,7 +133,7 @@ class _RuntimeRejectionMixin:
         # A presentation may advance after the frontend rendered an observation but
         # before the caller-pumped runtime handles it. This is a benign stale sample;
         # a later rendered revision will submit a replacement observation.
-        if (
+        publish_unhandled_rejection = (
             not (
                 cache_export_rejection
                 or diagnosis_export_rejection
@@ -135,6 +143,11 @@ class _RuntimeRejectionMixin:
             )
             and not (projection_request and value.get(0) == 2 and stale_projection)
             and not retried_input
-        ):
+        )
+        if non_notified_input_warning or publish_unhandled_rejection:
             code = enum_text(value.get(0), COMMAND_ERROR_CODES, "CommandErrorCode")
-            self.events.put(FrontendEvent("runtime_error", f"命令被拒绝 [{code}]：{rejection}"))
+            message = f"命令被拒绝 [{code}]：{rejection}"
+            if non_notified_input_warning:
+                self.events.put(log_event(message, LogLevel.WARNING))
+            else:
+                self.events.put(FrontendEvent("runtime_error", message))

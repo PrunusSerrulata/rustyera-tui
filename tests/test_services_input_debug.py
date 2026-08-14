@@ -11,6 +11,7 @@ from services_test_support import (
     unwrap_variant,
     variant,
 )
+from rustyera_tui.log_model import LogLevel, LogMessage
 
 
 def test_debug_variable_read_uses_requested_indices() -> None:
@@ -41,7 +42,7 @@ def test_diagnosis_export_blocks_input_undo_and_deadline_advancement(tmp_path: P
     assert captured == []
 
 
-def test_rejected_input_reports_the_still_active_wait_to_the_app() -> None:
+def test_invalid_input_wait_warning_is_logged_without_a_runtime_error() -> None:
     client, _captured = client_with_capture()
     wait = {0: 7, 1: 6, 11: {0: 1, 1: 2}}
     client.active_wait = wait
@@ -55,8 +56,15 @@ def test_rejected_input_reports_the_still_active_wait_to_the_app() -> None:
 
     rejected = client.events.get_nowait()
     assert rejected == FrontendEvent("interaction_rejected", wait)
-    error = client.events.get_nowait()
-    assert error.kind == "runtime_error"
+    warning = client.events.get_nowait()
+    assert warning == FrontendEvent(
+        "log",
+        LogMessage(
+            LogLevel.WARNING,
+            "命令被拒绝 [VersionMismatch]：input value does not match the active wait",
+        ),
+    )
+    assert client.events.empty()
     assert 23 not in client._input_messages
 
 
@@ -81,6 +89,13 @@ def test_one_correlated_stale_input_retries_on_the_next_wait_of_the_same_kind() 
             },
         )
     ]
+    assert client.events.get_nowait() == FrontendEvent(
+        "log",
+        LogMessage(
+            LogLevel.WARNING,
+            "命令被拒绝 [StaleRequest]：input wait identity is stale",
+        ),
+    )
     assert client.events.empty()
     retried = next(iter(client._input_messages.values()))
     assert retried.wait == active
