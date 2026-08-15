@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import os
-import resource
 import stat
 import sys
 import time
 from typing import Any
+
+try:
+    import resource
+except ImportError:  # Windows does not provide the POSIX resource module.
+    resource = None  # type: ignore[assignment]
 
 STARTUP_TELEMETRY_FD_ENV = "RUSTYERA_STARTUP_TELEMETRY_FD"
 
@@ -17,7 +21,7 @@ def emit_startup_milestone(event: str, **fields: Any) -> None:
     """Write one compact event to an inherited descriptor when measurement is enabled."""
 
     raw_fd = os.environ.get(STARTUP_TELEMETRY_FD_ENV)
-    if raw_fd is None:
+    if raw_fd is None or resource is None:
         return
     try:
         fd = int(raw_fd)

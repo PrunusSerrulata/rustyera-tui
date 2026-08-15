@@ -3,10 +3,18 @@ from __future__ import annotations
 import json
 import os
 
+import rustyera_tui.startup_telemetry as startup_telemetry
 from rustyera_tui.startup_telemetry import (
     STARTUP_TELEMETRY_FD_ENV,
     emit_startup_milestone,
 )
+
+
+def test_missing_posix_resource_module_disables_telemetry(monkeypatch) -> None:
+    monkeypatch.setattr(startup_telemetry, "resource", None)
+    monkeypatch.setenv(STARTUP_TELEMETRY_FD_ENV, "not-a-descriptor")
+
+    emit_startup_milestone("attempt_started", attempt_id=1)
 
 
 def test_emits_compact_startup_milestone_to_inherited_descriptor(monkeypatch) -> None:
