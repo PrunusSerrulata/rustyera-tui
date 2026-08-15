@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
 from typing import Any
@@ -87,6 +87,19 @@ class FullProjectExport:
     target: Path
     stream: AtomicExportStream
     retry_after_ns: int = 0
+
+
+@dataclass(slots=True)
+class PendingStateImport:
+    kind: int
+    purpose: str
+    total_bytes: int
+    payload: bytes | None = None
+    path: Path | None = None
+    begin_message_id: int | None = None
+    transfer_id: int | None = None
+    commit_message_id: int | None = None
+    command_message_ids: set[int] = field(default_factory=set)
 
 
 def atomic_write(path: Path, data: bytes | bytearray) -> None:

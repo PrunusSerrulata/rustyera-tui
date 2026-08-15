@@ -1,3 +1,4 @@
+import json
 import unicodedata
 import threading
 import time
@@ -16,7 +17,15 @@ from rustyera_tui.project import (
     ProjectFile,
     StorageBackend,
 )
-from rustyera_tui.wire import unwrap_variant, variant
+from rustyera_tui.wire import decode, unwrap_variant, variant
+
+
+def png_header(width: int, height: int) -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+    )
 
 
 def test_parallel_ordered_merges_out_of_order_results_and_reports_on_coordinator(
@@ -177,7 +186,10 @@ def test_project_scanners_submit_nested_sprite_manifests_and_images(tmp_path: Pa
     assert resource_manifest.category == FILE_RESOURCE_MANIFEST
     assert resource_manifest.payload == variant(0, manifest.removeprefix("\ufeff"))
     assert resource_image.category == FILE_RESOURCE
-    assert resource_image.payload == variant(1, image)
+    assert resource_image.payload == variant(
+        3,
+        {0: len(image), 1: {0: 1000, 1: 1125, 2: "webp", 3: False}},
+    )
     assert quick.materialize().identity() == scanned.identity()
 
 
@@ -313,6 +325,27 @@ def test_project_wire_limits_expand_from_scanned_content_size(tmp_path: Path) ->
 
     assert maximum_payload >= 200 * 1024 * 1024
     assert maximum_envelope > maximum_payload
+
+
+def test_project_wire_limits_exclude_lazy_resource_bodies(tmp_path: Path) -> None:
+    bundle = ProjectBundle(
+        tmp_path,
+        1,
+        {
+            "resources/large.png": ProjectFile(
+                "resources/large.png",
+                FILE_RESOURCE,
+                variant(3, {0: 900 * 1024 * 1024, 1: None}),
+                b"\x01" * 32,
+                900 * 1024 * 1024,
+            )
+        },
+    )
+
+    maximum_envelope, maximum_payload = bundle.requested_wire_limits()
+
+    assert maximum_envelope == project_module.DEFAULT_MAXIMUM_ENVELOPE_BYTES
+    assert maximum_payload == project_module.DEFAULT_MAXIMUM_PAYLOAD_BYTES
 
 
 def test_project_scanners_normalize_cp932_sources_to_utf8(tmp_path: Path) -> None:
@@ -701,6 +734,48 @@ def test_quick_scan_reuses_stat_index_and_materializes_on_demand(
     assert materialized.identity() == quick.identity()
 
 
+@pytest.mark.parametrize(
+    ("version", "metadata"),
+    [
+        (1, None),
+        (2, [0, 3, "invalid", False]),
+    ],
+)
+def test_quick_scan_migrates_missing_or_invalid_cached_image_metadata(
+    tmp_path: Path, version: int, metadata: object
+) -> None:
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    image = resources / "image.png"
+    image.write_bytes(png_header(2, 3))
+    ProjectBundle.scan_quick(tmp_path)
+    index_path = tmp_path / ".rustyera" / "cache" / "source-index-v1.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["version"] = version
+    if metadata is None:
+        index["files"]["resources/image.png"].pop("image_metadata", None)
+    else:
+        index["files"]["resources/image.png"]["image_metadata"] = metadata
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+
+    warm = ProjectBundle.scan_quick(tmp_path)
+
+    assert warm.scan_metrics.source_files_reused == 1
+    assert warm.scan_metrics.source_files_hashed == 0
+    assert warm.files["resources/image.png"].payload == variant(
+        3,
+        {0: 24, 1: {0: 2, 1: 3, 2: "png", 3: False}},
+    )
+    migrated = json.loads(index_path.read_text(encoding="utf-8"))
+    assert migrated["version"] == 2
+    assert migrated["files"]["resources/image.png"]["image_metadata"] == [
+        2,
+        3,
+        "png",
+        False,
+    ]
+
+
 def test_sparse_cache_hit_baseline_materializes_only_for_the_first_reload(
     tmp_path: Path,
 ) -> None:
@@ -936,7 +1011,17 @@ def test_project_scanner_includes_audio_resources_for_full_exports(tmp_path: Pat
     scanned = ProjectBundle.scan(tmp_path)
 
     assert scanned.files["resources/theme.ogg"].category == FILE_RESOURCE
-    assert scanned.files["resources/theme.ogg"].payload == variant(1, audio)
+    assert scanned.files["resources/theme.ogg"].payload == variant(3, {0: len(audio), 1: None})
+
+    temporary, size = scanned.write_full_manifest_temp()
+    try:
+        encoded = temporary.read_bytes()
+        assert len(encoded) == size
+        manifest = decode(encoded)
+        resource = next(file for file in manifest[1] if file[0] == "resources/theme.ogg")
+        assert resource[2] == variant(1, audio)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def test_configuration_write_is_atomic_and_detects_external_changes(tmp_path: Path) -> None:

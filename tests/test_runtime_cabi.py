@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import blake3
+
 from runtime_cabi_test_support import (
     DEFAULT_MAXIMUM_VM_INSTRUCTIONS,
     Path,
@@ -10,6 +12,7 @@ from runtime_cabi_test_support import (
     pytest,
     queue,
 )
+from rustyera_tui.runtime import PendingStateImport
 
 
 def test_default_drive_budget_keeps_the_caller_pump_cooperative() -> None:
@@ -199,8 +202,12 @@ def test_gameplay_input_defers_pending_cache_compression(
 
 def test_state_import_uses_large_contiguous_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     client = object.__new__(RuntimeClient)
-    client.import_bytes = b"123456789"
-    client.import_transfer_id = None
+    client.pending_import = PendingStateImport(
+        kind=1,
+        purpose="snapshot",
+        total_bytes=9,
+        payload=b"123456789",
+    )
     commands: list[tuple[int, dict[int, object]]] = []
     client.send_runtime = lambda tag, value: commands.append((tag, value))  # type: ignore[method-assign]
     monkeypatch.setattr("rustyera_tui.runtime.STATE_IMPORT_CHUNK_BYTES", 4)
@@ -213,3 +220,27 @@ def test_state_import_uses_large_contiguous_chunks(monkeypatch: pytest.MonkeyPat
         (64, 8, 1),
         (65, None, 0),
     ]
+
+
+def test_full_manifest_file_import_uses_exact_four_mib_chunks(tmp_path: Path) -> None:
+    payload = b"x" * (4 * 1024 * 1024) + b"end"
+    path = tmp_path / "manifest.cbor"
+    path.write_bytes(payload)
+    client = object.__new__(RuntimeClient)
+    client.pending_import = PendingStateImport(
+        kind=5,
+        purpose="full_project_export",
+        total_bytes=len(payload),
+        path=path,
+    )
+    commands: list[tuple[int, dict[int, object]]] = []
+    client.send_runtime = lambda tag, value: commands.append((tag, value)) or len(commands)  # type: ignore[method-assign]
+
+    client._handle_import_accepted({0: 11})
+
+    assert [(tag, value.get(1), len(value.get(2, b""))) for tag, value in commands] == [
+        (64, 0, 4 * 1024 * 1024),
+        (64, 4 * 1024 * 1024, 3),
+        (65, blake3.blake3(payload).digest(), 0),
+    ]
+    assert not path.exists()

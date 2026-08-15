@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 from .project import (
     Any,
+    Callable,
     DEFAULT_MAXIMUM_ENVELOPE_BYTES,
     DEFAULT_MAXIMUM_PAYLOAD_BYTES,
     FILE_RESOURCE,
@@ -12,14 +16,17 @@ from .project import (
     PROJECT_FILE_WIRE_OVERHEAD_BYTES,
     Path,
     ProjectFile,
+    ProjectScanProgress,
     ProjectScanMetrics,
     PurePosixPath,
     _path_sort_key,
     _payload_size,
+    _source_signature,
     blake3,
     dataclass,
     field,
 )
+from .wire import encode
 
 from .project_bundle_reload import _ProjectBundleReloadMixin
 from .project_bundle_scan import _ProjectBundleScanMixin
@@ -98,11 +105,92 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
         ordered = sorted(self.files.values(), key=lambda item: _path_sort_key(item.relative_path))
         return {0: self.revision, 1: [item.submitted() for item in ordered]}
 
+    def write_full_manifest_temp(
+        self,
+        progress: ProjectScanProgress | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> tuple[Path, int]:
+        """Spool a canonical full manifest while retaining at most one 4 MiB resource chunk."""
+
+        bundle = self.materialize(progress, cancelled)
+        ordered = sorted(bundle.files.values(), key=lambda item: _path_sort_key(item.relative_path))
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix="rustyera-full-manifest-", suffix=".cbor"
+        )
+        temporary = Path(temporary_name)
+        written = 0
+
+        def write(stream: Any, data: bytes) -> None:
+            nonlocal written
+            if written + len(data) > MAXIMUM_PROJECT_ENVELOPE_BYTES:
+                raise ValueError("full project manifest exceeds the 1 GiB transfer limit")
+            if stream.write(data) != len(data):
+                raise OSError("full project manifest was not written completely")
+            written += len(data)
+
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                write(stream, b"\xa2\x00")
+                write(stream, encode(bundle.revision))
+                write(stream, b"\x01" + _cbor_container_header(4, len(ordered)))
+                for item in ordered:
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("project export was cancelled")
+                    external = (
+                        item.category == FILE_RESOURCE
+                        and item.payload is not None
+                        and item.payload[0] == 3
+                    )
+                    if not external:
+                        write(stream, encode(item.submitted()))
+                        continue
+                    write(
+                        stream,
+                        _cbor_container_header(5, 3 + (item.content_hash is not None))
+                        + b"\x00"
+                        + encode(item.relative_path)
+                        + b"\x01"
+                        + encode(item.category)
+                        + b"\x02\x82\x01\x81"
+                        + _cbor_container_header(2, item.content_size),
+                    )
+                    source_path = item.source_path or self.root / PurePosixPath(item.relative_path)
+                    before = _source_signature(source_path)
+                    if item.source_signature is not None and before != item.source_signature:
+                        raise ValueError(
+                            f"image resource {item.relative_path} changed after project scan"
+                        )
+                    hasher = blake3.blake3()
+                    resource_bytes = 0
+                    with source_path.open("rb") as resource:
+                        while chunk := resource.read(4 * 1024 * 1024):
+                            if cancelled is not None and cancelled():
+                                raise InterruptedError("project export was cancelled")
+                            hasher.update(chunk)
+                            resource_bytes += len(chunk)
+                            write(stream, chunk)
+                    if (
+                        resource_bytes != item.content_size
+                        or hasher.digest() != item.content_hash
+                        or _source_signature(source_path) != before
+                    ):
+                        raise ValueError(
+                            f"image resource {item.relative_path} changed after project scan"
+                        )
+                    if item.content_hash is not None:
+                        write(stream, b"\x03" + encode(item.content_hash))
+                stream.flush()
+                os.fsync(stream.fileno())
+            return temporary, written
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+
     def requested_wire_limits(self) -> tuple[int, int]:
         """Return a conservative one-envelope project submission budget."""
 
         payload_bytes = sum(
-            item.content_size
+            (0 if item.category == FILE_RESOURCE else item.content_size)
             + len(item.relative_path.encode("utf-8"))
             + PROJECT_FILE_WIRE_OVERHEAD_BYTES
             for item in self.files.values()
@@ -117,6 +205,54 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
         return requested_envelope, requested_payload
 
     def resource_bytes(self, resource_id: str, content_digest: bytes) -> bytes:
+        item = self._resource_file(resource_id)
+        if item is None:
+            raise ValueError(f"unknown image resource {resource_id}")
+        tag = item.payload[0] if item.payload is not None and len(item.payload) == 2 else None
+        if item.payload is None:
+            source_path = item.source_path
+            if source_path is None:
+                pure = PurePosixPath(item.relative_path)
+                source_path = self.root.joinpath(*pure.parts)
+            data = source_path.read_bytes()
+            if item.content_hash is None or blake3.blake3(data).digest() != item.content_hash:
+                raise ValueError(f"image resource {resource_id} changed after project scan")
+        elif tag == 1:
+            _, fields = item.payload
+            if len(fields) != 1 or not isinstance(fields[0], bytes):
+                raise ValueError(f"image resource {resource_id} has no binary payload")
+            data = fields[0]
+        else:
+            source_path = item.source_path
+            if source_path is None:
+                pure = PurePosixPath(item.relative_path)
+                source_path = self.root.joinpath(*pure.parts)
+            data = source_path.read_bytes()
+        digest = blake3.blake3(data).digest()
+        if item.content_hash != digest or digest != content_digest:
+            raise ValueError(f"image resource {resource_id} digest does not match the project")
+        return data
+
+    def resource_prefix(self, resource_id: str, content_digest: bytes, maximum_bytes: int) -> bytes:
+        item = self._resource_file(resource_id)
+        if item is None or item.content_hash != content_digest:
+            raise ValueError(f"unknown or stale image resource {resource_id}")
+        if item.payload is not None and item.payload[0] == 1:
+            fields = item.payload[1]
+            if len(fields) != 1 or not isinstance(fields[0], bytes):
+                raise ValueError(f"image resource {resource_id} has no binary payload")
+            return fields[0][:maximum_bytes]
+        source_path = item.source_path or self.root / PurePosixPath(item.relative_path)
+        signature = _source_signature(source_path)
+        if item.source_signature != signature:
+            raise ValueError(f"image resource {resource_id} changed after project scan")
+        with source_path.open("rb") as stream:
+            data = stream.read(maximum_bytes)
+        if _source_signature(source_path) != signature:
+            raise ValueError(f"image resource {resource_id} changed after project scan")
+        return data
+
+    def _resource_file(self, resource_id: str) -> ProjectFile | None:
         item = self.files.get(resource_id)
         if item is None:
             item = next(
@@ -127,21 +263,16 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
                 ),
                 None,
             )
-        if item is None or item.category != FILE_RESOURCE:
-            raise ValueError(f"unknown image resource {resource_id}")
-        if item.payload is None:
-            source_path = item.source_path
-            if source_path is None:
-                pure = PurePosixPath(item.relative_path)
-                source_path = self.root.joinpath(*pure.parts)
-            data = source_path.read_bytes()
-            if item.content_hash is None or blake3.blake3(data).digest() != item.content_hash:
-                raise ValueError(f"image resource {resource_id} changed after project scan")
-        else:
-            tag, fields = item.payload
-            if tag != 1 or len(fields) != 1 or not isinstance(fields[0], bytes):
-                raise ValueError(f"image resource {resource_id} has no binary payload")
-            data = fields[0]
-        if blake3.blake3(data).digest() != content_digest:
-            raise ValueError(f"image resource {resource_id} digest does not match the project")
-        return data
+        return item if item is not None and item.category == FILE_RESOURCE else None
+
+
+def _cbor_container_header(major: int, length: int) -> bytes:
+    if length < 24:
+        return bytes([(major << 5) | length])
+    if length <= 0xFF:
+        return bytes([(major << 5) | 24, length])
+    if length <= 0xFFFF:
+        return bytes([(major << 5) | 25]) + length.to_bytes(2, "big")
+    if length <= 0xFFFF_FFFF:
+        return bytes([(major << 5) | 26]) + length.to_bytes(4, "big")
+    return bytes([(major << 5) | 27]) + length.to_bytes(8, "big")

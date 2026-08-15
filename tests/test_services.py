@@ -197,7 +197,10 @@ def test_image_metadata_service_lazily_reads_quick_scanned_resource(tmp_path: Pa
     digest = blake3.blake3(image).digest()
     ProjectBundle.scan_quick(tmp_path)
     client.pending_bundle = ProjectBundle.scan_quick(tmp_path)
-    assert client.pending_bundle.files["resources/Rorona.webp"].payload is None
+    assert client.pending_bundle.files["resources/Rorona.webp"].payload == variant(
+        3,
+        {0: len(image), 1: {0: 1000, 1: 1125, 2: "webp", 3: False}},
+    )
     client.bundle = None
     client.reload_candidate = None
 
@@ -240,6 +243,7 @@ def test_client_hello_negotiates_the_pending_project_envelope_size(tmp_path: Pat
     limits = captured[0][1][3]
     assert limits[1] >= 200 * 1024 * 1024
     assert limits[0] > limits[1]
+    assert limits[5] == 1024 * 1024 * 1024
 
 
 def test_projection_is_bound_to_the_revision_the_tui_rendered() -> None:

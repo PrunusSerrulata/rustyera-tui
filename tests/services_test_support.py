@@ -17,6 +17,7 @@ from rustyera_tui.runtime import (
     DiagnosisProgress,
     FrontendEvent,
     FullProjectExport,
+    PendingStateImport,
     PendingConfigurationPrepare,
     PendingGameInput,
     RuntimeClient,
@@ -39,6 +40,7 @@ __all__ = [
     "Path",
     "PendingConfigurationPrepare",
     "PendingGameInput",
+    "PendingStateImport",
     "ProjectBundle",
     "ProjectFile",
     "RuntimeClient",
@@ -82,6 +84,7 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client.pending_diagnosis = None
     client.pending_start_after_configuration = None
     client.pending_restore = None
+    client.pending_import = None
     client.new_game_seed = None
     client.configuration_profile_supported = True
     client.abi = SimpleNamespace(

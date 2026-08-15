@@ -85,6 +85,7 @@ class _IndexedCandidate:
     source_signature: tuple[int, int, int, int, int]
     content_hash: bytes | None
     content_size: int
+    image_metadata: dict[int, object] | None = None
 
 
 class _ProjectChangedDuringScan(RuntimeError):
@@ -112,6 +113,12 @@ class ProjectFile:
         if self.content_hash is not None:
             result[3] = self.content_hash
         return result
+
+
+def external_resource(
+    byte_length: int, image_metadata: dict[int, object] | None = None
+) -> list[Any]:
+    return variant(3, {0: byte_length, 1: image_metadata})
 
 
 from .project_scan import (  # noqa: E402

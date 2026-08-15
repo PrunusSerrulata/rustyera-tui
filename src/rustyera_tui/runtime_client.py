@@ -18,6 +18,7 @@ from .runtime_dependencies import (
     PendingConfigurationFinalize,
     PendingConfigurationPrepare,
     PendingGameInput,
+    PendingStateImport,
     PresentationBatch,
     ProjectBundle,
     RuntimeAbi,
@@ -83,9 +84,7 @@ class RuntimeClient(
         self.pending_export: tuple[Path, bytearray, dict[int, Any] | None] | None = None
         self.pending_export_message: int | None = None
         self.pending_diagnosis: DiagnosisExport | None = None
-        self.import_bytes: bytes | None = None
-        self.import_transfer_id: int | None = None
-        self.import_purpose: str | None = None
+        self.pending_import: PendingStateImport | None = None
         self.pending_export_kind: int | None = None
         self.pending_cache_after: str | None = None
         self.pending_cache_export_message: int | None = None
@@ -178,6 +177,8 @@ class RuntimeClient(
             self.events.put(FrontendEvent("project_progress", (stage, completed, total)))
 
     def _reset_wire_state(self) -> None:
+        if self.pending_import is not None:
+            self._clear_pending_import()
         self.runtime_sequence = 0
         self.debug_sequence = 0
         self.next_message_id = 1
@@ -413,15 +414,17 @@ class RuntimeClient(
         elif tag == 61:
             self._handle_export_ready(value, correlation_id)
         elif tag == 63:
-            self._handle_import_accepted(value)
+            self._handle_import_accepted(value, correlation_id)
         elif tag == 66:
-            self._handle_import_ready(value)
+            self._handle_import_ready(value, correlation_id)
         elif tag == 68:
             self._handle_export_chunk(value)
         elif tag == 91:
             self._presentation_boundary_dirty = True
             self.events.put(FrontendEvent("shutdown_ready", value))
         elif tag == 92:
+            if self.pending_import is not None:
+                self._clear_pending_import()
             self._presentation_boundary_dirty = True
             origin = value.get(2) or {}
             source = origin.get(4) or {}
@@ -507,5 +510,7 @@ class RuntimeClient(
 
     def shutdown(self) -> None:
         if not self.shutting_down and self.session is not None:
+            if self.pending_import is not None:
+                self._cancel_pending_import()
             self.shutting_down = True
             self.send_runtime(90, {0: True})

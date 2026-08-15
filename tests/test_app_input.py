@@ -124,7 +124,7 @@ async def test_game_any_key_does_not_cross_an_application_dialog(tmp_path: Path)
 
         await pilot.press("space")
 
-        assert worker.commands == []
+        assert [command for command in worker.commands if command[0] != "projection"] == []
 
 
 async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path) -> None:

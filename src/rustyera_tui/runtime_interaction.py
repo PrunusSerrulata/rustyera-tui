@@ -92,7 +92,9 @@ class _RuntimeInteractionMixin:
                 )
                 if bundle is None:
                     raise RuntimeError("image metadata requested without a project")
-                response = decode_image_metadata(bundle.resource_bytes(query[0], query[1]))
+                response = decode_image_metadata(
+                    bundle.resource_prefix(query[0], query[1], 1024 * 1024)
+                )
             elif kind == 10 and operation == "get_display_line":
                 query = decode(request[4])
                 index = query[1]

@@ -60,7 +60,7 @@ class _RuntimeTransportMixin:
             2: 128,
             3: 4096,
             4: 1_000_000,
-            5: 512 * 1024 * 1024,
+            5: 1024 * 1024 * 1024,
         }
         self.send_runtime(
             0,

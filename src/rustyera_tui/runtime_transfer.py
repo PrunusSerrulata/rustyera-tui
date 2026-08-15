@@ -14,6 +14,7 @@ from .runtime_dependencies import (
     FrontendEvent,
     FullProjectExport,
     LogLevel,
+    PendingStateImport,
     Path,
     RUNTIME_EXPORT_KIND,
     SNAPSHOT_INELIGIBLE_REASONS,
@@ -32,12 +33,33 @@ from .runtime_dependencies import (
 
 class _RuntimeTransferMixin:
     def _begin_import(self, payload: bytes, kind: int, purpose: str) -> None:
-        self.import_bytes = payload
-        self.import_purpose = purpose
-        self.send_runtime(
-            62,
-            {0: kind, 1: len(payload), 2: blake3.blake3(payload).digest()},
-        )
+        if self.pending_import is not None:
+            self._cancel_pending_import()
+        pending = PendingStateImport(kind, purpose, len(payload), payload=payload)
+        self.pending_import = pending
+        try:
+            message_id = self.send_runtime(
+                62,
+                {0: kind, 1: len(payload), 2: blake3.blake3(payload).digest()},
+            )
+        except Exception:
+            self._clear_pending_import()
+            raise
+        pending.begin_message_id = message_id
+        pending.command_message_ids.add(message_id)
+
+    def _begin_file_import(self, path: Path, size: int, kind: int, purpose: str) -> None:
+        if self.pending_import is not None:
+            self._cancel_pending_import()
+        pending = PendingStateImport(kind, purpose, size, path=path)
+        self.pending_import = pending
+        try:
+            message_id = self.send_runtime(62, {0: kind, 1: size})
+        except Exception:
+            self._clear_pending_import()
+            raise
+        pending.begin_message_id = message_id
+        pending.command_message_ids.add(message_id)
 
     def _stage_project_cache(self, payload: bytes, purpose: str) -> None:
         stage = getattr(self.abi, "stage_compiled_cache", None)
@@ -106,12 +128,13 @@ class _RuntimeTransferMixin:
         self.pending_cache_export_message = self.send_runtime(60, {0: 2, 1: 0})
 
     def maybe_refresh_compiled_cache(self) -> None:
-        if (
-            self.full_project_export is not None
-            and self.pending_export is None
-            and time.monotonic_ns() >= self.full_project_export.retry_after_ns
-        ):
-            self._request_project_file_export()
+        if self.full_project_export is not None:
+            if (
+                self.pending_import is None
+                and self.pending_export is None
+                and time.monotonic_ns() >= self.full_project_export.retry_after_ns
+            ):
+                self._request_project_file_export()
             return
         if self.pending_diagnosis is not None:
             if self.pending_diagnosis.stage == "export_wait" and self.pending_export is None:
@@ -163,16 +186,27 @@ class _RuntimeTransferMixin:
             self.cache_preparation_started = False
             self.cache_refresh_pending = True
             self.cache_refresh_after_ns = time.monotonic_ns() + COMPILED_CACHE_RETRY_NS
-        self._stage_full_project_manifest(cancelled)
         self.full_project_export = FullProjectExport(path, AtomicExportStream.open(path))
-        self._request_project_file_export()
+        try:
+            self._stage_full_project_manifest("full_project_export", cancelled)
+        except Exception:
+            self._finish_project_file_export(False)
+            raise
 
-    def _stage_full_project_manifest(self, cancelled: Callable[[], bool] | None = None) -> None:
+    def _stage_full_project_manifest(
+        self, purpose: str, cancelled: Callable[[], bool] | None = None
+    ) -> None:
         if self.bundle is None:
             raise RuntimeError("no project is active")
         if self.bundle.project_file is None:
-            full_bundle = self.bundle.materialize(self._project_scan_progress, cancelled)
-            self.send_runtime(70, {0: full_bundle.manifest()})
+            path, size = self.bundle.write_full_manifest_temp(
+                self._project_scan_progress, cancelled
+            )
+            self._begin_file_import(path, size, 5, purpose)
+        elif purpose == "full_project_export":
+            self._request_project_file_export()
+        else:
+            self._request_diagnosis_project_export()
 
     def _request_project_file_export(self) -> None:
         export = self.full_project_export
@@ -394,11 +428,10 @@ class _RuntimeTransferMixin:
         diagnosis.stage = "project"
         self._report_diagnosis_progress("project_scanning")
         try:
-            self._stage_full_project_manifest()
+            self._stage_full_project_manifest("diagnosis_project_export")
         except Exception as error:  # noqa: BLE001 - report project scan failures to the UI
             self._finish_diagnosis_export(False, str(error))
             return
-        self._request_diagnosis_project_export()
 
     def _request_diagnosis_project_export(self) -> None:
         diagnosis = self.pending_diagnosis
@@ -409,6 +442,8 @@ class _RuntimeTransferMixin:
         self.pending_export_message = self.send_runtime(60, {0: 3, 1: 0})
 
     def _finish_diagnosis_export(self, success: bool, message: str) -> None:
+        if not success and self.pending_import is not None:
+            self._cancel_pending_import()
         if not success:
             descriptor = self.pending_export[2] if self.pending_export is not None else None
             try:
@@ -472,6 +507,8 @@ class _RuntimeTransferMixin:
             )
 
     def _finish_project_file_export(self, success: bool | None, status: str | None = None) -> None:
+        if success is not True and self.pending_import is not None:
+            self._cancel_pending_import()
         export = self.full_project_export
         if success is not True and export is not None:
             export.stream.cancel()
@@ -484,25 +521,72 @@ class _RuntimeTransferMixin:
         if status is not None:
             self.events.put(FrontendEvent("status", status))
 
-    def _handle_import_accepted(self, accepted: dict[int, Any]) -> None:
+    def _handle_import_accepted(
+        self, accepted: dict[int, Any], correlation_id: int | None = None
+    ) -> None:
         from . import runtime as runtime_facade
 
-        if self.import_bytes is None:
+        pending = self.pending_import
+        if pending is None:
+            self.send_runtime(69, {0: accepted[0]})
             return
-        transfer_id = accepted[0]
-        self.import_transfer_id = transfer_id
-        offset = 0
-        while offset < len(self.import_bytes):
-            part = self.import_bytes[offset : offset + runtime_facade.STATE_IMPORT_CHUNK_BYTES]
-            self.send_runtime(64, {0: transfer_id, 1: offset, 2: part})
-            offset += len(part)
-        self.send_runtime(65, {0: transfer_id})
+        if correlation_id is not None and correlation_id != pending.begin_message_id:
+            self.events.put(log_event("忽略了不匹配的状态导入 Accepted", LogLevel.WARNING))
+            self.send_runtime(69, {0: accepted[0]})
+            return
+        if pending.transfer_id is not None:
+            self.events.put(log_event("忽略了重复的状态导入 Accepted", LogLevel.WARNING))
+            return
+        try:
+            transfer_id = accepted[0]
+            pending.transfer_id = transfer_id
+            offset = 0
+            hasher = blake3.blake3()
+            if pending.path is not None:
+                with pending.path.open("rb") as stream:
+                    while part := stream.read(runtime_facade.FULL_PROJECT_MANIFEST_CHUNK_BYTES):
+                        message_id = self.send_runtime(64, {0: transfer_id, 1: offset, 2: part})
+                        pending.command_message_ids.add(message_id)
+                        hasher.update(part)
+                        offset += len(part)
+                pending.path.unlink(missing_ok=True)
+                pending.path = None
+                if offset != pending.total_bytes:
+                    raise RuntimeError("full project manifest changed while being transferred")
+                message_id = self.send_runtime(65, {0: transfer_id, 1: hasher.digest()})
+                pending.commit_message_id = message_id
+                pending.command_message_ids.add(message_id)
+                return
+            assert pending.payload is not None
+            while offset < len(pending.payload):
+                part = pending.payload[offset : offset + runtime_facade.STATE_IMPORT_CHUNK_BYTES]
+                message_id = self.send_runtime(64, {0: transfer_id, 1: offset, 2: part})
+                pending.command_message_ids.add(message_id)
+                offset += len(part)
+            message_id = self.send_runtime(65, {0: transfer_id})
+            pending.commit_message_id = message_id
+            pending.command_message_ids.add(message_id)
+        except Exception as error:  # noqa: BLE001 - import failure must clean host/runtime state
+            self._fail_pending_import(f"状态导入传输失败：{error}")
 
-    def _handle_import_ready(self, ready: dict[int, Any]) -> None:
-        if self.import_transfer_id != ready[0]:
+    def _handle_import_ready(
+        self, ready: dict[int, Any], correlation_id: int | None = None
+    ) -> None:
+        pending = self.pending_import
+        if (
+            pending is None
+            or pending.transfer_id != ready[0]
+            or ready.get(1) != pending.kind
+            or (correlation_id is not None and correlation_id != pending.commit_message_id)
+        ):
+            self.events.put(log_event("忽略了不匹配的状态导入 Ready", LogLevel.WARNING))
             return
-        purpose = self.import_purpose
-        if purpose in {"project_cache", "project_file"}:
+        purpose = pending.purpose
+        if purpose == "full_project_export":
+            self._request_project_file_export()
+        elif purpose == "diagnosis_project_export":
+            self._request_diagnosis_project_export()
+        elif purpose in {"project_cache", "project_file"}:
             self._submit_project(ready[0])
         elif purpose == "traditional_save":
             self.events.put(FrontendEvent("status", "传统存档传输完成，正在读档…"))
@@ -510,10 +594,37 @@ class _RuntimeTransferMixin:
         else:
             self.events.put(FrontendEvent("status", "快照传输完成，正在恢复 VM…"))
             self._submit_start({0: variant(2, ready[0])})
-        self.import_bytes = None
-        self.import_transfer_id = None
-        self.import_purpose = None
+        self._clear_pending_import()
         self.pending_restore = None
+
+    def _clear_pending_import(self) -> None:
+        pending = self.pending_import
+        self.pending_import = None
+        if pending is not None and pending.path is not None:
+            pending.path.unlink(missing_ok=True)
+
+    def _cancel_pending_import(self) -> None:
+        pending = self.pending_import
+        self._clear_pending_import()
+        if pending is not None and pending.transfer_id is not None:
+            try:
+                self.send_runtime(69, {0: pending.transfer_id})
+            except Exception:  # noqa: BLE001 - cleanup must not mask the primary failure
+                pass
+
+    def _fail_pending_import(self, message: str) -> None:
+        pending = self.pending_import
+        if pending is None:
+            return
+        purpose = pending.purpose
+        self._cancel_pending_import()
+        if purpose == "full_project_export":
+            self._finish_project_file_export(False, message)
+        elif purpose == "diagnosis_project_export":
+            self._finish_diagnosis_export(False, message)
+        else:
+            self.pending_restore = None
+            self.events.put(FrontendEvent("runtime_error", message))
 
     def restore_snapshot(self, path: Path) -> None:
         payload = path.expanduser().resolve(strict=True).read_bytes()

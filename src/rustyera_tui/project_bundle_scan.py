@@ -110,7 +110,9 @@ class _ProjectBundleScanMixin:
         started = time.perf_counter()
         try:
             stored = json.loads(index_path.read_text(encoding="utf-8"))
-            index_current = stored.get("version") == 1 and isinstance(stored.get("files"), dict)
+            index_current = stored.get("version") in {1, 2} and isinstance(
+                stored.get("files"), dict
+            )
             previous = stored["files"] if index_current else {}
         except (OSError, ValueError, TypeError):
             previous = {}
@@ -146,8 +148,37 @@ class _ProjectBundleScanMixin:
                 except (TypeError, ValueError):
                     digest = None
                 if digest is not None and len(digest) == 32:
+                    metadata = prior.get("image_metadata")
+                    image_metadata = _indexed_image_metadata(metadata)
+                    if (
+                        category == 4
+                        and path.suffix.lower() in project_facade.RESOURCE_IMAGE_SUFFIXES
+                        and image_metadata is None
+                    ):
+                        try:
+                            from .image_metadata import decode_image_metadata
+
+                            with path.open("rb") as stream:
+                                image_metadata = decode_image_metadata(stream.read(1024 * 1024))
+                            if project_facade._source_signature(path) != source_signature:
+                                return _IndexedCandidate(
+                                    path,
+                                    category,
+                                    relative,
+                                    source_signature,
+                                    None,
+                                    0,
+                                )
+                        except (OSError, ValueError):
+                            image_metadata = None
                     return _IndexedCandidate(
-                        path, category, relative, source_signature, digest, prior["size"]
+                        path,
+                        category,
+                        relative,
+                        source_signature,
+                        digest,
+                        prior["size"],
+                        image_metadata,
                     )
             return _IndexedCandidate(path, category, relative, source_signature, None, 0)
 
@@ -184,7 +215,11 @@ class _ProjectBundleScanMixin:
                 project_file = ProjectFile(
                     item.relative_path,
                     item.category,
-                    None,
+                    (
+                        project_facade.external_resource(item.content_size, item.image_metadata)
+                        if item.category == 4
+                        else None
+                    ),
                     digest,
                     item.content_size,
                     source_path=item.path,
@@ -203,6 +238,17 @@ class _ProjectBundleScanMixin:
             digest = project_file.content_hash
             if digest is None:
                 raise ValueError(f"project file {item.relative_path} has no content hash")
+            image_metadata = item.image_metadata
+            if (
+                image_metadata is None
+                and project_file.payload is not None
+                and project_file.payload[0] == 3
+                and project_file.payload[1]
+                and isinstance(project_file.payload[1][0], dict)
+            ):
+                candidate_metadata = project_file.payload[1][0].get(1)
+                if isinstance(candidate_metadata, dict):
+                    image_metadata = candidate_metadata
             indexed.append(
                 (
                     project_file,
@@ -211,6 +257,16 @@ class _ProjectBundleScanMixin:
                         "signature": list(item.source_signature),
                         "hash": digest.hex(),
                         "size": project_file.content_size,
+                        "image_metadata": (
+                            [
+                                image_metadata[0],
+                                image_metadata[1],
+                                image_metadata[2],
+                                image_metadata[3],
+                            ]
+                            if image_metadata is not None
+                            else None
+                        ),
                     },
                 )
             )
@@ -225,7 +281,7 @@ class _ProjectBundleScanMixin:
         next_index = {item.relative_path: entry for item, entry in indexed}
         if not index_current or previous != next_index:
             started = time.perf_counter()
-            _write_source_index(index_path, {"version": 1, "files": next_index})
+            _write_source_index(index_path, {"version": 2, "files": next_index})
             metrics.index_write_ms = (time.perf_counter() - started) * 1000
         metrics.source_files_reused = len(inspected) - len(invalid)
         metrics.source_files_hashed = len(invalid)
@@ -275,3 +331,21 @@ class _ProjectBundleScanMixin:
         )
         files = {item.relative_path: item for item in materialized}
         return project_facade.ProjectBundle(self.root, self.revision, files, self.project_file)
+
+
+def _indexed_image_metadata(value: object) -> dict[int, object] | None:
+    if not isinstance(value, list) or len(value) != 4:
+        return None
+    width, height, format_name, animated = value
+    if (
+        not isinstance(width, int)
+        or isinstance(width, bool)
+        or not 0 < width <= 0xFFFF_FFFF
+        or not isinstance(height, int)
+        or isinstance(height, bool)
+        or not 0 < height <= 0xFFFF_FFFF
+        or format_name not in {"png", "bmp", "gif", "jpeg", "webp"}
+        or not isinstance(animated, bool)
+    ):
+        return None
+    return {0: width, 1: height, 2: format_name, 3: animated}

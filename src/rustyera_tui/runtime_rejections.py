@@ -64,6 +64,10 @@ class _RuntimeRejectionMixin:
             correlation_id == self.pending_export_message
             and self.pending_export_kind == ExportStage.PROJECT_FILE
         )
+        pending_import = self.pending_import
+        import_rejection = (
+            pending_import is not None and correlation_id in pending_import.command_message_ids
+        )
         pending_configuration = getattr(self, "pending_configuration", None)
         configuration_rejection = (
             isinstance(pending_configuration, PendingConfigurationPrepare)
@@ -83,7 +87,9 @@ class _RuntimeRejectionMixin:
                     )
                 )
             self.pending_configuration = None
-        if cache_export_rejection:
+        if import_rejection:
+            self._fail_pending_import(f"状态导入命令被拒绝：{rejection}")
+        elif cache_export_rejection:
             self.pending_export = None
             self.pending_cache_export_message = None
             if value.get(0) == 0:  # InvalidState: retry the caller-pumped preparation.
@@ -138,6 +144,7 @@ class _RuntimeRejectionMixin:
                 cache_export_rejection
                 or diagnosis_export_rejection
                 or project_file_export_rejection
+                or import_rejection
                 or configuration_rejection
                 or reload_rejection
             )

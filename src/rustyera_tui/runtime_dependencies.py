@@ -50,6 +50,7 @@ from .runtime_export import (
     DiagnosisExport,
     ExportStage,
     FullProjectExport,
+    PendingStateImport,
     atomic_write,
 )
 from .runtime_support import (
@@ -120,6 +121,7 @@ DIAGNOSIS_PROGRESS_STAGE_BY_EXPORT: dict[ExportStage, DiagnosisProgressStage] = 
 COMPILED_CACHE_PERSIST_DELAY_NS = 10_000_000_000
 COMPILED_CACHE_RETRY_NS = 250_000_000
 STATE_IMPORT_CHUNK_BYTES = 16 * 1024 * 1024
+FULL_PROJECT_MANIFEST_CHUNK_BYTES = 4 * 1024 * 1024
 STATE_EXPORT_CHUNK_BYTES = 16 * 1024 * 1024
 
 

@@ -222,10 +222,18 @@ def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
     try:
         raw = path.read_bytes()
         if category == FILE_RESOURCE:
+            metadata = None
+            if path.suffix.lower() in RESOURCE_IMAGE_SUFFIXES:
+                try:
+                    from .image_metadata import decode_image_metadata
+
+                    metadata = decode_image_metadata(raw[: 1024 * 1024])
+                except ValueError:
+                    metadata = None
             return ProjectFile(
                 relative,
                 category,
-                variant(1, raw),
+                project_facade.external_resource(len(raw), metadata),
                 blake3.blake3(raw).digest(),
                 len(raw),
                 path,

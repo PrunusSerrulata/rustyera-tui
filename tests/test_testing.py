@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from rustyera_tui.runtime import FrontendEvent, PresentationBatch, RuntimeClient
+from rustyera_tui.runtime import FrontendEvent, PendingStateImport, PresentationBatch, RuntimeClient
 from rustyera_tui.test_cli import build_parser, dispatch_agent_request
 from rustyera_tui.testing import (
     RustTestSession,
@@ -440,15 +440,19 @@ def test_runtime_start_request_uses_configured_seed() -> None:
 
 def test_runtime_routes_import_ready_by_state_kind() -> None:
     client = object.__new__(RuntimeClient)
-    client.import_transfer_id = 9
-    client.import_bytes = b"state"
+    client.pending_import = PendingStateImport(
+        kind=0,
+        purpose="traditional_save",
+        total_bytes=5,
+        payload=b"state",
+        transfer_id=9,
+    )
     client.pending_restore = (Path("state"), b"state", "traditional_save")
-    client.import_purpose = "traditional_save"
     client.events = SimpleNamespace(put=lambda _event: None)
     captured: list[tuple[int, dict[int, Any]]] = []
     client.send_runtime = lambda tag, value: captured.append((tag, value))  # type: ignore[method-assign]
 
-    client._handle_import_ready({0: 9})
+    client._handle_import_ready({0: 9, 1: 0})
 
     start_tag, start_fields = unwrap_variant(captured[0][1][0])
     assert captured[0][0] == 20

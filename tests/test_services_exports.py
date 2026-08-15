@@ -15,14 +15,21 @@ from services_test_support import (
     pytest,
     runtime_module,
 )
+from rustyera_tui.runtime_export import PendingStateImport
 
 
 def test_full_project_export_preempts_cache_and_cleans_up_on_cancel(tmp_path: Path) -> None:
     client, captured = client_with_capture()
     manifest = {0: 1, 1: []}
+    manifest_bytes = runtime_module.encode(manifest)
+    manifest_path = tmp_path / "full-manifest.cbor"
+    manifest_path.write_bytes(manifest_bytes)
     client.bundle = SimpleNamespace(
         project_file=None,
-        materialize=lambda _progress, _cancelled: SimpleNamespace(manifest=lambda: manifest),
+        write_full_manifest_temp=lambda _progress, _cancelled: (
+            manifest_path,
+            len(manifest_bytes),
+        ),
     )
     client.pending_export_kind = 2
     client.cache_preparation_started = True
@@ -31,9 +38,18 @@ def test_full_project_export_preempts_cache_and_cleans_up_on_cancel(tmp_path: Pa
 
     client.export_project_file(target, lambda: False)
 
-    assert [tag for tag, _value in captured] == [71, 70, 60]
+    assert [tag for tag, _value in captured] == [71, 62]
     assert captured[0][1] == {0: 2}
-    assert captured[1][1] == {0: manifest}
+    assert captured[1][1] == {0: 5, 1: len(manifest_bytes)}
+    client.maybe_refresh_compiled_cache()
+    assert [tag for tag, _value in captured] == [71, 62]
+    client._handle_import_accepted({0: 9})
+    assert captured[-1][0] == 65
+    assert captured[-1][1][0] == 9
+    assert captured[-1][1][1] == blake3.blake3(manifest_bytes).digest()
+    client._handle_import_ready({0: 9, 1: 5})
+    assert captured[-1] == (60, {0: 3, 1: 0})
+    assert client.pending_import is None
     assert client.full_project_export is not None
     temporary = client.full_project_export.stream.temporary
     assert temporary.exists()
@@ -47,6 +63,37 @@ def test_full_project_export_preempts_cache_and_cleans_up_on_cancel(tmp_path: Pa
     events = [client.events.get_nowait() for _ in range(client.events.qsize())]
     assert FrontendEvent("project_file_export_finished", None) in events
     assert FrontendEvent("project_progress_finished") in events
+
+
+def test_diagnosis_manifest_import_rejection_cancels_transfer_and_cleans_state(
+    tmp_path: Path,
+) -> None:
+    client, captured = client_with_capture()
+    temporary = tmp_path / "manifest.cbor"
+    temporary.write_bytes(b"pending")
+    client.pending_import = PendingStateImport(
+        kind=5,
+        purpose="diagnosis_project_export",
+        total_bytes=7,
+        path=temporary,
+        begin_message_id=11,
+        transfer_id=9,
+        command_message_ids={11, 12, 13},
+    )
+    client.pending_diagnosis = DiagnosisExport(
+        target=tmp_path / "diagnosis.zip",
+        project_name="game",
+        logs="",
+    )
+
+    client._handle_command_rejection({0: 2, 1: "bad chunk"}, 12)
+
+    assert client.pending_import is None
+    assert client.pending_diagnosis is None
+    assert not temporary.exists()
+    assert (69, {0: 9}) in captured
+    event = next_event_of_kind(client, "diagnosis_export_finished")
+    assert event.value == (False, "状态导入命令被拒绝：bad chunk")
 
 
 def test_snapshot_export_purposes_and_restore_warnings_are_frontend_visible(
@@ -287,14 +334,20 @@ def test_diagnosis_exports_a_full_project_and_retries_without_rescanning(
 ) -> None:
     client, captured = client_with_capture()
     manifest = {0: 1, 1: []}
+    manifest_bytes = runtime_module.encode(manifest)
+    manifest_path = tmp_path / "full-manifest.cbor"
+    manifest_path.write_bytes(manifest_bytes)
     materializations = 0
 
-    def materialize(_progress: object, _cancelled: object) -> SimpleNamespace:
+    def write_full_manifest(_progress: object, _cancelled: object) -> tuple[Path, int]:
         nonlocal materializations
         materializations += 1
-        return SimpleNamespace(manifest=lambda: manifest)
+        return manifest_path, len(manifest_bytes)
 
-    client.bundle = SimpleNamespace(project_file=None, materialize=materialize)
+    client.bundle = SimpleNamespace(
+        project_file=None,
+        write_full_manifest_temp=write_full_manifest,
+    )
     target = tmp_path / "diagnosis.tar.zst"
     snapshot = b"snapshot"
     input_replay = b'{"record":"header"}\n'
@@ -320,7 +373,10 @@ def test_diagnosis_exports_a_full_project_and_retries_without_rescanning(
     client._handle_export_chunk({0: 11, 1: 0, 2: snapshot, 3: True})
 
     assert materializations == 1
-    assert captured[-2:] == [(70, {0: manifest}), (60, {0: 3, 1: 0})]
+    assert captured[-1] == (62, {0: 5, 1: len(manifest_bytes)})
+    client._handle_import_accepted({0: 9})
+    client._handle_import_ready({0: 9, 1: 5})
+    assert captured[-1] == (60, {0: 3, 1: 0})
     assert client.pending_diagnosis is not None
     assert client.pending_diagnosis.stage == "project"
 
@@ -356,7 +412,7 @@ def test_diagnosis_project_scan_failure_releases_the_export_state(tmp_path: Path
 
     client.bundle = SimpleNamespace(
         project_file=None,
-        materialize=fail_materialize,
+        write_full_manifest_temp=fail_materialize,
     )
     target = tmp_path / "diagnosis.tar.zst"
     snapshot = b"snapshot"
