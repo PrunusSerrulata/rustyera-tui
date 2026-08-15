@@ -19,6 +19,13 @@ Read [test-cli.md](references/test-cli.md) before authoring or changing a scenar
   command by the remaining time.
 - Start each distinct full test suite at most once. After a failure is fixed, rerun only the
   directly affected node IDs, test files, or scenarios; never rerun the full suite in that task.
+- Run every command that may outlive its initial tool response in a persistent PTY. Start it with
+  `exec_command` using `tty: true` and a short yield, retain the returned `session_id`, and poll only
+  with `write_stdin` at intervals no longer than 30 seconds until an explicit exit code is observed.
+  Do not resume a yielded exec cell with a separate wait call: the cell may be reclaimed before its
+  result is collected. If a PTY session disappears without an exit code, report the command as
+  unverified; never restart a full suite, and rerun a targeted command only when the suite rules
+  permit it.
 - At 60 minutes, terminate every test process and report the active command, exact scenario/step,
   last stable-wait observation, elapsed time, completed checks, and unverified checks.
 
