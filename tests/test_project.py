@@ -568,8 +568,43 @@ def test_cache_hit_baseline_hydrates_the_first_scoped_reload_without_leaking_dis
 
     _, second_request = candidate.reload_file(unselected)
 
-    assert len(second_request[2]) == 1
-    assert unwrap_variant(second_request[2][0])[1][0][2] == variant(0, "PRINTL SINGLE_VERSION=2\n")
+    submitted = {
+        fields[0][0]: fields[0][2]
+        for tag, fields in map(unwrap_variant, second_request[2])
+        if tag == 0
+    }
+    assert submitted == {
+        "ERB/folder/command.erb": variant(0, "PRINTL FOLDER_VERSION=2\n"),
+        "ERB/single/command.erb": variant(0, "PRINTL SINGLE_VERSION=2\n"),
+    }
+
+
+def test_cache_hit_first_scoped_reload_replaces_the_sparse_runtime_baseline(
+    tmp_path: Path,
+) -> None:
+    selected = tmp_path / "ERB" / "selected.erb"
+    untouched = tmp_path / "ERB" / "untouched.erb"
+    selected.parent.mkdir(parents=True)
+    selected.write_text("PRINTL SELECTED_VERSION=1\n", encoding="utf-8")
+    untouched.write_text("PRINTL UNTOUCHED_VERSION=1\n", encoding="utf-8")
+    ProjectBundle.scan_quick(tmp_path)
+    baseline = ProjectBundle.scan_quick(tmp_path)
+    baseline.reload_baseline_pending = True
+    selected.write_text("PRINTL SELECTED_VERSION=2\n", encoding="utf-8")
+
+    candidate, request = baseline.reload_file(selected)
+
+    submitted = {
+        fields[0][0]: fields[0][2]
+        for tag, fields in map(unwrap_variant, request[2])
+        if tag == 0
+    }
+    assert submitted == {
+        "ERB/selected.erb": variant(0, "PRINTL SELECTED_VERSION=2\n"),
+        "ERB/untouched.erb": variant(0, "PRINTL UNTOUCHED_VERSION=1\n"),
+    }
+    assert candidate.is_materialized
+    assert candidate.reload_baseline_pending is False
 
 
 def test_stable_read_retries_when_signature_changes_during_read(

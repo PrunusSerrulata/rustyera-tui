@@ -167,7 +167,7 @@ class RustTestSession:
                 raise TestDriverError(f"{event.kind}: {event.value}")
         raise TestDriverError("timed out waiting for snapshot export")
 
-    def wait_for_status(self, text: str, deadline: float) -> None:
+    def wait_for_status(self, text: str, deadline: float) -> str:
         while text not in self.statuses and time.monotonic() < deadline:
             try:
                 event = self.worker.events.get(timeout=0.25)
@@ -182,6 +182,7 @@ class RustTestSession:
                 raise TestDriverError(f"{event.kind}: {event.value}")
         if text not in self.statuses:
             raise TestDriverError(f"timed out waiting for status {text!r}")
+        return next(status for status in reversed(self.statuses) if text in status)
 
     def wait_observation(
         self,

@@ -46,7 +46,8 @@ In a `serve` session, source-reload testing may also submit these operations one
 observation:
 
 - `{"op":"wait_status","text":"项目缓存已保存。"}` waits for a frontend status without changing
-  the active input.
+  the active input. Observing this status also authorizes a requested compiled-cache handoff, so a
+  cold-start producer does not need an artificial source reload before publishing its cache.
 - `{"op":"restart"}` recreates the runtime against the same isolated project.
 - `{"op":"edit_source","path":"ERB/main.erb","expected":"v1","replacement":"v2"}` replaces one
   exact UTF-8 source fragment inside the isolated project while the game stays running.

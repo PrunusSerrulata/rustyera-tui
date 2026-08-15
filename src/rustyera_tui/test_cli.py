@@ -102,6 +102,7 @@ class AgentDispatch:
     input_value: str | None = None
     drives_reference: bool = False
     completion_status: str | None = None
+    observed_cache_save: bool = False
 
 
 def dispatch_agent_request(
@@ -124,8 +125,11 @@ def dispatch_agent_request(
         return AgentDispatch({"type": "inspection", "values": rust.inspect(watched, deadline)})
     if operation == "wait_status":
         status = str(request.get("text", ""))
-        rust.wait_for_status(status, deadline)
-        return AgentDispatch({"type": "status_observed", "text": status})
+        observed = rust.wait_for_status(status, deadline)
+        return AgentDispatch(
+            {"type": "status_observed", "text": observed},
+            observed_cache_save="项目缓存已保存" in observed,
+        )
     if operation == "edit_source":
         _reject_reference_operation(reference_enabled, "source edits")
         path = str(request.get("path", ""))
@@ -296,6 +300,7 @@ def execute(args: argparse.Namespace) -> int:
                     step=step,
                     trace_path=trace_path,
                 )
+                cache_saved = cache_saved or agent_dispatch.observed_cache_save
                 trace.emit(agent_dispatch.trace_event)
                 if agent_dispatch.terminal:
                     completed_successfully = True

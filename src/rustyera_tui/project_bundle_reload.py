@@ -217,6 +217,19 @@ class _ProjectBundleReloadMixin:
         candidate.files = files
         candidate.quick_scan_pending = any(item.payload is None for item in files.values())
         candidate.reload_baseline_pending = candidate.quick_scan_pending
+        if not candidate.quick_scan_pending:
+            removals = [
+                variant(1, self.files[relative_path].category, relative_path)
+                for relative_path in sorted(
+                    set(self.files).difference(files), key=_path_sort_key
+                )
+            ]
+            request[2] = [
+                variant(0, item.submitted())
+                for item in sorted(
+                    files.values(), key=lambda item: _path_sort_key(item.relative_path)
+                )
+            ] + removals
         return candidate, request
 
     def _project_relative_path(self, path: Path, *, expected: str) -> str:

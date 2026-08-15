@@ -247,7 +247,7 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
     calls: list[tuple[str, Any]] = []
     rust = SimpleNamespace(
         inspect=lambda watches, deadline: calls.append(("inspect", (watches, deadline))) or {},
-        wait_for_status=lambda text, deadline: calls.append(("wait", (text, deadline))),
+        wait_for_status=lambda text, deadline: calls.append(("wait", (text, deadline))) or text,
         edit_source=lambda path, expected, replacement: calls.append(
             ("edit", (path, expected, replacement))
         ),
@@ -265,7 +265,9 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
     }
 
     inspect = dispatch_agent_request({"op": "inspect", "watches": ["FLAG:0"]}, **common)
-    status = dispatch_agent_request({"op": "wait_status", "text": "缓存已保存"}, **common)
+    status = dispatch_agent_request(
+        {"op": "wait_status", "text": "项目缓存已保存。"}, **common
+    )
     edit = dispatch_agent_request(
         {
             "op": "edit_source",
@@ -283,6 +285,7 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
 
     assert not inspect.advances and inspect.trace_event["type"] == "inspection"
     assert not status.advances and status.trace_event["type"] == "status_observed"
+    assert status.observed_cache_save
     assert not edit.advances and edit.trace_event["type"] == "source_edited"
     assert reload.advances and not reload.drives_reference
     assert reload.completion_status == "脚本热重载完成"
@@ -297,7 +300,7 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
     assert step.advances and step.drives_reference and step.input_value == "1"
     assert calls == [
         ("inspect", (("FLAG:0",), 12.5)),
-        ("wait", ("缓存已保存", 12.5)),
+        ("wait", ("项目缓存已保存。", 12.5)),
         ("edit", ("ERB/main.erb", "v1", "v2")),
         ("reload", ("folder", "ERB/folder")),
         ("restart", None),
