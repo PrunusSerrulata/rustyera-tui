@@ -84,11 +84,14 @@ jobs:
       - name: Install runtime library in Python package
         shell: pwsh
         run: Copy-Item -Force "target/release/${{ matrix.library }}" "src/rustyera_tui/${{ matrix.library }}"
+      - name: Sync Python environment
+        run: uv sync --locked
+      - name: Test TUI
+        if: matrix.name == 'linux-x86_64'
+        run: uv run pytest
       - name: Build standalone TUI
         shell: pwsh
         run: |
-          uv sync --locked
-          uv run pytest
           uv run pyinstaller --clean --noconfirm rustyera_tui.spec
           Compress-Archive -Path dist/rustyera_tui -DestinationPath "rustyera-tui-${{ matrix.name }}-standalone.zip"
       - uses: actions/upload-artifact@v7
