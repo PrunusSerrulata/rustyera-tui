@@ -5,8 +5,8 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 
 from .app_shell import RustyEraTui as RustyEraTui
-
-CORE_VERSION = "0.6.0 (a75d8e5f)"
+from .version import CORE_REVISION as CORE_REVISION
+from .version import CORE_VERSION as CORE_VERSION
 
 
 def frontend_version() -> str:

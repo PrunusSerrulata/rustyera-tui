@@ -102,6 +102,19 @@ def test_displayed_core_revision_matches_the_build_pin() -> None:
     assert CORE_VERSION.endswith(f"({pinned_revision[:8]})")
 
 
+async def test_runtime_reported_core_version_updates_about_dialog(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        worker.events.put(FrontendEvent("runtime_version", "9.8.7"))
+        await pilot.pause()
+
+        pinned_revision = (Path(__file__).parent.parent / "rustyera-core.rev").read_text().strip()
+        assert app.core_version == f"9.8.7 ({pinned_revision[:8]})"
+
+
 async def test_project_progress_shows_real_completed_work(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()

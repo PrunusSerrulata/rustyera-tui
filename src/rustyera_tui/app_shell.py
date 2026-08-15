@@ -24,6 +24,7 @@ from .log_model import LogEntry, LogLevel, make_log_entry
 from .presentation import PresentationModel
 from .runtime import RuntimeWorker
 from .runtime_types import GameInformation
+from .version import CORE_VERSION
 from .widgets import GameViewport
 
 from .app_interaction import _InteractionMixin
@@ -124,6 +125,7 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         )
         self.presentation = PresentationModel()
         self.game_information = GameInformation()
+        self.core_version = CORE_VERSION
         self.active_wait: dict[int, Any] | None = None
         self._activated_wait: tuple[int, Any] | None = None
         self._pending_retired_buttons: set[tuple[int, int]] = set()

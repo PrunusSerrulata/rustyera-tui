@@ -13,6 +13,7 @@ from .dialogs import FatalErrorDialog, PreferencesDialog
 from .log_model import LogLevel, LogMessage, format_log_entries
 from .runtime import DiagnosisProgress, FrontendEvent, PresentationBatch
 from .runtime_types import GameInformation
+from .version import CORE_REVISION
 from .widgets import GameViewport
 
 
@@ -129,6 +130,8 @@ class _WorkerEventMixin:
             self._set_status(f"项目已加载：{self.project}")
         elif kind == "game_information" and isinstance(value, GameInformation):
             self.game_information = value
+        elif kind == "runtime_version":
+            self.core_version = f"{value} ({CORE_REVISION})"
         else:
             return False
         return True

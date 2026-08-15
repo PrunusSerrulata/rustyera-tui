@@ -21,6 +21,15 @@ from services_test_support import (
 )
 
 
+def test_server_hello_reports_the_runtime_product_version() -> None:
+    client, _ = client_with_capture()
+    client.pending_bundle = None
+
+    client._handle_runtime(1, {1: {0: 1, 1: 2}, 4: 7, 7: 1, 8: "0.6.0"}, None)
+
+    assert client.events.get_nowait() == FrontendEvent("runtime_version", "0.6.0")
+
+
 def test_project_submission_stages_manifest_once_and_sends_a_small_load_request() -> None:
     client, captured = client_with_capture()
     manifest = {0: 1, 1: [{0: "main.erb", 1: 2, 2: variant(0, "@MAIN\nRETURN\n")}]}

@@ -346,9 +346,11 @@ class _MenuAndExportMixin:
         )
 
     def _help_action(self, item_id: str) -> None:
-        from .app import CORE_VERSION, frontend_version
+        from .app import frontend_version
 
         if item_id == "help-export-diagnosis":
             self._open_diagnosis_export_dialog()
         elif item_id == "help-about":
-            self.push_screen(AboutDialog(frontend_version(), CORE_VERSION, self.game_information))
+            self.push_screen(
+                AboutDialog(frontend_version(), self.core_version, self.game_information)
+            )

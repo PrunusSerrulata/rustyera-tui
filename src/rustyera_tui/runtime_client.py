@@ -337,6 +337,7 @@ class RuntimeClient(
             self.session = value[1]
             self.epoch = value[4]
             self.configuration_profile_supported = value.get(7) == 1
+            self.events.put(FrontendEvent("runtime_version", value.get(8, "unknown")))
             if self.pending_bundle is not None:
                 if self.pending_project_file_bytes is not None:
                     project_file = self.pending_project_file_bytes
