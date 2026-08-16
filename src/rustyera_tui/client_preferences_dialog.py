@@ -6,13 +6,12 @@ from textual.app import ComposeResult
 from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Input, Label, Select, Static
+from textual.widgets import Button, Checkbox, Input, Label, Static, TabbedContent, TabPane
 
 from .client_preferences import ClientPreferenceValues, LoadedPreferences, PreferenceValues
 from .color_picker import ColorField
 from .configuration import ConfigurationSnapshot
-from .preferences_schema import FIELDS, FieldSpec
-from .preferences_values import _field_id, control_value, set_control_value
+from .preferences_schema import FIELDS, PAGES, FieldSpec
 
 PREFERENCE_CODES = (
     "UseMouse",
@@ -35,14 +34,30 @@ CLIENT_DEFAULTS = {
     "masterVolume": 1.0,
     "trustProjectFileMetadata": False,
 }
+PREFERENCE_GROUPS = tuple(
+    (
+        group.title,
+        tuple(field for field in group.fields if field.code in PREFERENCE_CODES),
+    )
+    for group in PAGES[0].groups
+    if any(field.code in PREFERENCE_CODES for field in group.fields)
+)
 
 
 class PreferenceOverrideField(Horizontal):
-    def __init__(self, spec: FieldSpec, value: str, overridden: bool, disabled: bool) -> None:
-        classes = f"preference-field preference-{spec.kind}"
+    def __init__(
+        self,
+        scope: str,
+        spec: FieldSpec,
+        value: str,
+        overridden: bool,
+        disabled: bool,
+    ) -> None:
+        classes = f"preference-field preference-override-field preference-{spec.kind}"
         if spec.wide:
             classes += " preference-wide"
-        super().__init__(classes=classes)
+        super().__init__(id=f"row-preference-{scope}-{spec.code.lower()}", classes=classes)
+        self.scope = scope
         self.spec = spec
         self.value = value
         self.overridden = overridden
@@ -53,7 +68,8 @@ class PreferenceOverrideField(Horizontal):
             "覆盖",
             value=self.overridden,
             compact=True,
-            id=f"preference-override-{self.spec.code.lower()}",
+            id=f"preference-{self.scope}-override-{self.spec.code.lower()}",
+            classes="preference-override-toggle",
             disabled=self.control_disabled,
         )
         if self.spec.kind == "boolean":
@@ -61,15 +77,59 @@ class PreferenceOverrideField(Horizontal):
                 self.spec.label,
                 value=self.value == "YES",
                 compact=True,
-                id=_field_id(self.spec.code),
+                id=f"preference-{self.scope}-{self.spec.code.lower()}",
+                classes="preference-value-toggle",
                 disabled=self.control_disabled or not self.overridden,
             )
         elif self.spec.kind == "color":
             yield Label(self.spec.label, markup=False, classes="preference-field-label")
             yield ColorField(
                 self.value,
-                id=_field_id(self.spec.code),
+                id=f"preference-{self.scope}-{self.spec.code.lower()}",
                 disabled=self.control_disabled or not self.overridden,
+            )
+
+
+class ClientPreferenceOverrideField(Horizontal):
+    def __init__(
+        self,
+        scope: str,
+        key: str,
+        label: str,
+        kind: str,
+        disabled: bool,
+    ) -> None:
+        super().__init__(classes="preference-field preference-override-field")
+        self.scope = scope
+        self.key = key
+        self.label = label
+        self.kind = kind
+        self.control_disabled = disabled
+
+    def compose(self) -> ComposeResult:
+        key = self.key.lower()
+        yield Checkbox(
+            "覆盖",
+            compact=True,
+            id=f"preference-{self.scope}-client-override-{key}",
+            classes="preference-override-toggle",
+            disabled=self.control_disabled,
+        )
+        if self.kind == "boolean":
+            yield Checkbox(
+                self.label,
+                compact=True,
+                id=f"preference-{self.scope}-client-{key}",
+                classes="preference-value-toggle",
+                disabled=True,
+            )
+        else:
+            yield Label(self.label, markup=False, classes="preference-field-label")
+            yield Input(
+                id=f"preference-{self.scope}-client-{key}",
+                type="number",
+                compact=True,
+                disabled=True,
             )
 
 
@@ -116,74 +176,95 @@ class PreferencesDialog(ModalScreen[None]):
         return loaded is None or loaded.read_only
 
     def compose(self) -> ComposeResult:
-        scopes = [("全局", "global")]
-        if self.loaded["project"] is not None:
-            scopes.append(("当前项目", "project"))
         with Vertical(classes="dialog preferences-dialog"):
             yield Label("RustyEra TUI · 偏好设置", classes="dialog-title")
-            yield Select(
-                scopes, value="global", allow_blank=False, compact=True, id="preference-scope"
-            )
-            yield Static("", id="preferences-read-only", markup=False)
-            with VerticalScroll(classes="preferences-page-scroll"):
-                with Grid(classes="preferences-grid"):
-                    yield Label("界面与交互", classes="preferences-group-title")
-                    for code in PREFERENCE_CODES:
-                        draft = self.drafts["global"]
-                        yield PreferenceOverrideField(
-                            FIELDS[code],
-                            draft.get(code, self._inherited(code)),
-                            code in draft,
-                            self._scope_read_only(),
-                        )
-                    yield Label("客户端", classes="preferences-group-title")
-                    for key, label in (
-                        ("imageScale", "图片缩放"),
-                        ("masterVolume", "主音量"),
-                    ):
-                        yield Checkbox(
-                            f"覆盖{label}",
-                            id=f"preference-client-override-{key.lower()}",
-                        )
-                        yield Input(id=f"preference-client-{key.lower()}", type="number")
-                    yield Checkbox(
-                        "覆盖快速启动文件元数据策略",
-                        id="preference-client-override-trustprojectfilemetadata",
-                    )
-                    yield Checkbox(
-                        "信任文件大小和修改时间",
-                        id="preference-client-trustprojectfilemetadata",
-                    )
+            with TabbedContent(initial="preferences-global", id="preferences-tabs"):
+                for scope, title in (("global", "全局偏好"), ("project", "项目偏好")):
+                    loaded = self.loaded[scope]
+                    if loaded is None:
+                        continue
+                    with TabPane(title, id=f"preferences-{scope}"):
+                        with VerticalScroll(classes="preferences-page-scroll"):
+                            yield Static(
+                                "项目偏好优先于项目设置；全局偏好仅在项目没有明确设置时生效。",
+                                markup=False,
+                                classes="preferences-scope-note",
+                            )
+                            yield Static(
+                                loaded.error or "",
+                                markup=False,
+                                classes="preferences-read-only",
+                                id=f"preferences-{scope}-read-only",
+                            )
+                            with Grid(classes="preferences-grid"):
+                                for group_title, fields in PREFERENCE_GROUPS:
+                                    yield Label(group_title, classes="preferences-group-title")
+                                    for field in fields:
+                                        draft = self.drafts[scope]
+                                        yield PreferenceOverrideField(
+                                            scope,
+                                            field,
+                                            draft.get(field.code, self._inherited(field.code)),
+                                            field.code in draft,
+                                            loaded.read_only,
+                                        )
+                                yield Label(
+                                    "客户端显示与项目加载", classes="preferences-group-title"
+                                )
+                                yield ClientPreferenceOverrideField(
+                                    scope, "imageScale", "图片缩放", "number", loaded.read_only
+                                )
+                                yield ClientPreferenceOverrideField(
+                                    scope, "masterVolume", "主音量", "number", loaded.read_only
+                                )
+                                yield ClientPreferenceOverrideField(
+                                    scope,
+                                    "trustProjectFileMetadata",
+                                    "信任文件大小和修改时间",
+                                    "boolean",
+                                    loaded.read_only,
+                                )
             yield Static("", id="preferences-status", markup=False)
             with Horizontal(classes="preferences-actions"):
-                yield Button("清除本范围覆盖", id="preferences-reset", compact=True)
+                yield Button("恢复本范围默认", id="preferences-reset", compact=True)
                 yield Static(classes="preferences-action-spacer")
                 yield Button("应用", id="preferences-apply", variant="primary", compact=True)
                 yield Button("取消", id="preferences-cancel", compact=True)
 
     def on_mount(self) -> None:
-        self._refresh_scope()
+        for scope, loaded in self.loaded.items():
+            if loaded is not None:
+                self._refresh_scope(scope)
+        self._refresh_action_buttons()
 
-    def _capture(self) -> bool:
+    def _active_scope(self) -> str:
+        active = self.query_one("#preferences-tabs", TabbedContent).active
+        return "project" if active == "preferences-project" else "global"
+
+    def _capture(self, scope: str) -> bool:
         draft: dict[str, str] = {}
         for code in PREFERENCE_CODES:
-            override = self.query_one(f"#preference-override-{code.lower()}", Checkbox)
+            override = self.query_one(f"#preference-{scope}-override-{code.lower()}", Checkbox)
             if not override.value:
                 continue
             try:
-                draft[code] = control_value(self.query_one, FIELDS[code])
+                draft[code] = self._control_value(scope, FIELDS[code])
             except ValueError as error:
                 self.notify(f"{FIELDS[code].label}：{error}", severity="error")
                 return False
-        self.drafts[self.scope] = draft
+        self.drafts[scope] = draft
         image_scale: float | None = None
         master_volume: float | None = None
         for key in ("imageScale", "masterVolume"):
-            override = self.query_one(f"#preference-client-override-{key.lower()}", Checkbox)
+            override = self.query_one(
+                f"#preference-{scope}-client-override-{key.lower()}", Checkbox
+            )
             if not override.value:
                 continue
             try:
-                value = float(self.query_one(f"#preference-client-{key.lower()}", Input).value)
+                value = float(
+                    self.query_one(f"#preference-{scope}-client-{key.lower()}", Input).value
+                )
             except ValueError:
                 self.notify(f"{key} 必须是数字", severity="error")
                 return False
@@ -196,71 +277,100 @@ class PreferencesDialog(ModalScreen[None]):
             else:
                 master_volume = value
         trust_override = self.query_one(
-            "#preference-client-override-trustprojectfilemetadata", Checkbox
+            f"#preference-{scope}-client-override-trustprojectfilemetadata", Checkbox
         )
         trust = None
         if trust_override.value:
-            trust = self.query_one("#preference-client-trustprojectfilemetadata", Checkbox).value
-        self.client_drafts[self.scope] = ClientPreferenceValues(image_scale, master_volume, trust)
+            trust = self.query_one(
+                f"#preference-{scope}-client-trustprojectfilemetadata", Checkbox
+            ).value
+        self.client_drafts[scope] = ClientPreferenceValues(image_scale, master_volume, trust)
         return True
 
-    def _refresh_scope(self) -> None:
-        draft = self.drafts[self.scope]
-        read_only = self._scope_read_only()
-        loaded = self.loaded[self.scope]
-        warning = loaded.error if loaded is not None and loaded.error else ""
-        self.query_one("#preferences-read-only", Static).update(warning)
+    def _control_value(self, scope: str, field: FieldSpec) -> str:
+        if field.kind == "boolean":
+            control = self.query_one(f"#preference-{scope}-{field.code.lower()}", Checkbox)
+            return "YES" if control.value else "NO"
+        if field.kind == "color":
+            return self.query_one(f"#preference-{scope}-{field.code.lower()}", ColorField).value
+        raise ValueError(f"不支持的偏好控件类型：{field.kind}")
+
+    def _set_control_value(self, scope: str, field: FieldSpec, value: str) -> None:
+        if field.kind == "boolean":
+            self.query_one(f"#preference-{scope}-{field.code.lower()}", Checkbox).value = (
+                value == "YES"
+            )
+        elif field.kind == "color":
+            self.query_one(f"#preference-{scope}-{field.code.lower()}", ColorField).value = value
+        else:
+            raise ValueError(f"不支持的偏好控件类型：{field.kind}")
+
+    def _refresh_scope(self, scope: str) -> None:
+        draft = self.drafts[scope]
+        loaded = self.loaded[scope]
+        if loaded is None:
+            return
+        locked = loaded.read_only or self.busy
         for code in PREFERENCE_CODES:
             overridden = code in draft
-            self.query_one(f"#preference-override-{code.lower()}", Checkbox).value = overridden
-            set_control_value(self.query_one, FIELDS[code], draft.get(code, self._inherited(code)))
-            self.query_one(f"#{_field_id(code)}").disabled = read_only or not overridden
-            self.query_one(f"#preference-override-{code.lower()}", Checkbox).disabled = read_only
-        client = self.client_drafts[self.scope].to_json()
+            override = self.query_one(f"#preference-{scope}-override-{code.lower()}", Checkbox)
+            override.value = overridden
+            override.disabled = locked
+            self._set_control_value(scope, FIELDS[code], draft.get(code, self._inherited(code)))
+            self.query_one(f"#preference-{scope}-{code.lower()}").disabled = (
+                locked or not overridden
+            )
+        client = self.client_drafts[scope].to_json()
         for key in ("imageScale", "masterVolume"):
             overridden = key in client
             self.query_one(
-                f"#preference-client-override-{key.lower()}", Checkbox
+                f"#preference-{scope}-client-override-{key.lower()}", Checkbox
             ).value = overridden
-            input_widget = self.query_one(f"#preference-client-{key.lower()}", Input)
+            self.query_one(
+                f"#preference-{scope}-client-override-{key.lower()}", Checkbox
+            ).disabled = locked
+            input_widget = self.query_one(f"#preference-{scope}-client-{key.lower()}", Input)
             input_widget.value = str(client.get(key, CLIENT_DEFAULTS[key]))
-            input_widget.disabled = read_only or not overridden
+            input_widget.disabled = locked or not overridden
         trust_overridden = "trustProjectFileMetadata" in client
-        self.query_one(
-            "#preference-client-override-trustprojectfilemetadata", Checkbox
-        ).value = trust_overridden
-        trust = self.query_one("#preference-client-trustprojectfilemetadata", Checkbox)
+        trust_override = self.query_one(
+            f"#preference-{scope}-client-override-trustprojectfilemetadata", Checkbox
+        )
+        trust_override.value = trust_overridden
+        trust_override.disabled = locked
+        trust = self.query_one(f"#preference-{scope}-client-trustprojectfilemetadata", Checkbox)
         trust.value = bool(
             client.get("trustProjectFileMetadata", CLIENT_DEFAULTS["trustProjectFileMetadata"])
         )
-        trust.disabled = read_only or not trust_overridden
+        trust.disabled = locked or not trust_overridden
+
+    def _refresh_action_buttons(self) -> None:
+        if not self.is_mounted:
+            return
+        read_only = self._scope_read_only()
         self.query_one("#preferences-reset", Button).disabled = read_only or self.busy
         self.query_one("#preferences-apply", Button).disabled = read_only or self.busy
 
-    def on_select_changed(self, event: Select.Changed) -> None:
-        if event.select.id != "preference-scope" or event.value not in {"global", "project"}:
-            return
-        if not self._capture():
-            event.select.value = self.scope
-            return
-        self.scope = str(event.value)
-        self._refresh_scope()
+    def on_tabbed_content_tab_activated(self, _event: TabbedContent.TabActivated) -> None:
+        self.scope = self._active_scope()
+        self._refresh_action_buttons()
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         widget_id = event.checkbox.id or ""
-        client_prefix = "preference-client-override-"
+        scope = self._active_scope()
+        client_prefix = f"preference-{scope}-client-override-"
         if widget_id.startswith(client_prefix):
             key = widget_id[len(client_prefix) :]
-            self.query_one(f"#preference-client-{key}").disabled = (
+            self.query_one(f"#preference-{scope}-client-{key}").disabled = (
                 self._scope_read_only() or not event.checkbox.value or self.busy
             )
             return
-        prefix = "preference-override-"
+        prefix = f"preference-{scope}-override-"
         if not widget_id.startswith(prefix):
             return
         code_lower = widget_id[len(prefix) :]
         code = next(item for item in PREFERENCE_CODES if item.lower() == code_lower)
-        self.query_one(f"#{_field_id(code)}").disabled = (
+        self.query_one(f"#preference-{scope}-{code.lower()}").disabled = (
             self._scope_read_only() or not event.checkbox.value or self.busy
         )
 
@@ -269,23 +379,31 @@ class PreferencesDialog(ModalScreen[None]):
             self.dismiss()
             return
         if event.button.id == "preferences-reset":
-            self.drafts[self.scope] = {}
-            self.client_drafts[self.scope] = ClientPreferenceValues()
-            self._refresh_scope()
+            scope = self._active_scope()
+            self.drafts[scope] = {}
+            self.client_drafts[scope] = ClientPreferenceValues()
+            self._refresh_scope(scope)
             return
-        if event.button.id != "preferences-apply" or not self._capture():
+        scope = self._active_scope()
+        if event.button.id != "preferences-apply" or not self._capture(scope):
             return
         self.busy = True
-        self._refresh_scope()
+        for candidate, loaded in self.loaded.items():
+            if loaded is not None:
+                self._refresh_scope(candidate)
+        self._refresh_action_buttons()
         self.query_one("#preferences-status", Static).update("正在保存偏好…")
         self.post_message(
             self.SaveRequested(
-                self.scope,
-                PreferenceValues(self.drafts[self.scope], self.client_drafts[self.scope]),
+                scope,
+                PreferenceValues(self.drafts[scope], self.client_drafts[scope]),
             )
         )
 
     def save_finished(self, message: str) -> None:
         self.busy = False
-        self._refresh_scope()
+        for scope, loaded in self.loaded.items():
+            if loaded is not None:
+                self._refresh_scope(scope)
+        self._refresh_action_buttons()
         self.query_one("#preferences-status", Static).update(message)

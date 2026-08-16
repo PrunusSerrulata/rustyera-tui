@@ -23,7 +23,11 @@ from app_test_support import (
     configuration_entry,
     configuration_value,
 )
-from rustyera_tui.client_preferences import LoadedPreferences, PreferenceValues
+from rustyera_tui.client_preferences import (
+    ClientPreferenceValues,
+    LoadedPreferences,
+    PreferenceValues,
+)
 
 
 def test_project_settings_schema_contains_exactly_39_visible_fields() -> None:
@@ -55,15 +59,49 @@ async def test_client_preferences_are_separate_and_saved_from_ctrl_comma(tmp_pat
         await pilot.pause(0.1)
         await pilot.press("ctrl+comma")
         assert isinstance(app.screen, PreferencesDialog)
-        override = app.screen.query_one("#preference-override-usemouse", Checkbox)
+        override = app.screen.query_one("#preference-global-override-usemouse", Checkbox)
         override.value = True
-        app.screen.query_one("#preference-usemouse", Checkbox).value = False
+        app.screen.query_one("#preference-global-usemouse", Checkbox).value = False
         await pilot.click("#preferences-apply")
         await pilot.pause()
 
         assert (
             "save_client_preferences",
             ("global", PreferenceValues({"UseMouse": "NO"})),
+        ) in worker.commands
+
+
+async def test_global_preferences_use_project_settings_layout_before_project_load(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    app.global_preferences = LoadedPreferences(
+        tmp_path / "global" / "preferences-v1.json", PreferenceValues({})
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.press("ctrl+comma")
+        assert isinstance(app.screen, PreferencesDialog)
+        tabs = app.screen.query_one("#preferences-tabs", TabbedContent)
+        assert tabs.active == "preferences-global"
+        assert len(app.screen.query(".preferences-group-title")) == 5
+        assert not app.screen.query("#preferences-project")
+
+        override = app.screen.query_one("#preference-global-client-override-imagescale", Checkbox)
+        override.value = True
+        image_scale = app.screen.query_one("#preference-global-client-imagescale", Input)
+        image_scale.value = "1.5"
+        await pilot.click("#preferences-apply")
+        await pilot.pause()
+
+        assert (
+            "save_client_preferences",
+            (
+                "global",
+                PreferenceValues({}, ClientPreferenceValues(image_scale=1.5)),
+            ),
         ) in worker.commands
 
 
