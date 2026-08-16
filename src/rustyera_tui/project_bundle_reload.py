@@ -106,6 +106,7 @@ class _ProjectBundleReloadMixin:
             ):
                 changes.append(variant(0, new.submitted()))
         reload_request = {0: self.revision, 1: candidate.revision, 2: changes}
+        project_facade.ProjectBundle.scan_quick(self.root, candidate.revision)
         return self._hydrate_reload_baseline(candidate, reload_request)
 
     def reload_folder(
@@ -122,6 +123,7 @@ class _ProjectBundleReloadMixin:
             relative for relative in self.files if not prefix or relative.startswith(prefix)
         }
         candidate, request = self._reload_selected(scanned_files, selected)
+        project_facade.ProjectBundle.scan_quick(self.root, candidate.revision)
         return self._hydrate_reload_baseline(candidate, request)
 
     def _scan_folder_sync(
@@ -195,6 +197,7 @@ class _ProjectBundleReloadMixin:
             1: candidate.revision,
             2: [variant(0, item.submitted())],
         }
+        project_facade.ProjectBundle.scan_quick(self.root, candidate.revision)
         return self._hydrate_reload_baseline(candidate, request)
 
     def _hydrate_reload_baseline(

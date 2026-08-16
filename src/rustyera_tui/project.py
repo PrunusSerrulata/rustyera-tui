@@ -72,9 +72,12 @@ class ProjectScanMetrics:
     source_index_present: bool = False
     source_files_reused: int = 0
     source_files_hashed: int = 0
+    source_index_misses: tuple[str, ...] = ()
 
     def telemetry(self) -> dict[str, float | bool | int]:
-        return asdict(self)
+        result = asdict(self)
+        result.pop("source_index_misses")
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,8 +143,12 @@ from .project_scan import (  # noqa: E402
     _project_paths as _project_paths,
 )
 from .project_source_index import (  # noqa: E402
+    SOURCE_INDEX_VERSION as SOURCE_INDEX_VERSION,
     _atomic_write_text as _atomic_write_text,
+    _portable_source_signature as _portable_source_signature,
     _resource_manifest_lines as _resource_manifest_lines,
+    _source_index_category as _source_index_category,
+    _source_index_signature_matches as _source_index_signature_matches,
     _source_signature as _source_signature,
     _write_source_index as _write_source_index,
 )

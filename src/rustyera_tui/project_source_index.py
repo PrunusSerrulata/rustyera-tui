@@ -9,6 +9,10 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+SOURCE_INDEX_VERSION = 3
+# v3 uses the browser-common size/mtime-ms signature. It is only safe to reuse when
+# the caller's project-file-metadata trust policy permits stat-based indexing.
+
 
 def _normalize_relative_path(path: str) -> str:
     return unicodedata.normalize("NFC", path)
@@ -61,6 +65,40 @@ def _source_signature(path: Path) -> tuple[int, int, int, int, int]:
         getattr(stat, "st_dev", 0),
         getattr(stat, "st_ino", 0),
     )
+
+
+def _portable_source_signature(signature: tuple[int, int, int, int, int]) -> str:
+    """Return the cross-frontend signature shared with Browser and Tauri."""
+
+    return f"{signature[0]}:{signature[1] // 1_000_000}"
+
+
+def _source_index_signature_matches(
+    value: object, signature: tuple[int, int, int, int, int]
+) -> bool:
+    if isinstance(value, str):
+        return value == _portable_source_signature(signature)
+    return (
+        isinstance(value, list)
+        and len(value) == 5
+        and all(isinstance(item, int) and not isinstance(item, bool) for item in value)
+        and tuple(value) == signature
+    )
+
+
+def _source_index_category(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return {
+            "csv": 0,
+            "erh": 1,
+            "erb": 2,
+            "resource_manifest": 3,
+            "resource": 4,
+            "configuration": 5,
+        }.get(value)
+    return None
 
 
 def _write_source_index(path: Path, value: dict[str, Any]) -> None:

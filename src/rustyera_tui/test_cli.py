@@ -25,6 +25,7 @@ from .testing import (
     default_trace_path,
     goal_status,
     install_test_compiled_cache,
+    install_test_source_index,
     isolated_project_copy,
     publish_test_handoff,
 )
@@ -218,9 +219,14 @@ def execute(args: argparse.Namespace) -> int:
         isolated_root = Path(isolated.name)
         rust_project = isolated_project_copy(scenario.project, isolated_root, "rust")
         cache_input = os.environ.get("RUSTYERA_TEST_COMPILED_CACHE_INPUT")
+        source_index_input = os.environ.get("RUSTYERA_TEST_SOURCE_INDEX_INPUT")
         install_test_compiled_cache(
             rust_project,
             Path(cache_input) if cache_input else None,
+        )
+        install_test_source_index(
+            rust_project,
+            Path(source_index_input) if source_index_input else None,
         )
         reference_project = scenario.project
         if reference is not None:
@@ -232,8 +238,35 @@ def execute(args: argparse.Namespace) -> int:
             metrics_threshold_ms=args.metrics_threshold_ms,
         )
         rust_observation = rust.wait_observation(deadline)
-        if cache_input:
-            rust.wait_for_status("项目缓存命中，正在进入标题画面…", deadline)
+        if source_index_input:
+            client = rust.worker.client
+            reused = (
+                client.startup_host_durations.get("source_files_reused", 0)
+                if client is not None
+                else 0
+            )
+            hashed = (
+                client.startup_host_durations.get("source_files_hashed", 0)
+                if client is not None
+                else 0
+            )
+            misses = client.source_index_misses if client is not None else ()
+            if (
+                not isinstance(reused, int)
+                or reused < 1
+                or not isinstance(hashed, int)
+                or hashed != 0
+            ):
+                raise TestDriverError(
+                    f"cross-host project source index was not fully reused: "
+                    f"reused={reused}, hashed={hashed}, "
+                    f"misses={misses}"
+                )
+        if cache_input and not any("runtime.compiled_cache_hit" in log for log in rust.logs):
+            raise TestDriverError(
+                "cross-host compiled cache was not accepted: "
+                f"statuses={rust.statuses[-10:]}, logs={rust.logs[-20:]}"
+            )
         reference_observation = reference.start(scenario, reference_project) if reference else None
         decorated = _decorate(rust_observation, reference_observation, scenario, rust, deadline)
         trace.emit(
@@ -366,6 +399,7 @@ def execute(args: argparse.Namespace) -> int:
         if rust:
             try:
                 cache_output = os.environ.get("RUSTYERA_TEST_COMPILED_CACHE_OUTPUT")
+                source_index_output = os.environ.get("RUSTYERA_TEST_SOURCE_INDEX_OUTPUT")
                 project_output = os.environ.get("RUSTYERA_TEST_PROJECT_OUTPUT")
                 if completed_successfully and rust_project is not None:
                     if cache_output and not cache_saved:
@@ -377,7 +411,9 @@ def execute(args: argparse.Namespace) -> int:
                         rust_project,
                         scenario.project,
                         Path(cache_input) if cache_input else None,
+                        Path(source_index_input) if source_index_input else None,
                         Path(cache_output) if cache_output else None,
+                        Path(source_index_output) if source_index_output else None,
                         Path(project_output) if project_output else None,
                     )
             finally:

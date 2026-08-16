@@ -15,6 +15,7 @@ from rustyera_tui.project import (
     IO_CONFLICT,
     ProjectBundle,
     ProjectFile,
+    SOURCE_INDEX_VERSION,
     StorageBackend,
 )
 from rustyera_tui.wire import decode, unwrap_variant, variant
@@ -479,6 +480,15 @@ def test_quick_scan_reloads_only_the_selected_file(tmp_path: Path) -> None:
     )
     assert candidate.files["ERB/unselected.erb"].payload is None
     assert candidate.files["ERB/unselected.erb"].content_hash == unselected_hash
+    refreshed = json.loads(
+        (tmp_path / ".rustyera" / "cache" / "source-index-v1.json").read_text(encoding="utf-8")
+    )
+    assert refreshed["files"]["ERB/selected.erb"]["signature"] == (
+        f"{selected.stat().st_size}:{selected.stat().st_mtime_ns // 1_000_000}"
+    )
+    repeated = ProjectBundle.scan_quick(tmp_path)
+    assert repeated.scan_metrics.source_files_reused == 2
+    assert repeated.scan_metrics.source_files_hashed == 0
 
 
 def test_folder_reload_preserves_unselected_source_generation(tmp_path: Path) -> None:
@@ -767,6 +777,42 @@ def test_quick_scan_reuses_stat_index_and_materializes_on_demand(
     assert materialized.identity() == quick.identity()
 
 
+def test_quick_scan_migrates_browser_index_and_keeps_incremental_reuse(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "main.erb"
+    source.write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
+    ProjectBundle.scan_quick(tmp_path)
+    index_path = tmp_path / ".rustyera" / "cache" / "source-index-v1.json"
+    browser_index = json.loads(index_path.read_text(encoding="utf-8"))
+    entry = browser_index["files"]["main.erb"]
+    entry["category"] = "erb"
+    entry["signature"] = f"{source.stat().st_size}:{source.stat().st_mtime_ns // 1_000_000}"
+    browser_index["version"] = 2
+    index_path.write_text(json.dumps(browser_index), encoding="utf-8")
+
+    migrated = ProjectBundle.scan_quick(tmp_path)
+
+    assert migrated.scan_metrics.source_files_reused == 1
+    assert migrated.scan_metrics.source_files_hashed == 0
+    canonical = json.loads(index_path.read_text(encoding="utf-8"))
+    assert canonical["version"] == SOURCE_INDEX_VERSION
+    assert canonical["files"]["main.erb"]["category"] == FILE_ERB
+    assert isinstance(canonical["files"]["main.erb"]["signature"], str)
+
+    source.write_text("@SYSTEM_TITLE\nPRINTL CHANGED\nRETURN\n", encoding="utf-8")
+    updated = ProjectBundle.scan_quick(tmp_path)
+    repeated = ProjectBundle.scan_quick(tmp_path)
+
+    assert updated.scan_metrics.source_files_reused == 0
+    assert updated.scan_metrics.source_files_hashed == 1
+    assert updated.scan_metrics.source_index_misses == ("main.erb",)
+    assert "source_index_misses" not in updated.scan_metrics.telemetry()
+    assert repeated.scan_metrics.source_files_reused == 1
+    assert repeated.scan_metrics.source_files_hashed == 0
+    assert repeated.scan_metrics.source_index_misses == ()
+
+
 @pytest.mark.parametrize(
     ("version", "metadata"),
     [
@@ -800,13 +846,13 @@ def test_quick_scan_migrates_missing_or_invalid_cached_image_metadata(
         {0: 24, 1: {0: 2, 1: 3, 2: "png", 3: False}},
     )
     migrated = json.loads(index_path.read_text(encoding="utf-8"))
-    assert migrated["version"] == 2
-    assert migrated["files"]["resources/image.png"]["image_metadata"] == [
-        2,
-        3,
-        "png",
-        False,
-    ]
+    assert migrated["version"] == SOURCE_INDEX_VERSION
+    assert migrated["files"]["resources/image.png"]["image_metadata"] == {
+        "width": 2,
+        "height": 3,
+        "format": "png",
+        "animated": False,
+    }
 
 
 def test_sparse_cache_hit_baseline_materializes_only_for_the_first_reload(

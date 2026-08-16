@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -416,33 +417,71 @@ def install_test_compiled_cache(project: Path, source: Path | None) -> None:
     shutil.copy2(cache, destination)
 
 
+def install_test_source_index(project: Path, source: Path | None) -> None:
+    """Install a cross-frontend source index beside an isolated CLI project."""
+
+    if source is None:
+        return
+    index = source.expanduser().resolve(strict=True)
+    destination = project / ".rustyera" / "cache" / "source-index-v1.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(index, destination)
+    document = json.loads(index.read_text(encoding="utf-8"))
+    for relative_path, entry in document.get("files", {}).items():
+        relative = PurePosixPath(relative_path)
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            raise TestDriverError("source-index path must stay inside the isolated project")
+        target = project.joinpath(*relative.parts).resolve(strict=True)
+        if not target.is_relative_to(project.resolve()):
+            raise TestDriverError("source-index path must stay inside the isolated project")
+        signature = entry.get("signature")
+        match = re.fullmatch(r"(\d+):(\d+)", signature if isinstance(signature, str) else "")
+        if match is None or target.stat().st_size != int(match[1]):
+            raise TestDriverError("source-index signature does not match the isolated project")
+        current = target.stat()
+        os.utime(target, ns=(current.st_atime_ns, int(match[2]) * 1_000_000 + 500_000))
+
+
 def publish_test_handoff(
     session: RustTestSession,
     project: Path,
     source_project: Path,
     cache_input: Path | None,
+    source_index_input: Path | None,
     cache_target: Path | None,
+    source_index_target: Path | None,
     project_target: Path | None,
 ) -> None:
     """Atomically publish one successful RuntimeWorker cross-host handoff."""
 
-    if cache_target is None and project_target is None:
+    if cache_target is None and source_index_target is None and project_target is None:
         return
     client = session.worker.client
     if client is None or client.storage is None:
         raise TestDriverError("runtime did not initialize project storage for cache export")
     cache_source = client.storage.compiled_cache_path()
+    source_index_source = project / ".rustyera" / "cache" / "source-index-v1.json"
     if cache_target is not None and not cache_source.is_file():
         raise TestDriverError("runtime did not persist a compiled project cache")
+    if source_index_target is not None and not source_index_source.is_file():
+        raise TestDriverError("frontend did not persist a project source index")
     source_root = source_project.resolve()
     isolated_root = project.resolve()
     cache = cache_target.resolve() if cache_target is not None else None
+    source_index = source_index_target.resolve() if source_index_target is not None else None
     output = project_target.resolve() if project_target is not None else None
     if cache_input is not None and cache is not None and cache_input.resolve() == cache:
         raise TestDriverError("cache input and output must differ")
-    if cache is not None and output is not None and cache == output:
-        raise TestDriverError("cache and project outputs must differ")
-    for target in (cache, output):
+    if (
+        source_index_input is not None
+        and source_index is not None
+        and source_index_input.resolve() == source_index
+    ):
+        raise TestDriverError("source-index input and output must differ")
+    targets = [target for target in (cache, source_index, output) if target is not None]
+    if len(set(targets)) != len(targets):
+        raise TestDriverError("cross-host artifact outputs must differ")
+    for target in targets:
         if target is not None and (
             target == source_root
             or target.is_relative_to(source_root)
@@ -457,7 +496,9 @@ def publish_test_handoff(
             raise TestDriverError("project output target must be absent or empty")
     if cache is not None and cache.exists():
         raise TestDriverError("cache output target must not exist")
-    parents = {target.parent for target in (cache, output) if target is not None}
+    if source_index is not None and source_index.exists():
+        raise TestDriverError("source-index output target must not exist")
+    parents = {target.parent for target in targets}
     if len(parents) != 1:
         raise TestDriverError("cross-host cache and project outputs must share a parent directory")
     parent = next(iter(parents))
@@ -466,6 +507,8 @@ def publish_test_handoff(
         temporary = Path(temporary_name)
         if cache is not None:
             shutil.copy2(cache_source, temporary / "compiled-project.reracache")
+        if source_index is not None:
+            shutil.copy2(source_index_source, temporary / "source-index-v1.json")
         if output is not None:
             shutil.copytree(
                 project,
@@ -474,6 +517,8 @@ def publish_test_handoff(
             )
         if cache is not None:
             (temporary / "compiled-project.reracache").replace(cache)
+        if source_index is not None:
+            (temporary / "source-index-v1.json").replace(source_index)
         if output is not None:
             if output.exists():
                 output.rmdir()

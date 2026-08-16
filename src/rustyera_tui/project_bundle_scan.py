@@ -13,6 +13,7 @@ from .project import (
     ProjectScanMetrics,
     ProjectScanProgress,
     PurePosixPath,
+    SOURCE_INDEX_VERSION,
     STABLE_READ_ATTEMPTS,
     _IndexedCandidate,
     _ProjectChangedDuringScan,
@@ -22,7 +23,10 @@ from .project import (
     _parallel_ordered,
     _parallel_project_reads,
     _project_paths,
+    _portable_source_signature,
     _report_scan_progress,
+    _source_index_category,
+    _source_index_signature_matches,
     _verify_stable_files,
     _write_source_index,
     json,
@@ -107,12 +111,14 @@ class _ProjectBundleScanMixin:
         metrics = ProjectScanMetrics()
         index_path = root / ".rustyera" / "cache" / "source-index-v1.json"
         index_current = False
+        index_portable = False
         started = time.perf_counter()
         try:
             stored = json.loads(index_path.read_text(encoding="utf-8"))
-            index_current = stored.get("version") in {1, 2} and isinstance(
+            index_current = stored.get("version") in {1, 2, SOURCE_INDEX_VERSION} and isinstance(
                 stored.get("files"), dict
             )
+            index_portable = stored.get("version") == SOURCE_INDEX_VERSION
             previous = stored["files"] if index_current else {}
         except (OSError, ValueError, TypeError):
             previous = {}
@@ -135,12 +141,11 @@ class _ProjectBundleScanMixin:
             path, category = candidate
             relative = _normalize_relative_path(path.relative_to(root).as_posix())
             source_signature = project_facade._source_signature(path)
-            signature = list(source_signature)
             prior = previous.get(relative)
             if (
                 isinstance(prior, dict)
-                and prior.get("signature") == signature
-                and prior.get("category") == category
+                and _source_index_signature_matches(prior.get("signature"), source_signature)
+                and _source_index_category(prior.get("category")) == category
                 and isinstance(prior.get("size"), int)
             ):
                 try:
@@ -148,7 +153,7 @@ class _ProjectBundleScanMixin:
                 except (TypeError, ValueError):
                     digest = None
                 if digest is not None and len(digest) == 32:
-                    metadata = prior.get("image_metadata")
+                    metadata = prior.get("image_metadata", prior.get("imageMetadata"))
                     image_metadata = _indexed_image_metadata(metadata)
                     if (
                         category == 4
@@ -187,6 +192,7 @@ class _ProjectBundleScanMixin:
             inspected = _parallel_ordered(candidates, inspect, cancelled=cancelled)
             metrics.stat_ms = (time.perf_counter() - started) * 1000
             invalid = [item for item in inspected if item.content_hash is None]
+            metrics.source_index_misses = tuple(item.relative_path for item in invalid)
             started = time.perf_counter()
             loaded = _parallel_ordered(
                 invalid,
@@ -254,16 +260,16 @@ class _ProjectBundleScanMixin:
                     project_file,
                     {
                         "category": item.category,
-                        "signature": list(item.source_signature),
+                        "signature": _portable_source_signature(item.source_signature),
                         "hash": digest.hex(),
                         "size": project_file.content_size,
                         "image_metadata": (
-                            [
-                                image_metadata[0],
-                                image_metadata[1],
-                                image_metadata[2],
-                                image_metadata[3],
-                            ]
+                            {
+                                "width": image_metadata[0],
+                                "height": image_metadata[1],
+                                "format": image_metadata[2],
+                                "animated": image_metadata[3],
+                            }
                             if image_metadata is not None
                             else None
                         ),
@@ -279,9 +285,9 @@ class _ProjectBundleScanMixin:
                 raise
             return cls.scan_quick(root, revision, progress, cancelled, _attempt + 1)
         next_index = {item.relative_path: entry for item, entry in indexed}
-        if not index_current or previous != next_index:
+        if not index_portable or previous != next_index:
             started = time.perf_counter()
-            _write_source_index(index_path, {"version": 2, "files": next_index})
+            _write_source_index(index_path, {"version": SOURCE_INDEX_VERSION, "files": next_index})
             metrics.index_write_ms = (time.perf_counter() - started) * 1000
         metrics.source_files_reused = len(inspected) - len(invalid)
         metrics.source_files_hashed = len(invalid)
@@ -334,9 +340,15 @@ class _ProjectBundleScanMixin:
 
 
 def _indexed_image_metadata(value: object) -> dict[int, object] | None:
-    if not isinstance(value, list) or len(value) != 4:
+    if isinstance(value, list) and len(value) == 4:
+        width, height, format_name, animated = value
+    elif isinstance(value, dict):
+        width = value.get("width")
+        height = value.get("height")
+        format_name = value.get("format")
+        animated = value.get("animated")
+    else:
         return None
-    width, height, format_name, animated = value
     if (
         not isinstance(width, int)
         or isinstance(width, bool)

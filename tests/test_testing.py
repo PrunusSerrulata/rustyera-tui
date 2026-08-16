@@ -21,6 +21,7 @@ from rustyera_tui.testing import (
     compare_observations,
     goal_status,
     install_test_compiled_cache,
+    install_test_source_index,
     isolated_project_copy,
     normalized_lines,
     output_delta,
@@ -177,17 +178,39 @@ def test_cross_host_cache_handoff_uses_only_the_isolated_test_project(tmp_path: 
     project.mkdir()
     incoming = tmp_path / "browser.reracache"
     incoming.write_bytes(b"browser-cache")
+    source_file = project / "main.erb"
+    source_file.write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
+    portable_mtime_ms = 1_700_000_000_123
+    incoming_index = tmp_path / "browser-source-index.json"
+    incoming_index.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "files": {
+                    "main.erb": {
+                        "category": 2,
+                        "signature": f"{source_file.stat().st_size}:{portable_mtime_ms}",
+                        "hash": "00" * 32,
+                        "size": source_file.stat().st_size,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     install_test_compiled_cache(project, incoming)
+    install_test_source_index(project, incoming_index)
 
     installed = project / ".rustyera" / "cache" / "compiled-project.reracache"
     assert installed.read_bytes() == b"browser-cache"
+    assert source_file.stat().st_mtime_ns // 1_000_000 == portable_mtime_ms
     outgoing = tmp_path / "tui.reracache"
+    outgoing_index = tmp_path / "tui-source-index.json"
     session = object.__new__(RustTestSession)
     storage = type("Storage", (), {"compiled_cache_path": lambda _self: installed})()
     client = type("Client", (), {"storage": storage})()
     session.worker = type("Worker", (), {"client": client})()
-    (project / "main.erb").write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
     source_project = tmp_path / "source-project"
     source_project.mkdir()
     exported_project = tmp_path / "exported-project"
@@ -196,10 +219,15 @@ def test_cross_host_cache_handoff_uses_only_the_isolated_test_project(tmp_path: 
         project,
         source_project,
         incoming,
+        incoming_index,
         outgoing,
+        outgoing_index,
         exported_project,
     )
     assert outgoing.read_bytes() == b"browser-cache"
+    assert json.loads(outgoing_index.read_text(encoding="utf-8")) == json.loads(
+        incoming_index.read_text(encoding="utf-8")
+    )
     assert (exported_project / "main.erb").is_file()
     assert not (exported_project / ".rustyera").exists()
 
@@ -209,7 +237,9 @@ def test_cross_host_cache_handoff_uses_only_the_isolated_test_project(tmp_path: 
             project,
             source_project,
             incoming,
+            incoming_index,
             outgoing,
+            None,
             None,
         )
 

@@ -138,6 +138,7 @@ class RuntimeClient(
         self.startup_start_submitted = False
         self.startup_first_phase_reported = False
         self.startup_host_durations: dict[str, float | bool | int] = {}
+        self.source_index_misses: tuple[str, ...] = ()
         self.startup_core_durations: dict[str, float] = {}
         self._startup_core_phase_started: dict[int, int] = {}
         self._pending_presentation_events: list[tuple[str, dict[int, Any]]] = []
@@ -278,6 +279,7 @@ class RuntimeClient(
         self.startup_start_submitted = False
         self.startup_first_phase_reported = False
         self.startup_host_durations = {}
+        self.source_index_misses = ()
         self.startup_core_durations = {}
         self._startup_core_phase_started = {}
         emit_startup_milestone(

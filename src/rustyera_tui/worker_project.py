@@ -27,6 +27,7 @@ class _WorkerProjectMixin:
         )
         if self._stop_requested.is_set():
             return
+        self.client.source_index_misses = bundle.scan_metrics.source_index_misses
         self.client.record_host_metrics(bundle.scan_metrics.telemetry())
         restore = None
         if self.initial_state is not None:
