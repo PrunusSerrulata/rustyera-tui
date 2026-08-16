@@ -30,7 +30,6 @@ DEFAULTS = {
     "ReplaceFullWidthSpaces": "NO",
 }
 CLIENT_DEFAULTS = {
-    "imageScale": 1.0,
     "masterVolume": 1.0,
     "trustProjectFileMetadata": False,
 }
@@ -212,9 +211,6 @@ class PreferencesDialog(ModalScreen[None]):
                                     "客户端显示与项目加载", classes="preferences-group-title"
                                 )
                                 yield ClientPreferenceOverrideField(
-                                    scope, "imageScale", "图片缩放", "number", loaded.read_only
-                                )
-                                yield ClientPreferenceOverrideField(
                                     scope, "masterVolume", "主音量", "number", loaded.read_only
                                 )
                                 yield ClientPreferenceOverrideField(
@@ -253,9 +249,8 @@ class PreferencesDialog(ModalScreen[None]):
                 self.notify(f"{FIELDS[code].label}：{error}", severity="error")
                 return False
         self.drafts[scope] = draft
-        image_scale: float | None = None
         master_volume: float | None = None
-        for key in ("imageScale", "masterVolume"):
+        for key in ("masterVolume",):
             override = self.query_one(
                 f"#preference-{scope}-client-override-{key.lower()}", Checkbox
             )
@@ -268,14 +263,11 @@ class PreferencesDialog(ModalScreen[None]):
             except ValueError:
                 self.notify(f"{key} 必须是数字", severity="error")
                 return False
-            minimum, maximum = (0.25, 4.0) if key == "imageScale" else (0.0, 1.0)
+            minimum, maximum = (0.0, 1.0)
             if not minimum <= value <= maximum:
                 self.notify(f"{key} 必须在 {minimum} 到 {maximum} 之间", severity="error")
                 return False
-            if key == "imageScale":
-                image_scale = value
-            else:
-                master_volume = value
+            master_volume = value
         trust_override = self.query_one(
             f"#preference-{scope}-client-override-trustprojectfilemetadata", Checkbox
         )
@@ -284,7 +276,7 @@ class PreferencesDialog(ModalScreen[None]):
             trust = self.query_one(
                 f"#preference-{scope}-client-trustprojectfilemetadata", Checkbox
             ).value
-        self.client_drafts[scope] = ClientPreferenceValues(image_scale, master_volume, trust)
+        self.client_drafts[scope] = ClientPreferenceValues(None, master_volume, trust)
         return True
 
     def _control_value(self, scope: str, field: FieldSpec) -> str:
@@ -321,7 +313,7 @@ class PreferencesDialog(ModalScreen[None]):
                 locked or not overridden
             )
         client = self.client_drafts[scope].to_json()
-        for key in ("imageScale", "masterVolume"):
+        for key in ("masterVolume",):
             overridden = key in client
             self.query_one(
                 f"#preference-{scope}-client-override-{key.lower()}", Checkbox

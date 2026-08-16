@@ -89,10 +89,11 @@ async def test_global_preferences_use_project_settings_layout_before_project_loa
         assert len(app.screen.query(".preferences-group-title")) == 5
         assert not app.screen.query("#preferences-project")
 
-        override = app.screen.query_one("#preference-global-client-override-imagescale", Checkbox)
+        assert not app.screen.query("#preference-global-client-imagescale")
+        override = app.screen.query_one("#preference-global-client-override-mastervolume", Checkbox)
         override.value = True
-        image_scale = app.screen.query_one("#preference-global-client-imagescale", Input)
-        image_scale.value = "1.5"
+        master_volume = app.screen.query_one("#preference-global-client-mastervolume", Input)
+        master_volume.value = "0.5"
         await pilot.click("#preferences-apply")
         await pilot.pause()
 
@@ -100,7 +101,7 @@ async def test_global_preferences_use_project_settings_layout_before_project_loa
             "save_client_preferences",
             (
                 "global",
-                PreferenceValues({}, ClientPreferenceValues(image_scale=1.5)),
+                PreferenceValues({}, ClientPreferenceValues(master_volume=0.5)),
             ),
         ) in worker.commands
 
@@ -120,6 +121,7 @@ async def test_preferences_use_native_compact_controls_and_fit_the_terminal(
         await pilot.pause()
         dialog = app.screen.query_one(".preferences-dialog")
         assert (dialog.size.width, dialog.size.height) == (104, 26)
+        assert not dialog.query("#preference-imagescale")
 
         tabs = app.screen.query_one("#preferences-tabs", TabbedContent)
         for page_spec in PAGES:
