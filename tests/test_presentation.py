@@ -282,7 +282,9 @@ def test_tagged_html_preserves_wide_box_drawing_cells_for_terminal_tables() -> N
 
     assert "".join(segment.text for segment in parsed.segments) == "┌──角色┐"
     assert "".join(segment.text for segment in parsed.segments if segment.token) == "角色"
-    assert sum(segment.logical_columns or cell_len(segment.text) for segment in parsed.segments) == 12
+    assert (
+        sum(segment.logical_columns or cell_len(segment.text) for segment in parsed.segments) == 12
+    )
 
 
 def test_erafl_guild_divisions_project_to_terminal_table_geometry() -> None:

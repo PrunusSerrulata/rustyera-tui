@@ -10,6 +10,7 @@ import pytest
 
 import rustyera_tui.runtime as runtime_module
 from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
+from rustyera_tui.client_preferences import LoadedPreferences, PreferenceValues
 from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile, StorageBackend
 from rustyera_tui.presentation import ServicePresentationModel
 from rustyera_tui.runtime import (
@@ -83,6 +84,13 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client.cache_refresh_after_ns = 0
     client.pending_diagnosis = None
     client.pending_start_after_configuration = None
+    client.global_preferences = LoadedPreferences(
+        Path("/nonexistent/rustyera-test/preferences-v1.json"), PreferenceValues({})
+    )
+    client.project_preferences = None
+    client.pending_client_preferences = None
+    client.pending_client_preferences_save = False
+    client.pending_start_after_preferences = None
     client.pending_restore = None
     client.pending_import = None
     client.new_game_seed = None

@@ -169,6 +169,9 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
                 case "save_configuration":
                     changes, restart = command.value
                     client.prepare_configuration_update(changes, restart)
+                case "save_client_preferences":
+                    scope, values = command.value
+                    client.save_client_preferences(str(scope), values)
                 case "reload_all":
                     client.reload_all()
                 case "reload_folder":

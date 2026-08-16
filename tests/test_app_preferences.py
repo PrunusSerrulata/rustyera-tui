@@ -15,6 +15,7 @@ from app_test_support import (
     PAGES,
     Path,
     PreferencesDialog,
+    ProjectSettingsDialog,
     RustyEraTui,
     Select,
     Static,
@@ -22,6 +23,7 @@ from app_test_support import (
     configuration_entry,
     configuration_value,
 )
+from rustyera_tui.client_preferences import LoadedPreferences, PreferenceValues
 
 
 def test_project_settings_schema_contains_exactly_39_visible_fields() -> None:
@@ -32,6 +34,37 @@ def test_tui_adds_only_the_two_requested_text_settings() -> None:
     assert "ReplaceFullWidthSpaces" in FIELDS
     assert "CharacterWidthMode" in FIELDS
     assert "AudioVolume" not in FIELDS
+
+
+async def test_client_preferences_are_separate_and_saved_from_ctrl_comma(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    app.global_preferences = LoadedPreferences(
+        tmp_path / "global" / "preferences-v1.json", PreferenceValues({})
+    )
+    app.project_preferences = LoadedPreferences(
+        tmp_path / ".rustyera" / "preferences-v1.json", PreferenceValues({})
+    )
+    snapshot = ConfigurationSnapshot.from_wire(
+        {0: 1, 1: b"digest", 2: [configuration_entry("UseMouse", "YES", 0)], 3: False}
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        worker.events.put(FrontendEvent("configuration", (snapshot, False)))
+        await pilot.pause(0.1)
+        await pilot.press("ctrl+comma")
+        assert isinstance(app.screen, PreferencesDialog)
+        override = app.screen.query_one("#preference-override-usemouse", Checkbox)
+        override.value = True
+        app.screen.query_one("#preference-usemouse", Checkbox).value = False
+        await pilot.click("#preferences-apply")
+        await pilot.pause()
+
+        assert (
+            "save_client_preferences",
+            ("global", PreferenceValues({"UseMouse": "NO"})),
+        ) in worker.commands
 
 
 async def test_preferences_use_native_compact_controls_and_fit_the_terminal(
@@ -45,7 +78,7 @@ async def test_preferences_use_native_compact_controls_and_fit_the_terminal(
     app.worker = FakeWorker()  # type: ignore[assignment]
 
     async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(PreferencesDialog(snapshot, False))
+        app.push_screen(ProjectSettingsDialog(snapshot, False))
         await pilot.pause()
         dialog = app.screen.query_one(".preferences-dialog")
         assert (dialog.size.width, dialog.size.height) == (104, 26)
@@ -120,11 +153,11 @@ async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_v
         await pilot.pause(0.1)
         assert app.query_one("#menu-bar").display
         assert not app.query_one(GameViewport).mouse_enabled
-        assert not app.query_one("#file-preferences", Button).disabled
+        assert not app.query_one("#file-project-settings", Button).disabled
 
         await pilot.click("#menu-file")
-        await pilot.click("#file-preferences")
-        assert isinstance(app.screen, PreferencesDialog)
+        await pilot.click("#file-project-settings")
+        assert isinstance(app.screen, ProjectSettingsDialog)
         dialog = app.screen.query_one(".preferences-dialog")
         assert dialog.size.width < app.size.width
         assert dialog.size.height < app.size.height
@@ -154,7 +187,7 @@ async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_v
             "save_configuration",
             ([ConfigurationChange("UseMouse", "NO")], False),
         ) in worker.commands
-        assert isinstance(app.screen, PreferencesDialog)
+        assert isinstance(app.screen, ProjectSettingsDialog)
 
         updated_entries = [
             configuration_entry("UseMouse", "NO", 0),
@@ -163,7 +196,7 @@ async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_v
         updated = ConfigurationSnapshot.from_wire({0: 9, 1: b"next", 2: updated_entries, 3: True})
         worker.events.put(FrontendEvent("configuration", (updated, False)))
         await pilot.pause(0.1)
-        assert isinstance(app.screen, PreferencesDialog)
+        assert isinstance(app.screen, ProjectSettingsDialog)
         assert "需重启" in str(app.screen.query_one("#preferences-status", Static).render())
 
         tabs = app.screen.query_one("#preferences-tabs", TabbedContent)
@@ -199,13 +232,14 @@ async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_v
         await pilot.pause(0.1)
         await pilot.click("#color-confirm")
         await pilot.pause(0.1)
-        assert isinstance(app.screen, PreferencesDialog)
+        assert isinstance(app.screen, ProjectSettingsDialog)
         assert color.value == "51,102,153"
 
         await pilot.click("#preferences-cancel")
         await pilot.pause()
-        await pilot.press("ctrl+comma")
-        assert isinstance(app.screen, PreferencesDialog)
+        app.action_project_settings()
+        await pilot.pause()
+        assert isinstance(app.screen, ProjectSettingsDialog)
         await pilot.click("#preferences-apply-restart")
         await pilot.pause()
         assert ("restart", None) in worker.commands
@@ -213,7 +247,7 @@ async def test_preferences_dialog_edits_runtime_configuration_and_honors_fixed_v
         await pilot.pause(0.1)
         assert app.query_one("#menu-bar").display
         assert app.query_one(GameViewport).mouse_enabled
-        assert app.query_one("#file-preferences", Button).disabled
+        assert app.query_one("#file-project-settings", Button).disabled
 
 
 async def test_packaged_project_preferences_apply_only_hot_session_settings(
@@ -241,8 +275,9 @@ async def test_packaged_project_preferences_apply_only_hot_session_settings(
         worker.events.put(FrontendEvent("phase", 4))
         worker.events.put(FrontendEvent("configuration", (snapshot, True)))
         await pilot.pause(0.1)
-        await pilot.press("ctrl+comma")
-        assert isinstance(app.screen, PreferencesDialog)
+        app.action_project_settings()
+        await pilot.pause()
+        assert isinstance(app.screen, ProjectSettingsDialog)
         assert "退出游戏后将丢失" in str(
             app.screen.query_one("#preferences-read-only", Static).render()
         )

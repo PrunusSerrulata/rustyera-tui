@@ -41,6 +41,11 @@ from .runtime_project import _RuntimeProjectMixin
 from .runtime_rejections import _RuntimeRejectionMixin
 from .runtime_transport import _RuntimeTransportMixin
 from .runtime_transfer import _RuntimeTransferMixin
+from .client_preferences import (
+    LoadedPreferences,
+    global_preferences_path,
+    load_preferences,
+)
 
 
 class RuntimeClient(
@@ -103,6 +108,17 @@ class RuntimeClient(
         self.pending_start_after_configuration: bool | None = None
         self.configuration_snapshot: ConfigurationSnapshot | None = None
         self.configuration_profile_supported = False
+        self.global_preferences = load_preferences(global_preferences_path())
+        self.project_preferences: LoadedPreferences | None = None
+        self.events.put(
+            FrontendEvent(
+                "client_preferences_loaded",
+                (self.global_preferences, self.project_preferences),
+            )
+        )
+        self.pending_client_preferences: int | None = None
+        self.pending_client_preferences_save = False
+        self.pending_start_after_preferences: bool | None = None
         self.debug_requested = False
         self.debug_grant: dict[int, Any] | None = None
         self.stop_token: dict[int, Any] | None = None
@@ -227,6 +243,10 @@ class RuntimeClient(
             self.full_project_export = None
         self.pending_configuration = None
         self.pending_start_after_configuration = None
+        self.pending_client_preferences = None
+        self.pending_client_preferences_save = False
+        self.pending_start_after_preferences = None
+        self.project_preferences = None
         self.configuration_snapshot = None
         self.configuration_profile_supported = False
 
@@ -356,6 +376,8 @@ class RuntimeClient(
             self._handle_configuration_prepared(value, correlation_id)
         elif tag == 27:  # ConfigurationUpdateCommitted
             self._handle_configuration_committed(value, correlation_id)
+        elif tag == 29:  # ClientPreferencesApplied
+            self._handle_client_preferences_applied(value, correlation_id)
         elif tag == 21:
             self.phase = value[0]
             self.epoch = value[2]

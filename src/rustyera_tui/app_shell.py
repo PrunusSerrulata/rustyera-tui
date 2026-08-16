@@ -12,6 +12,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Button, Input, ProgressBar, Rule, Static
 
 from .configuration import ConfigurationSnapshot
+from .client_preferences import LoadedPreferences, PreferenceValues, global_preferences_path
 from .dialogs import (
     ConfirmDialog,
     DebugConsoleDialog,
@@ -68,7 +69,8 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         ("file-reload-file", "重新加载单个脚本…"),
         ("file-export-snapshot", "导出 VM 快照…"),
         ("file-restore-snapshot", "恢复 VM 快照…"),
-        ("file-preferences", "设置…"),
+        ("file-project-settings", "项目设置…"),
+        ("file-preferences", "偏好设置…"),
         ("file-exit", "退出"),
     )
     FILE_SEPARATORS = frozenset({"file-export-snapshot", "file-preferences", "file-exit"})
@@ -119,6 +121,9 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
             else Path.cwd()
         )
         self.project_file = project_file.expanduser() if project_file else None
+        # The worker owns preference I/O and replaces this placeholder via an event.
+        self.global_preferences = LoadedPreferences(global_preferences_path(), PreferenceValues({}))
+        self.project_preferences = None
         self.runtime_library = runtime_library
         self.worker = worker or RuntimeWorker(
             runtime_library, resource_directory, initial_project_file=project_file

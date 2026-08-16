@@ -463,9 +463,12 @@ def test_real_c_abi_projects_three_channel_background_and_reset(
             worker,
             lambda event: (
                 event.kind == "presentation_batch"
-                and event.value.snapshot is not None
-                and event.value.snapshot.get(6, {}).get(2) == blue
                 and event.value.active_wait is not None
+                and event.value.delta is not None
+                and any(
+                    operation[0] == 8 and operation[1][0].get(2) == blue
+                    for operation in event.value.delta[2]
+                )
             ),
         )
         assert initial.value.render

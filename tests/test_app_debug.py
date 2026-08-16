@@ -42,6 +42,7 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
             "separator",
             "file-export-snapshot",
             "file-restore-snapshot",
+            "file-project-settings",
             "separator",
             "file-preferences",
             "separator",
@@ -56,7 +57,8 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
             "重新加载单个脚本…",
             "导出 VM 快照…",
             "恢复 VM 快照…",
-            "设置…",
+            "项目设置…",
+            "偏好设置…",
             "退出",
         ]
         debug_menu = app.query_one("#debug-menu")

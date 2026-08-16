@@ -220,9 +220,7 @@ class _ProjectBundleReloadMixin:
         if not candidate.quick_scan_pending:
             removals = [
                 variant(1, self.files[relative_path].category, relative_path)
-                for relative_path in sorted(
-                    set(self.files).difference(files), key=_path_sort_key
-                )
+                for relative_path in sorted(set(self.files).difference(files), key=_path_sort_key)
             ]
             request[2] = [
                 variant(0, item.submitted())

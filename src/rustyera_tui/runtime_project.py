@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from .client_preferences import (
+    PreferenceValues,
+    load_preferences,
+    project_preferences_path,
+    save_preferences,
+)
 from .runtime_dependencies import (
     APPLICATION_HOT,
     Any,
@@ -27,6 +33,30 @@ from .runtime_project_reload import _RuntimeProjectReloadMixin
 
 
 class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
+    def _preference_changes(self, values: PreferenceValues) -> list[dict[int, str]]:
+        snapshot = self.configuration_snapshot
+        if snapshot is None:
+            return []
+        eligible = {entry.code for entry in snapshot.tui_preference_entries}
+        return [{0: code, 1: value} for code, value in values.settings.items() if code in eligible]
+
+    def _submit_client_preferences(self) -> int:
+        if self.configuration_snapshot is None:
+            raise RuntimeError("没有已载入的项目配置")
+        project_values = (
+            self.project_preferences.values
+            if self.project_preferences is not None
+            else PreferenceValues({})
+        )
+        return self.send_runtime(
+            28,
+            {
+                0: self.configuration_snapshot.project_revision,
+                1: self._preference_changes(self.global_preferences.values),
+                2: self._preference_changes(project_values),
+            },
+        )
+
     def _handle_project_report(self, report: dict[int, Any]) -> None:
         from . import runtime as runtime_facade
 
@@ -139,7 +169,78 @@ class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
         ):
             self.pending_start_after_configuration = cache_hit
             return
-        self._continue_project_start(cache_hit)
+        self._begin_client_preferences(cache_hit)
+
+    def _begin_client_preferences(self, cache_hit: bool | None = None) -> None:
+        if self.bundle is None or self.configuration_snapshot is None:
+            if cache_hit is not None:
+                self._continue_project_start(cache_hit)
+            return
+        self.project_preferences = load_preferences(project_preferences_path(self.bundle))
+        for loaded in (self.global_preferences, self.project_preferences):
+            if loaded.error:
+                self.events.put(log_event(loaded.error, LogLevel.WARNING))
+        message_id = self._submit_client_preferences()
+        self.pending_client_preferences = message_id
+        self.pending_client_preferences_save = False
+        self.pending_start_after_preferences = cache_hit
+        self.events.put(
+            FrontendEvent(
+                "client_preferences_loaded",
+                (self.global_preferences, self.project_preferences),
+            )
+        )
+
+    def save_client_preferences(self, scope: str, values: PreferenceValues) -> None:
+        if self.pending_client_preferences is not None:
+            self.events.put(FrontendEvent("client_preferences_save_failed", "偏好操作仍在进行"))
+            return
+        try:
+            if scope == "global":
+                self.global_preferences = save_preferences(self.global_preferences, values)
+            elif scope == "project":
+                if self.project_preferences is None:
+                    raise RuntimeError("当前没有可保存项目偏好的项目")
+                self.project_preferences = save_preferences(self.project_preferences, values)
+            else:
+                raise ValueError(f"未知偏好范围：{scope}")
+        except (OSError, ValueError, RuntimeError) as error:
+            self.events.put(FrontendEvent("client_preferences_save_failed", str(error)))
+            return
+        self.events.put(
+            FrontendEvent(
+                "client_preferences_loaded",
+                (self.global_preferences, self.project_preferences),
+            )
+        )
+        if self.configuration_snapshot is None:
+            self.events.put(FrontendEvent("client_preferences_applied"))
+            return
+        self.pending_client_preferences = self._submit_client_preferences()
+        self.pending_client_preferences_save = True
+        self.pending_start_after_preferences = None
+
+    def _handle_client_preferences_applied(
+        self, value: dict[int, Any], correlation_id: int | None
+    ) -> None:
+        if correlation_id != self.pending_client_preferences:
+            self.events.put(log_event("忽略了非预期的客户端偏好响应", LogLevel.WARNING))
+            return
+        self.pending_client_preferences = None
+        try:
+            snapshot = ConfigurationSnapshot.from_wire(value.get(0))
+        except ValueError as error:
+            raise RuntimeError(f"Runtime 返回了无效的客户端偏好画像：{error}") from error
+        self.configuration_snapshot = snapshot
+        self.events.put(FrontendEvent("configuration", (snapshot, False)))
+        cache_hit = self.pending_start_after_preferences
+        self.pending_start_after_preferences = None
+        was_save = self.pending_client_preferences_save
+        self.pending_client_preferences_save = False
+        if cache_hit is not None:
+            self._continue_project_start(cache_hit)
+        elif was_save:
+            self.events.put(FrontendEvent("client_preferences_applied"))
 
     def _continue_project_start(self, cache_hit: bool) -> None:
         from . import runtime as runtime_facade
@@ -359,7 +460,7 @@ class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
             cache_hit = self.pending_start_after_configuration
             self.pending_start_after_configuration = None
             if cache_hit is not None:
-                self._continue_project_start(cache_hit)
+                self._begin_client_preferences(cache_hit)
             return
         if outcome.candidate is None:
             self.events.put(FrontendEvent("configuration_session_applied"))

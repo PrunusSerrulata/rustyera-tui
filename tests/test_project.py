@@ -595,9 +595,7 @@ def test_cache_hit_first_scoped_reload_replaces_the_sparse_runtime_baseline(
     candidate, request = baseline.reload_file(selected)
 
     submitted = {
-        fields[0][0]: fields[0][2]
-        for tag, fields in map(unwrap_variant, request[2])
-        if tag == 0
+        fields[0][0]: fields[0][2] for tag, fields in map(unwrap_variant, request[2]) if tag == 0
     }
     assert submitted == {
         "ERB/selected.erb": variant(0, "PRINTL SELECTED_VERSION=2\n"),

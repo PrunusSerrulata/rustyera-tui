@@ -76,6 +76,7 @@ class _RuntimeRejectionMixin:
             isinstance(pending_configuration, PendingConfigurationFinalize)
             and correlation_id == pending_configuration.finalize_message_id
         )
+        preference_rejection = correlation_id == getattr(self, "pending_client_preferences", None)
         if configuration_rejection:
             if pending_configuration.automatic:
                 self.pending_start_after_configuration = None
@@ -87,6 +88,17 @@ class _RuntimeRejectionMixin:
                     )
                 )
             self.pending_configuration = None
+        if preference_rejection:
+            self.pending_client_preferences = None
+            was_save = self.pending_client_preferences_save
+            self.pending_client_preferences_save = False
+            cache_hit = self.pending_start_after_preferences
+            self.pending_start_after_preferences = None
+            self.events.put(log_event(f"客户端偏好未应用：{rejection}", LogLevel.WARNING))
+            if cache_hit is not None:
+                self._continue_project_start(cache_hit)
+            elif was_save:
+                self.events.put(FrontendEvent("client_preferences_save_failed", str(rejection)))
         if import_rejection:
             self._fail_pending_import(f"状态导入命令被拒绝：{rejection}")
         elif cache_export_rejection:
@@ -136,6 +148,8 @@ class _RuntimeRejectionMixin:
             self.events.put(
                 FrontendEvent("configuration_save_failed", f"保存设置被拒绝：{rejection}")
             )
+        elif preference_rejection:
+            pass
         # A presentation may advance after the frontend rendered an observation but
         # before the caller-pumped runtime handles it. This is a benign stale sample;
         # a later rendered revision will submit a replacement observation.
@@ -146,6 +160,7 @@ class _RuntimeRejectionMixin:
                 or project_file_export_rejection
                 or import_rejection
                 or configuration_rejection
+                or preference_rejection
                 or reload_rejection
             )
             and not (projection_request and value.get(0) == 2 and stale_projection)

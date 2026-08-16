@@ -23,6 +23,8 @@ class ConfigurationEntry:
     default_value: str
     effective_value: str
     application: int
+    preference_eligible: bool
+    client_effective_value: str
 
     @classmethod
     def from_wire(cls, value: Any) -> ConfigurationEntry:
@@ -39,6 +41,8 @@ class ConfigurationEntry:
         default_value = value.get(8)
         effective_value = value.get(9)
         application = value.get(10)
+        preference_eligible = value.get(11)
+        client_effective_value = value.get(12)
         if not all(isinstance(item, str) for item in (code, japanese, english, current)):
             raise ValueError("configuration entry has invalid text fields")
         if not isinstance(kind, int) or not 0 <= kind <= 7:
@@ -51,6 +55,8 @@ class ConfigurationEntry:
             raise ValueError("configuration entry has invalid defaults")
         if application not in (APPLICATION_HOT, APPLICATION_RESTART):
             raise ValueError("configuration entry has invalid application policy")
+        if not isinstance(preference_eligible, bool) or not isinstance(client_effective_value, str):
+            raise ValueError("configuration entry has invalid client preference fields")
         return cls(
             code,
             japanese,
@@ -63,6 +69,8 @@ class ConfigurationEntry:
             default_value,
             effective_value,
             application,
+            preference_eligible,
+            client_effective_value,
         )
 
     @property
@@ -113,6 +121,16 @@ class ConfigurationSnapshot:
     def effective_value(self, code: str, default: str) -> str:
         return next(
             (entry.effective_value for entry in self.entries if entry.code == code),
+            default,
+        )
+
+    @property
+    def tui_preference_entries(self) -> tuple[ConfigurationEntry, ...]:
+        return tuple(entry for entry in self.tui_entries if entry.preference_eligible)
+
+    def client_effective_value(self, code: str, default: str) -> str:
+        return next(
+            (entry.client_effective_value for entry in self.entries if entry.code == code),
             default,
         )
 

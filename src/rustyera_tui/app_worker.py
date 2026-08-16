@@ -9,7 +9,7 @@ from typing import Any
 from textual.css.query import NoMatches
 from textual.widgets import Input
 
-from .dialogs import FatalErrorDialog, PreferencesDialog
+from .dialogs import FatalErrorDialog, PreferencesDialog, ProjectSettingsDialog
 from .log_model import LogLevel, LogMessage, format_log_entries
 from .runtime import DiagnosisProgress, FrontendEvent, PresentationBatch
 from .runtime_types import GameInformation
@@ -175,9 +175,19 @@ class _WorkerEventMixin:
         if kind == "configuration":
             self.configuration_snapshot, self.configuration_read_only = value
             self._apply_client_preferences()
-            if isinstance(self.screen, PreferencesDialog):
+            if isinstance(self.screen, ProjectSettingsDialog):
                 self.screen.replace_snapshot(self.configuration_snapshot)
             self._refresh_menu_availability()
+        elif kind == "client_preferences_loaded":
+            self.global_preferences, self.project_preferences = value
+        elif kind == "client_preferences_applied":
+            if isinstance(self.screen, PreferencesDialog):
+                self.screen.save_finished("偏好已应用")
+            self.notify("偏好已应用")
+        elif kind == "client_preferences_save_failed":
+            if isinstance(self.screen, PreferencesDialog):
+                self.screen.save_finished(f"应用失败：{value}")
+            self.notify(f"偏好应用失败：{value}", severity="error")
         elif kind == "configuration_cleared":
             self.configuration_snapshot = None
             self.configuration_read_only = False
@@ -187,7 +197,7 @@ class _WorkerEventMixin:
         elif kind == "configuration_saved":
             restart, restart_required = value
             if restart:
-                if isinstance(self.screen, PreferencesDialog):
+                if isinstance(self.screen, ProjectSettingsDialog):
                     self.screen.dismiss()
                 self.notify("项目设置已保存，正在重启游戏")
             elif restart_required:
@@ -195,15 +205,15 @@ class _WorkerEventMixin:
             else:
                 self.notify("项目设置已应用")
         elif kind == "configuration_session_applied":
-            if isinstance(self.screen, PreferencesDialog):
+            if isinstance(self.screen, ProjectSettingsDialog):
                 self.screen.session_applied()
             self.notify("会话设置已应用；退出游戏后将丢失")
         elif kind == "configuration_save_failed":
-            if isinstance(self.screen, PreferencesDialog):
+            if isinstance(self.screen, ProjectSettingsDialog):
                 self.screen.save_failed(str(value))
             self.notify(str(value), severity="error")
         elif kind == "open_configuration":
-            self.action_preferences()
+            self.action_project_settings()
         else:
             return False
         return True
@@ -217,6 +227,8 @@ class _WorkerEventMixin:
         elif kind == "error":
             self._finish_project_progress()
             if isinstance(self.screen, PreferencesDialog) and self.screen.busy:
+                self.screen.save_finished(f"应用失败：{value}")
+            elif isinstance(self.screen, ProjectSettingsDialog) and self.screen.busy:
                 self.screen.save_failed(str(value))
             self._log(str(value), LogLevel.ERROR)
             self.notify(str(value), title="RustyEra", severity="error", timeout=8)

@@ -13,6 +13,7 @@ from services_test_support import (
     client_with_capture,
     variant,
 )
+from rustyera_tui.client_preferences import LoadedPreferences, PreferenceValues
 
 
 def test_configuration_update_uses_authoritative_snapshot_and_open_effect_is_supported() -> None:
@@ -53,6 +54,118 @@ def test_configuration_update_requires_the_negotiated_tui_profile() -> None:
         raise AssertionError("an unsupported configuration profile was accepted")
 
 
+def test_global_preferences_save_without_an_open_project(tmp_path: Path) -> None:
+    client, captured = client_with_capture()
+    client.global_preferences = LoadedPreferences(
+        tmp_path / "global" / "preferences-v1.json", PreferenceValues({})
+    )
+    client.project_preferences = None
+    client.configuration_snapshot = None
+    client.pending_client_preferences = None
+    client.pending_client_preferences_save = False
+
+    client.save_client_preferences("global", PreferenceValues({"UseMouse": "NO"}))
+
+    assert captured == []
+    assert client.global_preferences.values.settings == {"UseMouse": "NO"}
+    assert client.global_preferences.path.is_file()
+    events = []
+    while not client.events.empty():
+        events.append(client.events.get_nowait().kind)
+    assert events == ["client_preferences_loaded", "client_preferences_applied"]
+
+
+def test_preference_apply_correlation_survives_interleaved_game_state(tmp_path: Path) -> None:
+    client, captured = client_with_capture()
+    client.global_preferences = LoadedPreferences(
+        tmp_path / "global" / "preferences-v1.json", PreferenceValues({})
+    )
+    client.configuration_snapshot = ConfigurationSnapshot.from_wire(
+        {
+            0: 7,
+            1: b"digest",
+            2: [
+                {
+                    0: "UseMouse",
+                    1: "UseMouse",
+                    2: "UseMouse",
+                    3: "YES",
+                    4: 0,
+                    5: [],
+                    6: False,
+                    7: 2,
+                    8: "YES",
+                    9: "YES",
+                    10: 0,
+                    11: True,
+                    12: "YES",
+                }
+            ],
+            3: False,
+        }
+    )
+    client.startup_active = False
+    wait = {0: {0: 7, 1: 3}}
+    client.active_wait = wait
+
+    client.save_client_preferences("global", PreferenceValues({"UseMouse": "NO"}))
+    assert captured[-1][0] == 28
+    client._handle_client_preferences_applied({0: {0: 7, 1: b"digest", 2: [], 3: False}}, 99)
+    assert client.pending_client_preferences == 1
+
+    client._handle_runtime(21, {0: 5, 2: 9}, None)
+    client._handle_client_preferences_applied({0: {0: 7, 1: b"digest", 2: [], 3: False}}, 1)
+
+    assert (client.phase, client.epoch, client.active_wait) == (5, 9, wait)
+    assert client.pending_client_preferences is None
+    events = []
+    while not client.events.empty():
+        events.append(client.events.get_nowait().kind)
+    assert "client_preferences_applied" in events
+
+
+def test_startup_preference_rejection_falls_back_without_aborting_the_game() -> None:
+    client, captured = client_with_capture()
+    client.pending_client_preferences = 7
+    client.pending_client_preferences_save = False
+    client.pending_start_after_preferences = False
+    client.startup_active = False
+
+    client._handle_command_rejection({0: 1, 1: "invalid preference"}, 7)
+
+    assert client.pending_client_preferences is None
+    assert client.pending_start_after_preferences is None
+    assert captured[-1] == (20, {0: variant(0, None)})
+    events = []
+    while not client.events.empty():
+        events.append(client.events.get_nowait())
+    assert any(event.kind == "log" and "客户端偏好未应用" in str(event.value) for event in events)
+    assert not any(event.kind == "runtime_error" for event in events)
+
+
+def test_saved_preference_rejection_preserves_interleaved_game_state() -> None:
+    client, _captured = client_with_capture()
+    client.pending_client_preferences = 8
+    client.pending_client_preferences_save = True
+    client.pending_start_after_preferences = None
+    client.phase = 5
+    client.epoch = 12
+    client.active_wait = {0: {0: 7, 1: 4}}
+
+    client._handle_command_rejection({0: 1, 1: "save denied"}, 8)
+
+    assert (client.phase, client.epoch, client.active_wait) == (5, 12, {0: {0: 7, 1: 4}})
+    assert client.pending_client_preferences is None
+    events = []
+    while not client.events.empty():
+        events.append(client.events.get_nowait())
+    assert any(
+        event.kind == "client_preferences_save_failed" and event.value == "save denied"
+        for event in events
+    )
+    assert not any(event.kind == "runtime_error" for event in events)
+
+
 def test_packaged_configuration_commits_through_the_append_update(tmp_path: Path) -> None:
     client, captured = client_with_capture()
     project_file = tmp_path / "game.reraproj"
@@ -73,6 +186,8 @@ def test_packaged_configuration_commits_through_the_append_update(tmp_path: Path
         8: "YES",
         9: "YES",
         10: 0,
+        11: True,
+        12: "YES",
     }
     client.configuration_snapshot = ConfigurationSnapshot.from_wire(
         {0: 7, 1: digest, 2: [hot_entry], 3: False}
@@ -140,6 +255,8 @@ def test_packaged_configuration_restarts_with_the_updated_identity(tmp_path: Pat
         8: "YES",
         9: "YES",
         10: 0,
+        11: True,
+        12: "YES",
     }
     restart_entry = {**hot_entry, 0: "AutoSave", 1: "AutoSave", 2: "AutoSave", 10: 1}
     fixed_entry = {**hot_entry, 0: "BackColor", 1: "BackColor", 2: "BackColor", 6: True}
@@ -249,6 +366,11 @@ def test_upgraded_reraconfig_uses_the_original_source_digest(tmp_path: Path) -> 
     client._handle_configuration_committed(
         {0: {0: 1, 1: generated_digest, 2: [], 3: False, 4: None}},
         1,
+    )
+    assert captured[-1][0] == 28
+    client._handle_client_preferences_applied(
+        {0: {0: 1, 1: generated_digest, 2: [], 3: False, 4: None}},
+        client.pending_client_preferences,
     )
     assert captured[-1] == (20, {0: variant(0, None)})
 

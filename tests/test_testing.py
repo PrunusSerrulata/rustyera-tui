@@ -265,9 +265,7 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
     }
 
     inspect = dispatch_agent_request({"op": "inspect", "watches": ["FLAG:0"]}, **common)
-    status = dispatch_agent_request(
-        {"op": "wait_status", "text": "项目缓存已保存。"}, **common
-    )
+    status = dispatch_agent_request({"op": "wait_status", "text": "项目缓存已保存。"}, **common)
     edit = dispatch_agent_request(
         {
             "op": "edit_source",

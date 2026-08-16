@@ -410,9 +410,7 @@ async def test_runtime_page_navigation_triangles_keep_the_footer_corner_aligned(
             if value == "│"
         ] == [0, 80]
         assert [
-            cell_len(footer_text[:index])
-            for index, value in enumerate(footer_text)
-            if value == "┘"
+            cell_len(footer_text[:index]) for index, value in enumerate(footer_text) if value == "┘"
         ] == [80]
 
 

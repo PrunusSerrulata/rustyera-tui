@@ -28,7 +28,8 @@ from .dialogs_debug import (
     VariableDialog as VariableDialog,
     VariableRefresh as VariableRefresh,
 )
-from .preferences import PreferencesDialog as PreferencesDialog
+from .client_preferences_dialog import PreferencesDialog as PreferencesDialog
+from .preferences import ProjectSettingsDialog as ProjectSettingsDialog
 from .runtime_types import GameInformation
 
 

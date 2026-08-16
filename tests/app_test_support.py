@@ -31,6 +31,7 @@ from rustyera_tui.dialogs import (
     FatalErrorDialog,
     PathDialog,
     PreferencesDialog,
+    ProjectSettingsDialog,
 )
 from rustyera_tui.log_model import LogLevel, LogMessage
 from rustyera_tui.presentation import (
@@ -81,6 +82,7 @@ __all__ = [
     "Path",
     "PathDialog",
     "PreferencesDialog",
+    "ProjectSettingsDialog",
     "PresentationBatch",
     "ProgressBar",
     "RichLog",
@@ -155,6 +157,16 @@ def configuration_entry(
         8: value if default is None else default,
         9: value if effective is None else effective,
         10: application,
+        11: code
+        in {
+            "UseMouse",
+            "ButtonWrap",
+            "ForeColor",
+            "BackColor",
+            "FocusColor",
+            "ReplaceFullWidthSpaces",
+        },
+        12: value if effective is None else effective,
     }
 
 

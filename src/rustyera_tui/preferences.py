@@ -69,7 +69,7 @@ class PreferenceField(Horizontal):
             )
 
 
-class PreferencesDialog(ModalScreen[None]):
+class ProjectSettingsDialog(ModalScreen[None]):
     """Four-page settings editor backed by the Runtime configuration profile."""
 
     class ApplyRequested(Message):

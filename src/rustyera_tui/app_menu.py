@@ -13,6 +13,7 @@ from .dialogs import (
     ExportProgressDialog,
     PathDialog,
     PreferencesDialog,
+    ProjectSettingsDialog,
 )
 from .app_export_paths import log_default_path, project_file_default_path, snapshot_default_path
 from .diagnosis import diagnosis_default_path
@@ -45,7 +46,7 @@ class _MenuAndExportMixin:
         available = self._runtime_menu_actions_available()
         for item_id in self.GAME_FILE_ITEMS:
             screen.query_one(f"#{item_id}", Button).disabled = not available
-        screen.query_one("#file-preferences", Button).disabled = (
+        screen.query_one("#file-project-settings", Button).disabled = (
             not available or self.configuration_snapshot is None
         )
         screen.query_one("#debug-toggle", Button).disabled = not available
@@ -98,6 +99,8 @@ class _MenuAndExportMixin:
             self._confirm_progress_loss("return_title", "返回标题", "返回标题")
         elif item_id == "file-preferences":
             self.action_preferences()
+        elif item_id == "file-project-settings":
+            self.action_project_settings()
         elif item_id == "file-reload-all":
             self.worker.send("reload_all")
         elif item_id == "file-reload-folder":
@@ -168,22 +171,34 @@ class _MenuAndExportMixin:
             self.query_one("#menu-file", Button).focus()
 
     def action_preferences(self) -> None:
+        self.push_screen(
+            PreferencesDialog(
+                self.configuration_snapshot,
+                self.global_preferences,
+                self.project_preferences,
+            )
+        )
+
+    def action_project_settings(self) -> None:
         if self.configuration_snapshot is None:
             self.notify("Runtime 尚未提供项目配置", severity="warning")
             return
         self.push_screen(
-            PreferencesDialog(self.configuration_snapshot, self.configuration_read_only)
+            ProjectSettingsDialog(self.configuration_snapshot, self.configuration_read_only)
         )
 
-    def on_preferences_dialog_apply_requested(
-        self, event: PreferencesDialog.ApplyRequested
+    def on_project_settings_dialog_apply_requested(
+        self, event: ProjectSettingsDialog.ApplyRequested
     ) -> None:
         if event.restart and not event.changes:
-            if isinstance(self.screen, PreferencesDialog):
+            if isinstance(self.screen, ProjectSettingsDialog):
                 self.screen.dismiss()
             self.worker.send("restart")
             return
         self.worker.send("save_configuration", (event.changes, event.restart))
+
+    def on_preferences_dialog_save_requested(self, event: PreferencesDialog.SaveRequested) -> None:
+        self.worker.send("save_client_preferences", (event.scope, event.values))
 
     def _apply_client_preferences(self) -> None:
         if self.configuration_snapshot is None or not self.is_mounted:
@@ -192,9 +207,9 @@ class _MenuAndExportMixin:
         screen = self.screen_stack[0]
         screen.query_one("#menu-bar").display = True
         viewport = screen.query_one(GameViewport)
-        viewport.set_mouse_enabled(snapshot.effective_value("UseMouse", "YES") == "YES")
+        viewport.set_mouse_enabled(snapshot.client_effective_value("UseMouse", "YES") == "YES")
         viewport.set_replace_full_width_spaces(
-            snapshot.effective_value("ReplaceFullWidthSpaces", "NO") == "YES"
+            snapshot.client_effective_value("ReplaceFullWidthSpaces", "NO") == "YES"
         )
 
     def _reset_client_preferences(self) -> None:
