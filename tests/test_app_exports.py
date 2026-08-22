@@ -51,9 +51,9 @@ async def test_help_menu_exports_diagnosis_and_shows_about_information(tmp_path:
         assert isinstance(app.screen, AboutDialog)
         contents = "\n".join(str(item.render()) for item in app.screen.query(Static))
         assert "作者：PrunusSerrulata" in contents
-        assert "前端版本：0.6.0" in contents
+        assert "前端版本：0.7.0" in contents
         pinned_revision = (Path(__file__).parent.parent / "rustyera-core.rev").read_text().strip()
-        assert f"core 版本：0.6.0 ({pinned_revision[:8]})" in contents
+        assert f"core 版本：0.7.0 ({pinned_revision[:8]})" in contents
         assert "许可证：GPL-3.0-only" in contents
         assert "仅适用于 RustyEra 相关组件" in contents
         assert "https://github.com/PrunusSerrulata/rustyera-core" in contents
