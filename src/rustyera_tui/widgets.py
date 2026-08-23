@@ -292,6 +292,11 @@ class GameViewport(ScrollableContainer):
         self.presentation_background = "#000000"
         self.button_focus = DEFAULT_BUTTON_FOCUS
         self._horizontal_overflow = False
+        self._projected_width = 0
+        self._projected_line_widths: list[int] = []
+        self._overflowing_line_count = 0
+        self._source_line_count = 0
+        self._source_prefix_lengths = [0]
 
     @property
     def content_width(self) -> int:
@@ -310,7 +315,8 @@ class GameViewport(ScrollableContainer):
         for child in self.children:
             if isinstance(child, GameLine) and child._is_width_sensitive():
                 child.set_layout_width(width)
-        self._set_horizontal_overflow(self._content_overflows(width))
+        self._reproject_all_lines(width)
+        self._set_horizontal_overflow(self._overflowing_line_count > 0)
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -355,15 +361,23 @@ class GameViewport(ScrollableContainer):
         widget.styles.background = self.presentation_background
         return widget
 
-    def _content_overflows(self, width: int) -> bool:
-        return any(_projected_line_width(line, width) > width for line in self.models)
-
     def _set_horizontal_overflow(self, visible: bool) -> None:
         if visible != self._horizontal_overflow:
             self._horizontal_overflow = visible
             self.post_message(self.HorizontalOverflowChanged(visible))
 
+    def _reproject_all_lines(self, width: int) -> None:
+        self._projected_width = width
+        self._projected_line_widths = [
+            _projected_line_width(line, width) for line in self.models
+        ]
+        self._overflowing_line_count = sum(
+            value > width for value in self._projected_line_widths
+        )
+
     def set_presentation_background(self, color: str) -> None:
+        if color == self.presentation_background:
+            return
         self.presentation_background = color
         self.styles.background = color
         for child in self.children:
@@ -371,6 +385,8 @@ class GameViewport(ScrollableContainer):
                 child.styles.background = color
 
     def set_button_focus(self, color: str) -> None:
+        if color == self.button_focus:
+            return
         self.button_focus = color
         for child in self.children:
             if isinstance(child, GameLine):
@@ -382,47 +398,67 @@ class GameViewport(ScrollableContainer):
         changed_from: int | None = None,
         trimmed_prefix: int = 0,
     ) -> bool:
-        lines = _merge_save_delete_lines(lines)
+        source_lines = lines
+        changed_from = None if changed_from is None else max(0, changed_from)
+        changed_lines = source_lines if changed_from is None else source_lines[changed_from:]
+        has_changed_right_edge = any(
+            segment.right_edge for line in changed_lines for segment in line.segments
+        )
         old = self.models
-        history_grew = len(lines) > len(old)
         children = list(self.children)
-        if trimmed_prefix and not any(
-            segment.right_edge for line in lines for segment in line.segments
-        ):
-            count = min(trimmed_prefix, len(old), len(children))
-            if count:
-                await self.remove_children(children[:count])
-                old = old[count:]
-                children = children[count:]
-        if changed_from is None or any(
-            segment.right_edge for line in lines for segment in line.segments
-        ):
+        incremental_suffix = (
+            changed_from is not None
+            and changed_from <= self._source_line_count
+            and not has_changed_right_edge
+            and not trimmed_prefix
+        )
+        if incremental_suffix:
+            common = min(self._source_prefix_lengths[changed_from], len(old))
+            tail = changed_lines
+            prefix_lengths = self._source_prefix_lengths[: changed_from + 1]
+            prefix_lengths.extend(common + offset for offset in range(1, len(tail) + 1))
+        else:
+            lines, prefix_lengths = _merge_save_delete_lines_with_prefixes(source_lines)
             common = 0
             for left, right in zip(old, lines, strict=False):
                 if left != right:
                     break
                 common += 1
-        else:
-            common = min(changed_from, len(old), len(lines))
-        if common == min(len(old), len(lines)):
-            if len(lines) < len(old):
-                await self.remove_children(children[len(lines) :])
-            elif len(lines) > len(old):
-                await self.mount(*(self._line_widget(line) for line in lines[len(old) :]))
-        elif len(old) == len(lines) and len(children) == len(lines):
-            for index in range(common, len(lines)):
+            tail = lines[common:]
+        next_length = common + len(tail)
+        history_grew = next_length > len(old)
+        if common == min(len(old), next_length):
+            if next_length < len(old):
+                await self.remove_children(children[next_length:])
+            elif next_length > len(old):
+                await self.mount(*(self._line_widget(line) for line in tail[len(old) - common :]))
+        elif len(old) == next_length and len(children) == next_length:
+            for index in range(common, next_length):
                 child = children[index]
-                if isinstance(child, GameLine) and old[index] != lines[index]:
-                    child.set_line(lines[index])
+                replacement = tail[index - common]
+                if isinstance(child, GameLine) and old[index] != replacement:
+                    child.set_line(replacement)
         else:
+            rebuilt = [*old[:common], *tail]
             await self.remove_children()
-            await self.mount(*(self._line_widget(line) for line in lines))
-        self.models = list(lines)
+            await self.mount(*(self._line_widget(line) for line in rebuilt))
+        self.models[common:] = tail
+        self._source_line_count = len(source_lines)
+        self._source_prefix_lengths = prefix_lengths
         width = self.content_width
-        for child in self.children:
-            if isinstance(child, GameLine):
-                child.set_layout_width(width)
-        self._set_horizontal_overflow(self._content_overflows(width))
+        if width != self._projected_width:
+            self._reproject_all_lines(width)
+        else:
+            self._overflowing_line_count -= sum(
+                value > width for value in self._projected_line_widths[common:]
+            )
+            del self._projected_line_widths[common:]
+            projected_tail = [
+                _projected_line_width(line, width) for line in self.models[common:]
+            ]
+            self._projected_line_widths.extend(projected_tail)
+            self._overflowing_line_count += sum(value > width for value in projected_tail)
+        self._set_horizontal_overflow(self._overflowing_line_count > 0)
         # Reference Emuera leaves the scrollbar unchanged when CLEARLINE removes a dynamic
         # frame and the replacement restores the same line count. Follow genuinely appended
         # history, but let equal-length tail replacement update the existing rows in place.
@@ -449,7 +485,16 @@ def _projected_line_width(line: DisplayLineModel, width: int) -> int:
 def _merge_save_delete_lines(lines: list[DisplayLineModel]) -> list[DisplayLineModel]:
     """Place a runtime save-slot delete action at the right edge of its slot row."""
 
+    return _merge_save_delete_lines_with_prefixes(lines)[0]
+
+
+def _merge_save_delete_lines_with_prefixes(
+    lines: list[DisplayLineModel],
+) -> tuple[list[DisplayLineModel], list[int]]:
+    """Merge save actions and map each source prefix to its projected line count."""
+
     result: list[DisplayLineModel] = []
+    prefix_lengths = [0]
     for line in lines:
         if len(line.segments) == 1 and line.segments[0].right_edge and result:
             previous = result[-1]
@@ -459,4 +504,5 @@ def _merge_save_delete_lines(lines: list[DisplayLineModel]) -> list[DisplayLineM
             )
         else:
             result.append(line)
-    return result
+        prefix_lengths.append(len(result))
+    return result, prefix_lengths

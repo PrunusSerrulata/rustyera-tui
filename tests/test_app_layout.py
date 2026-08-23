@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pytest import MonkeyPatch
+
 from app_test_support import (
     ColumnCellLayout,
     DisplayLineModel,
@@ -16,6 +18,7 @@ from app_test_support import (
     parse_line,
     variant,
 )
+from rustyera_tui import widgets
 from rustyera_tui.game_line_layout import terminal_segment_text
 
 
@@ -539,6 +542,99 @@ async def test_viewport_preserves_scroll_for_equal_length_dynamic_tail_refresh(
         assert viewport.scroll_y == before
         assert viewport.models[-1] == replacement
         assert list(viewport.children)[-1] is tail_widget
+
+
+async def test_dynamic_tail_refresh_only_reprojects_the_changed_history(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    lines = [
+        DisplayLineModel(index, False, True, True, 0, (DisplaySegment(f"line {index}"),))
+        for index in range(200)
+    ]
+    projected: list[int] = []
+    original = widgets._projected_line_width
+
+    def counted(line: DisplayLineModel, width: int) -> int:
+        projected.append(line.line_id)
+        return original(line, width)
+
+    monkeypatch.setattr(widgets, "_projected_line_width", counted)
+    async with app.run_test(size=(100, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines(lines)
+        await pilot.pause()
+        projected.clear()
+
+        replacement = DisplayLineModel(
+            999, False, True, True, 0, (DisplaySegment("animated frame"),)
+        )
+        await viewport.set_lines([*lines[:-1], replacement], changed_from=len(lines) - 1)
+
+        assert projected == [replacement.line_id]
+        projected.clear()
+        appended = DisplayLineModel(
+            1_000, False, True, True, 0, (DisplaySegment("ordinary output"),)
+        )
+        await viewport.set_lines(
+            [*lines[:-1], replacement, appended], changed_from=len(lines)
+        )
+
+        assert projected == [appended.line_id]
+
+
+async def test_ordinary_append_stays_incremental_after_historical_right_edge_content(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    source = [
+        DisplayLineModel(1, False, True, True, 0, (DisplaySegment("save slot"),)),
+        DisplayLineModel(
+            2, False, True, True, 0, (DisplaySegment("delete", right_edge=True),)
+        ),
+        *(
+            DisplayLineModel(
+                index, False, True, True, 0, (DisplaySegment(f"line {index}"),)
+            )
+            for index in range(3, 203)
+        ),
+    ]
+    projected: list[int] = []
+    full_merges = 0
+    original_width = widgets._projected_line_width
+    original_merge = widgets._merge_save_delete_lines_with_prefixes
+
+    def counted_width(line: DisplayLineModel, width: int) -> int:
+        projected.append(line.line_id)
+        return original_width(line, width)
+
+    def counted_merge(
+        lines: list[DisplayLineModel],
+    ) -> tuple[list[DisplayLineModel], list[int]]:
+        nonlocal full_merges
+        full_merges += 1
+        return original_merge(lines)
+
+    monkeypatch.setattr(widgets, "_projected_line_width", counted_width)
+    monkeypatch.setattr(widgets, "_merge_save_delete_lines_with_prefixes", counted_merge)
+    async with app.run_test(size=(100, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines(source)
+        await pilot.pause()
+        projected.clear()
+        full_merges = 0
+        appended = DisplayLineModel(
+            999, False, True, True, 0, (DisplaySegment("ordinary output"),)
+        )
+
+        await viewport.set_lines([*source, appended], changed_from=len(source))
+
+        assert projected == [appended.line_id]
+        assert full_merges == 0
 
 
 async def test_multiline_button_regions_merge_padding_and_use_row_coordinates(
