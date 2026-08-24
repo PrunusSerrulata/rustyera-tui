@@ -107,3 +107,27 @@ def test_runtime_log_wire_message_preserves_backend_level_and_body() -> None:
         "WARNING: authoritative error",
         authoritative=True,
     )
+
+
+def test_log_only_runtime_diagnostic_remains_a_structured_log_event() -> None:
+    client = RuntimeClient.__new__(RuntimeClient)
+    client.events = queue.Queue()
+
+    client._handle_runtime(
+        97,
+        {
+            0: "vm.control_flow.goto_into_structured_block",
+            1: 2,
+            2: "structured GOTO",
+            3: None,
+            4: 1,
+        },
+        None,
+    )
+
+    event = client.events.get_nowait()
+    assert event == log_event(
+        "[vm.control_flow.goto_into_structured_block]: structured GOTO",
+        LogLevel.WARNING,
+        authoritative=True,
+    )

@@ -277,6 +277,36 @@ async def test_runtime_events_only_log_backend_authoritative_entries(tmp_path: P
         assert len(app.logs) == 1
 
 
+async def test_structured_goto_warning_is_logged_without_notification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    notifications: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    monkeypatch.setattr(
+        app,
+        "notify",
+        lambda *args, **kwargs: notifications.append((args, kwargs)),
+    )
+    message = (
+        "[vm.control_flow.goto_into_structured_block]: GOTO entered a structured block "
+        "without executing its opener; avoid jumping into FOR, REPEAT, or SELECTCASE blocks"
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        worker.events.put(
+            FrontendEvent(
+                "log",
+                LogMessage(LogLevel.WARNING, message, authoritative=True),
+            )
+        )
+        await pilot.pause(0.1)
+
+        assert any(log.message == message and log.level is LogLevel.WARNING for log in app.logs)
+        assert notifications == []
+
+
 async def test_gameplay_stays_locked_until_presentation_refresh_finishes(
     tmp_path: Path,
 ) -> None:
