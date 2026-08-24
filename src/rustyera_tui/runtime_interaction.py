@@ -31,14 +31,17 @@ from .runtime_dependencies import (
 class _RuntimeInteractionMixin:
     def _handle_wait_change(self, change: list[Any]) -> None:
         tag, fields = unwrap_variant(change)
+        changed = False
         if tag in (0, 1):
-            self._set_active_wait(fields[0])
+            changed = self._set_active_wait(fields[0])
         elif tag == 2 and self.active_wait and self.active_wait.get(0) == fields[0]:
-            self._set_active_wait(None)
-        self._wait_event_dirty = True
+            changed = self._set_active_wait(None)
+        self._wait_event_dirty = self._wait_event_dirty or changed
 
-    def _set_active_wait(self, wait: dict[int, Any] | None) -> None:
+    def _set_active_wait(self, wait: dict[int, Any] | None) -> bool:
+        changed = wait != self.active_wait
         self.active_wait = wait
+        return changed
 
     def _acknowledge_effects(self, batch: dict[int, Any]) -> None:
         # The TUI cannot play device effects. Reporting Unsupported is semantically different

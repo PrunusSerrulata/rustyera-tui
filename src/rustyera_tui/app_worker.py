@@ -48,6 +48,10 @@ class _WorkerEventMixin:
                 self.presentation.lines,
                 changed_from=changed_from,
                 trimmed_prefix=trimmed_prefix,
+                button_generation=self.presentation.button_generation,
+                retired_interaction_sequence=(
+                    self.presentation.retired_interaction_sequence
+                ),
             )
             self.query_one("#separator-line").display = not horizontal_overflow
             self.title = self.presentation.title or self.TITLE
@@ -237,8 +241,10 @@ class _WorkerEventMixin:
             self.notify(str(value), title="RustyEra", severity="error", timeout=8)
         elif kind == "interaction_rejected":
             if self._wait_identity(value) == self._activated_wait:
-                self.presentation.restore_buttons(self._pending_retired_buttons)
-                self._pending_retired_buttons.clear()
+                boundary = self._pending_retired_interaction_boundary
+                if boundary is not None:
+                    self.presentation.restore_interaction_boundary(boundary)
+                self._pending_retired_interaction_boundary = None
                 self._activated_wait = None
                 self._queue_local_presentation_render()
                 self._refresh_interaction_lock()

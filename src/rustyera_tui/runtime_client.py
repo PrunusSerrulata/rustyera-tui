@@ -20,12 +20,12 @@ from .runtime_dependencies import (
     PendingGameInput,
     PendingStateImport,
     PresentationBatch,
+    PresentationEventAccumulator,
     ProjectBundle,
     RuntimeAbi,
     RuntimeFailure,
     ServicePresentationModel,
     StorageBackend,
-    coalesce_presentation_deltas,
     copy,
     emit_startup_milestone,
     log_event,
@@ -141,7 +141,7 @@ class RuntimeClient(
         self.source_index_misses: tuple[str, ...] = ()
         self.startup_core_durations: dict[str, float] = {}
         self._startup_core_phase_started: dict[int, int] = {}
-        self._pending_presentation_events: list[tuple[str, dict[int, Any]]] = []
+        self._pending_presentation = PresentationEventAccumulator()
         self._wait_event_dirty = False
         self._presentation_boundary_dirty = False
         self._projection_messages: set[int] = set()
@@ -218,7 +218,7 @@ class RuntimeClient(
         self.transient_pause_owner = None
         self.transient_close_pending = None
         self.shutting_down = False
-        self._pending_presentation_events.clear()
+        self._pending_presentation.clear()
         self._wait_event_dirty = False
         self._presentation_boundary_dirty = False
         self._projection_messages.clear()
@@ -320,18 +320,20 @@ class RuntimeClient(
         return {0: variant(0, self.new_game_seed)}
 
     def _flush_presentation_events(self) -> None:
-        snapshot: dict[int, Any] | None = None
-        delta: dict[int, Any] | None = None
-        if self._pending_presentation_events:
-            deltas: list[dict[int, Any]] = []
-            for kind, value in self._pending_presentation_events:
-                if kind == "snapshot":
-                    snapshot = value
-                    deltas.clear()
-                else:
-                    deltas.append(value)
-            if deltas:
-                delta = coalesce_presentation_deltas(deltas)
+        render = self._presentation_boundary_dirty or self.active_wait is not None
+        if not render:
+            # Textual never commits a running batch. Keep presentation work on the worker side
+            # until a visible boundary, while still retiring a cleared wait promptly so stale
+            # input cannot remain locally actionable.
+            if self._wait_event_dirty:
+                self.events.put(
+                    FrontendEvent(
+                        "presentation_batch",
+                        PresentationBatch(None, None, copy.deepcopy(self.active_wait), False),
+                    )
+                )
+            return
+        snapshot, delta = self._pending_presentation.take()
         if (
             snapshot is None
             and delta is None
@@ -339,9 +341,7 @@ class RuntimeClient(
         ):
             return
         # A single queue item prevents Textual from observing presentation and wait halves
-        # from different runtime pumps. Intermediate running batches still update its staged
-        # model, but only a stable boundary may become a visible frame.
-        render = self._presentation_boundary_dirty or self.active_wait is not None
+        # from different runtime pumps.
         self.events.put(
             FrontendEvent(
                 "presentation_batch",
@@ -414,12 +414,11 @@ class RuntimeClient(
             self.events.put(FrontendEvent("input_undo", value))
         elif tag == 40:
             self.presentation.apply_snapshot(value)
-            self._set_active_wait(self.presentation.input_wait)
-            # Decoded envelopes are immutable after dispatch. Presentation events are batched
-            # until the poll queue is empty so superseded pending-line updates cross threads
-            # only once.
-            self._pending_presentation_events = [("snapshot", value)]
-            self._wait_event_dirty = True
+            wait_changed = self._set_active_wait(self.presentation.input_wait)
+            # Decoded envelopes are immutable after dispatch. The accumulator reduces later
+            # deltas incrementally until a visible boundary crosses to Textual.
+            self._pending_presentation.replace_snapshot(value)
+            self._wait_event_dirty = self._wait_event_dirty or wait_changed
         elif tag == 41:
             try:
                 self.presentation.apply_delta(value)
@@ -427,9 +426,9 @@ class RuntimeClient(
                 self.events.put(log_event(str(error), LogLevel.WARNING))
                 self.send_runtime(94, {0: self.expected_runtime_output - 1})
             else:
-                self._set_active_wait(self.presentation.input_wait)
-                self._pending_presentation_events.append(("delta", value))
-                self._wait_event_dirty = True
+                wait_changed = self._set_active_wait(self.presentation.input_wait)
+                self._pending_presentation.add_delta(value)
+                self._wait_event_dirty = self._wait_event_dirty or wait_changed
         elif tag == 42:  # Effects are intentionally unsupported but must be acknowledged.
             self._acknowledge_effects(value)
         elif tag == 50:
@@ -468,9 +467,9 @@ class RuntimeClient(
             self.epoch = value[0]
             self.phase = value[1]
             self.presentation.apply_snapshot(value[3])
-            self._set_active_wait(self.presentation.input_wait)
-            self._pending_presentation_events = [("snapshot", value[3])]
-            self._wait_event_dirty = True
+            wait_changed = self._set_active_wait(self.presentation.input_wait)
+            self._pending_presentation.replace_snapshot(value[3])
+            self._wait_event_dirty = self._wait_event_dirty or wait_changed
             self._publish_configuration(value.get(8))
         elif tag == 97:
             source = value.get(3)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 from rich.cells import cell_len
@@ -18,6 +19,7 @@ from .presentation import (
     DisplaySegment,
     SegmentStyle,
 )
+from .presentation_types import segment_interaction_enabled
 from .game_line_layout import project_responsive_segments as _project_responsive_segments
 from .game_line_layout import terminal_segment_text as _terminal_segment_text
 
@@ -64,6 +66,8 @@ class GameLine(Static):
         self.mouse_enabled = True
         self.replace_full_width_spaces = False
         self.button_focus = DEFAULT_BUTTON_FOCUS
+        self.button_generation: int | None = None
+        self.retired_interaction_sequence = 0
         self.layout_width: int | None = None
         self._projected_width: int | None = None
         self._projected_segments: tuple[DisplaySegment, ...] = ()
@@ -80,7 +84,8 @@ class GameLine(Static):
     def enable_interactions(self) -> None:
         if not self.interactions_enabled:
             self.interactions_enabled = True
-            self._render_line()
+            if any(region.enabled for region in self.regions):
+                self._render_line()
 
     def disable_interactions(self) -> None:
         """Immediately retire hit regions while an activation is in flight."""
@@ -89,7 +94,8 @@ class GameLine(Static):
             self.interactions_enabled = False
             self.hovered_region = None
             self.tooltip = None
-            self._render_line()
+            if any(region.enabled for region in self.regions):
+                self._render_line()
 
     def _render_line(self) -> None:
         render_width = max(1, self.layout_width or self.size.width)
@@ -129,12 +135,13 @@ class GameLine(Static):
                         cursor += gap
                 region_index = None
                 if segment.token is not None:
+                    enabled = self._segment_enabled(segment)
                     if (
                         self.regions
                         and self.regions[-1].row == row_index
                         and self.regions[-1].end == cursor
                         and self.regions[-1].token == segment.token
-                        and self.regions[-1].enabled == segment.enabled
+                        and self.regions[-1].enabled == enabled
                         and self.regions[-1].title == segment.title
                     ):
                         previous = self.regions[-1]
@@ -154,7 +161,7 @@ class GameLine(Static):
                                 cursor,
                                 cursor + width,
                                 segment.token,
-                                segment.enabled,
+                                enabled,
                                 segment.title,
                             )
                         )
@@ -182,7 +189,7 @@ class GameLine(Static):
                     _rich_style(
                         selected_style,
                         disabled=segment.token is not None
-                        and (not segment.enabled or not self.interactions_enabled),
+                        and (not self._segment_enabled(segment) or not self.interactions_enabled),
                     ),
                 )
             if row_index + 1 < len(layouts):
@@ -201,6 +208,37 @@ class GameLine(Static):
             self.button_focus = color
             if self.is_mounted:
                 self._render_line()
+
+    def set_interaction_policy(
+        self, button_generation: int | None, retired_interaction_sequence: int
+    ) -> None:
+        if (
+            self.button_generation == button_generation
+            and self.retired_interaction_sequence == retired_interaction_sequence
+        ):
+            return
+        previous = tuple(
+            self._segment_enabled(segment)
+            for segment in self.line.segments
+            if segment.token is not None
+        )
+        self.button_generation = button_generation
+        self.retired_interaction_sequence = retired_interaction_sequence
+        current = tuple(
+            self._segment_enabled(segment)
+            for segment in self.line.segments
+            if segment.token is not None
+        )
+        if self.is_mounted and previous != current:
+            self.hovered_region = None
+            self.tooltip = None
+            self._render_line()
+
+    def has_enabled_interaction(self) -> bool:
+        return any(
+            segment.token is not None and self._segment_enabled(segment)
+            for segment in self.line.segments
+        )
 
     def set_replace_full_width_spaces(self, enabled: bool) -> None:
         if self.replace_full_width_spaces != enabled:
@@ -235,6 +273,13 @@ class GameLine(Static):
             if region.row == y and region.start <= x < region.end:
                 return index
         return None
+
+    def _segment_enabled(self, segment: DisplaySegment) -> bool:
+        return segment_interaction_enabled(
+            segment,
+            self.button_generation,
+            self.retired_interaction_sequence,
+        )
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
         if not self.mouse_enabled:
@@ -297,6 +342,11 @@ class GameViewport(ScrollableContainer):
         self._overflowing_line_count = 0
         self._source_line_count = 0
         self._source_prefix_lengths = [0]
+        self._button_generation: int | None = None
+        self._retired_interaction_sequence = 0
+        self._interactive_children: set[GameLine] = set()
+        self._enabled_interaction_children: set[GameLine] = set()
+        self._interaction_children_by_generation: dict[int | None, set[GameLine]] = {}
 
     @property
     def content_width(self) -> int:
@@ -328,16 +378,18 @@ class GameViewport(ScrollableContainer):
             self.post_message(self.SkipMessageRequested())
 
     def disable_interactions(self) -> None:
+        if not self.interactions_enabled:
+            return
         self.interactions_enabled = False
-        for child in self.children:
-            if isinstance(child, GameLine):
-                child.disable_interactions()
+        for child in self._enabled_interaction_children:
+            child.disable_interactions()
 
     def enable_interactions(self) -> None:
+        if self.interactions_enabled:
+            return
         self.interactions_enabled = True
-        for child in self.children:
-            if isinstance(child, GameLine):
-                child.enable_interactions()
+        for child in self._enabled_interaction_children:
+            child.enable_interactions()
 
     def set_mouse_enabled(self, enabled: bool) -> None:
         self.mouse_enabled = enabled
@@ -358,8 +410,90 @@ class GameViewport(ScrollableContainer):
         widget.mouse_enabled = self.mouse_enabled
         widget.replace_full_width_spaces = self.replace_full_width_spaces
         widget.button_focus = self.button_focus
+        widget.button_generation = self._button_generation
+        widget.retired_interaction_sequence = self._retired_interaction_sequence
         widget.styles.background = self.presentation_background
+        self._register_interaction_child(widget)
         return widget
+
+    def _register_interaction_child(self, child: GameLine) -> None:
+        generations = {
+            segment.generation
+            for segment in child.line.segments
+            if segment.token is not None
+        }
+        if not any(segment.token is not None for segment in child.line.segments):
+            return
+        self._interactive_children.add(child)
+        for generation in generations:
+            self._interaction_children_by_generation.setdefault(generation, set()).add(child)
+        if child.has_enabled_interaction():
+            self._enabled_interaction_children.add(child)
+
+    def _unregister_interaction_child(self, child: GameLine) -> None:
+        self._interactive_children.discard(child)
+        self._enabled_interaction_children.discard(child)
+        generations = {
+            segment.generation
+            for segment in child.line.segments
+            if segment.token is not None
+        }
+        for generation in generations:
+            children = self._interaction_children_by_generation.get(generation)
+            if children is None:
+                continue
+            children.discard(child)
+            if not children:
+                self._interaction_children_by_generation.pop(generation)
+
+    def _discard_children(self, children: Iterable[object]) -> None:
+        for child in children:
+            if isinstance(child, GameLine):
+                self._unregister_interaction_child(child)
+
+    def _replace_child_line(self, child: GameLine, line: DisplayLineModel) -> None:
+        self._unregister_interaction_child(child)
+        child.interactions_enabled = self.interactions_enabled
+        child.button_generation = self._button_generation
+        child.retired_interaction_sequence = self._retired_interaction_sequence
+        child.set_line(line)
+        self._register_interaction_child(child)
+
+    def _apply_interaction_policy(
+        self, button_generation: int | None, retired_interaction_sequence: int
+    ) -> None:
+        if (
+            self._button_generation == button_generation
+            and self._retired_interaction_sequence == retired_interaction_sequence
+        ):
+            return
+        previous_generation = self._button_generation
+        previous_retired = self._retired_interaction_sequence
+        candidates = set(self._enabled_interaction_children)
+        if previous_generation != button_generation:
+            if button_generation is None:
+                candidates.update(self._interactive_children)
+            else:
+                candidates.update(
+                    self._interaction_children_by_generation.get(button_generation, ())
+                )
+        if retired_interaction_sequence < previous_retired:
+            if button_generation is None:
+                candidates.update(self._interactive_children)
+            else:
+                candidates.update(
+                    self._interaction_children_by_generation.get(button_generation, ())
+                )
+                candidates.update(self._interaction_children_by_generation.get(None, ()))
+        self._button_generation = button_generation
+        self._retired_interaction_sequence = retired_interaction_sequence
+        for child in candidates:
+            child.interactions_enabled = self.interactions_enabled
+            child.set_interaction_policy(button_generation, retired_interaction_sequence)
+            if child.has_enabled_interaction():
+                self._enabled_interaction_children.add(child)
+            else:
+                self._enabled_interaction_children.discard(child)
 
     def _set_horizontal_overflow(self, visible: bool) -> None:
         if visible != self._horizontal_overflow:
@@ -397,7 +531,10 @@ class GameViewport(ScrollableContainer):
         lines: list[DisplayLineModel],
         changed_from: int | None = None,
         trimmed_prefix: int = 0,
+        button_generation: int | None = None,
+        retired_interaction_sequence: int = 0,
     ) -> bool:
+        self._apply_interaction_policy(button_generation, retired_interaction_sequence)
         source_lines = lines
         changed_from = None if changed_from is None else max(0, changed_from)
         changed_lines = source_lines if changed_from is None else source_lines[changed_from:]
@@ -429,6 +566,7 @@ class GameViewport(ScrollableContainer):
         history_grew = next_length > len(old)
         if common == min(len(old), next_length):
             if next_length < len(old):
+                self._discard_children(children[next_length:])
                 await self.remove_children(children[next_length:])
             elif next_length > len(old):
                 await self.mount(*(self._line_widget(line) for line in tail[len(old) - common :]))
@@ -437,9 +575,12 @@ class GameViewport(ScrollableContainer):
                 child = children[index]
                 replacement = tail[index - common]
                 if isinstance(child, GameLine) and old[index] != replacement:
-                    child.set_line(replacement)
+                    self._replace_child_line(child, replacement)
         else:
             rebuilt = [*old[:common], *tail]
+            self._interactive_children.clear()
+            self._enabled_interaction_children.clear()
+            self._interaction_children_by_generation.clear()
             await self.remove_children()
             await self.mount(*(self._line_widget(line) for line in rebuilt))
         self.models[common:] = tail

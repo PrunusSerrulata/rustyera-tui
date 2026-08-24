@@ -585,6 +585,208 @@ async def test_dynamic_tail_refresh_only_reprojects_the_changed_history(
         assert projected == [appended.line_id]
 
 
+async def test_interaction_lock_only_rerenders_interactive_history(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+    plain = [
+        DisplayLineModel(index, False, True, True, 0, (DisplaySegment("history"),))
+        for index in range(200)
+    ]
+    button = DisplayLineModel(
+        201,
+        False,
+        True,
+        True,
+        0,
+        (DisplaySegment("button", token={0: 1, 1: 1}, interaction_sequence=1),),
+    )
+    rendered: list[int] = []
+    original = GameLine._render_line
+
+    def counted(widget: GameLine) -> None:
+        rendered.append(widget.line.line_id)
+        original(widget)
+
+    monkeypatch.setattr(GameLine, "_render_line", counted)
+    async with app.run_test(size=(100, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([*plain, button])
+        await pilot.pause()
+        rendered.clear()
+
+        viewport.disable_interactions()
+
+        assert rendered == [button.line_id]
+
+
+async def test_interaction_policy_only_rerenders_real_enabled_transitions(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+
+    def interaction(line_id: int, generation: int, sequence: int) -> DisplayLineModel:
+        return DisplayLineModel(
+            line_id,
+            False,
+            True,
+            True,
+            0,
+            (
+                DisplaySegment(
+                    f"button {line_id}",
+                    token={0: 1, 1: line_id},
+                    generation=generation,
+                    interaction_sequence=sequence,
+                ),
+            ),
+        )
+
+    stale = [interaction(index, 0, index) for index in range(1, 501)]
+    current = [interaction(501, 1, 501), interaction(502, 1, 502)]
+    future = [interaction(503, 2, 503), interaction(504, 2, 504)]
+    lines = [*stale, *current, *future]
+    rendered: list[int] = []
+    original = GameLine._render_line
+
+    def counted(widget: GameLine) -> None:
+        rendered.append(widget.line.line_id)
+        original(widget)
+
+    monkeypatch.setattr(GameLine, "_render_line", counted)
+    async with app.run_test(size=(100, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines(lines, button_generation=1)
+        await pilot.pause()
+        rendered.clear()
+
+        await viewport.set_lines(
+            lines,
+            changed_from=len(lines),
+            button_generation=1,
+            retired_interaction_sequence=502,
+        )
+        assert sorted(rendered) == [501, 502]
+        rendered.clear()
+
+        await viewport.set_lines(
+            lines,
+            changed_from=len(lines),
+            button_generation=2,
+            retired_interaction_sequence=502,
+        )
+        assert sorted(rendered) == [503, 504]
+        rendered.clear()
+
+        await viewport.set_lines(
+            lines,
+            changed_from=len(lines),
+            button_generation=2,
+            retired_interaction_sequence=504,
+        )
+        assert sorted(rendered) == [503, 504]
+        rendered.clear()
+
+        await viewport.set_lines(
+            lines,
+            changed_from=len(lines),
+            button_generation=2,
+            retired_interaction_sequence=502,
+        )
+        assert sorted(rendered) == [503, 504]
+
+
+async def test_interaction_cache_drops_an_interactive_to_plain_replacement(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+    button = DisplayLineModel(
+        1,
+        False,
+        True,
+        True,
+        0,
+        (
+            DisplaySegment(
+                "button", token={0: 1, 1: 1}, generation=1, interaction_sequence=1
+            ),
+        ),
+    )
+    plain = DisplayLineModel(2, False, True, True, 0, (DisplaySegment("plain"),))
+    rendered: list[int] = []
+    original = GameLine._render_line
+
+    def counted(widget: GameLine) -> None:
+        rendered.append(widget.line.line_id)
+        original(widget)
+
+    monkeypatch.setattr(GameLine, "_render_line", counted)
+    async with app.run_test(size=(100, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([button], button_generation=1)
+        await pilot.pause()
+        await viewport.set_lines([plain], changed_from=0, button_generation=1)
+        rendered.clear()
+
+        viewport.disable_interactions()
+
+        assert rendered == []
+        assert viewport._interactive_children == set()
+        assert viewport._enabled_interaction_children == set()
+        assert viewport._interaction_children_by_generation == {}
+
+
+async def test_interaction_cache_removes_deleted_children_and_clears_full_rebuild(
+    tmp_path: Path
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+
+    def button(line_id: int, generation: int) -> DisplayLineModel:
+        return DisplayLineModel(
+            line_id,
+            False,
+            True,
+            True,
+            0,
+            (
+                DisplaySegment(
+                    "button",
+                    token={0: 1, 1: line_id},
+                    generation=generation,
+                    interaction_sequence=line_id,
+                ),
+            ),
+        )
+
+    first = button(1, 1)
+    deleted = button(2, 2)
+    replacement = button(3, 3)
+    async with app.run_test(size=(100, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([first, deleted], button_generation=1)
+        await pilot.pause()
+        deleted_widget = list(viewport.children)[1]
+
+        await viewport.set_lines([first], changed_from=1, button_generation=1)
+
+        assert deleted_widget not in viewport._interactive_children
+        assert deleted_widget not in viewport._interaction_children_by_generation.get(2, set())
+
+        old_widgets = set(viewport.children)
+        await viewport.set_lines(
+            [replacement, DisplayLineModel(4, False, True, True, 0, ())],
+            button_generation=3,
+        )
+
+        assert old_widgets.isdisjoint(viewport._interactive_children)
+        assert viewport._interactive_children == {list(viewport.children)[0]}
+        assert set(viewport._interaction_children_by_generation) == {3}
+
+
 async def test_ordinary_append_stays_incremental_after_historical_right_edge_content(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:

@@ -30,8 +30,8 @@ from .image_metadata import decode_image_metadata
 from .input_policy import is_message_skip_wait, is_message_wait, message_wait_intent
 from .log_model import LogLevel
 from .presentation import (
+    PresentationEventAccumulator,
     ServicePresentationModel,
-    coalesce_presentation_deltas,
     html_printed_str,
     plain_line,
 )

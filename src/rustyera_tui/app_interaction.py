@@ -149,7 +149,9 @@ class _InteractionMixin(_ViewportProjectionMixin):
         ):
             return
         self._activated_wait = wait_identity
-        self._pending_retired_buttons = self.presentation.retire_enabled_buttons()
+        self._pending_retired_interaction_boundary = (
+            self.presentation.retire_presented_interactions()
+        )
         self._queue_local_presentation_render()
         self.query_one(GameViewport).disable_interactions()
         self.worker.send("activate", token)
@@ -163,7 +165,9 @@ class _InteractionMixin(_ViewportProjectionMixin):
         ):
             return False
         self._activated_wait = wait_identity
-        self._pending_retired_buttons = self.presentation.retire_enabled_buttons()
+        self._pending_retired_interaction_boundary = (
+            self.presentation.retire_presented_interactions()
+        )
         self._queue_local_presentation_render()
         self.query_one(GameViewport).disable_interactions()
         self.worker.send(command, value)

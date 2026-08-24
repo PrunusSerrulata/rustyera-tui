@@ -10,6 +10,8 @@ from runtime_cabi_test_support import (
     pytest,
     queue,
 )
+from rustyera_tui.presentation import PresentationEventAccumulator
+from rustyera_tui.wire import variant
 
 
 def test_worker_applies_backpressure_to_presentation_events() -> None:
@@ -250,10 +252,9 @@ def test_failed_wait_bound_worker_command_releases_the_app_input_gate() -> None:
 def test_worker_delivers_presentation_and_wait_as_one_atomic_batch() -> None:
     client = object.__new__(RuntimeClient)
     client.events = queue.Queue()
-    client._pending_presentation_events = [
-        ("delta", {0: 1, 1: 2, 2: []}),
-        ("delta", {0: 2, 1: 3, 2: []}),
-    ]
+    client._pending_presentation = PresentationEventAccumulator()
+    client._pending_presentation.add_delta({0: 1, 1: 2, 2: []})
+    client._pending_presentation.add_delta({0: 2, 1: 3, 2: []})
     client._wait_event_dirty = True
     client._presentation_boundary_dirty = False
     client.active_wait = {0: 7, 1: 0, 11: {0: 1, 1: 9}}
@@ -269,3 +270,116 @@ def test_worker_delivers_presentation_and_wait_as_one_atomic_batch() -> None:
         True,
     )
     assert client.events.empty()
+    assert client._pending_presentation.take() == (None, None)
+
+
+def test_worker_coalesces_running_presentation_across_pumps_until_visible_boundary() -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client._pending_presentation = PresentationEventAccumulator()
+    client._pending_presentation.add_delta({0: 1, 1: 2, 2: []})
+    client._wait_event_dirty = False
+    client._presentation_boundary_dirty = False
+    client.active_wait = None
+
+    client._flush_presentation_events()
+
+    assert client.events.empty()
+
+    client._pending_presentation.add_delta({0: 2, 1: 3, 2: []})
+    client.active_wait = {0: 7, 1: 0, 11: {0: 1, 1: 9}}
+    client._wait_event_dirty = True
+    client._flush_presentation_events()
+
+    assert client.events.get_nowait() == FrontendEvent(
+        "presentation_batch",
+        PresentationBatch(None, {0: 1, 1: 3, 2: []}, client.active_wait, True),
+    )
+    assert client._pending_presentation.take() == (None, None)
+
+
+def test_worker_clears_wait_without_publishing_staged_running_history() -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    delta = {0: 4, 1: 5, 2: []}
+    client._pending_presentation = PresentationEventAccumulator()
+    client._pending_presentation.add_delta(delta)
+    client._wait_event_dirty = True
+    client._presentation_boundary_dirty = False
+    client.active_wait = None
+
+    client._flush_presentation_events()
+
+    assert client.events.get_nowait() == FrontendEvent(
+        "presentation_batch", PresentationBatch(None, None, None, False)
+    )
+    client._presentation_boundary_dirty = True
+    client._wait_event_dirty = False
+    client._flush_presentation_events()
+    assert client.events.get_nowait() == FrontendEvent(
+        "presentation_batch", PresentationBatch(None, delta, None, True)
+    )
+    assert client._pending_presentation.take() == (None, None)
+
+
+def test_unchanged_wait_does_not_enqueue_redundant_running_notifications() -> None:
+    client = object.__new__(RuntimeClient)
+    wait = {0: 7, 1: 0, 11: {0: 1, 1: 9}}
+    client.active_wait = None
+    client._wait_event_dirty = False
+
+    client._handle_wait_change(variant(0, wait))
+    assert client._wait_event_dirty
+
+    client._wait_event_dirty = False
+    client._handle_wait_change(variant(0, wait))
+    assert not client._wait_event_dirty
+
+    client._handle_wait_change(variant(2, 999))
+    assert not client._wait_event_dirty
+
+    client._handle_wait_change(variant(2, wait[0]))
+    assert client._wait_event_dirty
+    assert client.active_wait is None
+
+
+@pytest.mark.parametrize(
+    ("tag", "value"),
+    [
+        (21, {0: 10, 2: 4}),
+        (22, {0: 0}),
+        (32, variant(0, {0: 7, 1: 0, 11: {0: 1, 1: 9}})),
+        (91, {0: True}),
+        (92, {0: 4, 1: "fault"}),
+    ],
+    ids=("terminal-phase", "exit", "wait", "shutdown", "fault"),
+)
+def test_visible_runtime_boundaries_flush_staged_presentation_once(
+    tag: int, value: object
+) -> None:
+    client = object.__new__(RuntimeClient)
+    client.events = queue.Queue()
+    client._pending_presentation = PresentationEventAccumulator()
+    delta = {0: 7, 1: 8, 2: []}
+    client._pending_presentation.add_delta(delta)
+    client._wait_event_dirty = False
+    client._presentation_boundary_dirty = False
+    client.active_wait = None
+    client.phase = 0
+    client.epoch = None
+    client.startup_active = False
+    client.startup_start_submitted = False
+    client.startup_first_phase_reported = False
+    client.pending_import = None
+
+    client._handle_runtime(tag, value, None)
+    client._flush_presentation_events()
+
+    batches = []
+    while not client.events.empty():
+        event = client.events.get_nowait()
+        if event.kind == "presentation_batch":
+            batches.append(event.value)
+    assert len(batches) == 1
+    assert batches[0].delta == delta
+    assert client._pending_presentation.take() == (None, None)

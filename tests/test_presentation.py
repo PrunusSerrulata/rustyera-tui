@@ -8,6 +8,8 @@ from rustyera_tui.presentation import (
     TARGET_TABLE_COLUMNS,
     VIEWPORT_BUFFER_LINES,
     ColumnCellLayout,
+    PresentationDeltaAccumulator,
+    PresentationEventAccumulator,
     PresentationModel,
     SeparatorLayout,
     ServicePresentationModel,
@@ -818,7 +820,7 @@ def test_delta_can_clear_an_optional_input_wait() -> None:
     assert model.input_wait is None
 
 
-def test_button_generation_delta_disables_every_old_button_segment() -> None:
+def test_button_generation_delta_lazily_disables_every_old_button_segment() -> None:
     model = PresentationModel()
     model.apply_snapshot(snapshot())
 
@@ -826,7 +828,8 @@ def test_button_generation_delta_disables_every_old_button_segment() -> None:
 
     segment = model.lines[0].segments[0]
     assert segment.generation == 0
-    assert not segment.enabled
+    assert segment.enabled
+    assert not model.segment_enabled(segment)
 
 
 def test_partial_line_updates_keep_current_buttons_and_retire_late_old_buttons() -> None:
@@ -846,9 +849,9 @@ def test_partial_line_updates_keep_current_buttons_and_retire_late_old_buttons()
     )
 
     current, stale = (item.segments[0] for item in model.lines)
-    assert current.enabled
+    assert model.segment_enabled(current)
     assert current.generation == 1
-    assert not stale.enabled
+    assert not model.segment_enabled(stale)
     assert stale.generation == 0
 
 
@@ -879,19 +882,41 @@ def test_submitted_buttons_retire_while_later_partial_updates_stay_enabled() -> 
     model = PresentationModel()
     model.apply_snapshot(snapshot())
 
-    retired = model.retire_enabled_buttons()
+    retired = model.retire_presented_interactions()
     model.apply_delta({0: 1, 1: 2, 2: [variant(0, line(2, "dynamic map"))]})
 
-    assert not model.lines[0].segments[0].enabled
-    assert model.lines[1].segments[0].enabled
+    assert not model.segment_enabled(model.lines[0].segments[0])
+    assert model.segment_enabled(model.lines[1].segments[0])
 
     resynchronized = snapshot()
     resynchronized[0] = 3
     model.apply_snapshot(resynchronized)
-    assert not model.lines[0].segments[0].enabled
+    assert not model.segment_enabled(model.lines[0].segments[0])
 
-    model.restore_buttons(retired)
-    assert model.lines[0].segments[0].enabled
+    model.restore_interaction_boundary(retired)
+    assert model.segment_enabled(model.lines[0].segments[0])
+
+
+def test_button_policy_changes_do_not_rewrite_accumulated_history() -> None:
+    model = PresentationModel()
+    initial = snapshot()
+    initial[2] = {0: [line(index, f"line {index}") for index in range(1, 5_001)], 1: []}
+    initial[6][4] = 5_000
+    model.apply_snapshot(initial)
+    before = tuple(id(item) for item in model.lines)
+    model.take_render_change()
+
+    retired = model.retire_presented_interactions()
+    model.apply_delta({0: 1, 1: 2, 2: [variant(13, 1)]})
+
+    assert tuple(id(item) for item in model.lines) == before
+    assert model.take_render_change() == (len(model.lines), 0)
+    assert not model.segment_enabled(model.lines[-1].segments[0])
+
+    model.apply_delta({0: 2, 1: 3, 2: [variant(0, line(5_001, "new", generation=1))]})
+    assert model.segment_enabled(model.lines[-1].segments[0])
+    model.restore_interaction_boundary(retired)
+    assert not model.segment_enabled(model.lines[0].segments[0])
 
 
 def test_line_index_stays_valid_across_replace_delete_and_append() -> None:
@@ -1072,8 +1097,110 @@ def test_delta_coalescing_preserves_button_generation_order() -> None:
     combined.apply_delta(coalesce_presentation_deltas(original))
 
     assert combined == sequential
-    assert [segment.enabled for item in combined.lines for segment in item.segments] == [
+    assert [
+        combined.segment_enabled(segment)
+        for item in combined.lines
+        for segment in item.segments
+    ] == [
         False,
         False,
         True,
     ]
+
+
+def test_incremental_delta_accumulator_crosses_two_former_compaction_windows_once() -> None:
+    deltas = [
+        {
+            0: revision,
+            1: revision + 1,
+            2: [
+                variant(0, line(2, "value 0"))
+                if revision == 1
+                else variant(7, 2, line(2, f"value {revision}"))
+            ],
+        }
+        for revision in range(1, 131)
+    ]
+    accumulator = PresentationDeltaAccumulator()
+    for delta in deltas:
+        accumulator.add(delta)
+
+    combined_delta = accumulator.take()
+    assert combined_delta is not None
+    assert len(combined_delta[2]) == 1
+    assert accumulator.take() is None
+
+    sequential = PresentationModel()
+    sequential.apply_snapshot(snapshot())
+    for delta in deltas:
+        sequential.apply_delta(delta)
+    accumulated = PresentationModel()
+    accumulated.apply_snapshot(snapshot())
+    accumulated.apply_delta(combined_delta)
+    assert accumulated == sequential
+
+
+def test_presentation_event_accumulator_snapshot_discards_older_delta_state() -> None:
+    accumulator = PresentationEventAccumulator()
+    accumulator.add_delta({0: 1, 1: 2, 2: [variant(0, line(2, "discarded"))]})
+    replacement = snapshot()
+    replacement[0] = 20
+    accumulator.replace_snapshot(replacement)
+    following = {0: 20, 1: 21, 2: [variant(0, line(3, "retained"))]}
+    accumulator.add_delta(following)
+
+    assert accumulator.take() == (replacement, following)
+    assert accumulator.take() == (None, None)
+
+
+def test_incremental_accumulator_matches_destructive_and_stateful_delta_sequence() -> None:
+    updated_settings = dict(snapshot()[6])
+    updated_settings[0] = 500_000
+    original = [
+        {
+            0: 1,
+            1: 2,
+            2: [
+                variant(0, line(2, "two")),
+                variant(3, "first title"),
+                variant(8, updated_settings),
+            ],
+        },
+        {
+            0: 2,
+            1: 3,
+            2: [
+                variant(7, 2, line(2, "replacement")),
+                variant(1, 1),
+                variant(0, line(3, "three", generation=1)),
+                variant(13, 1),
+                variant(6, {0: 5, 1: 2}),
+            ],
+        },
+        {
+            0: 3,
+            1: 4,
+            2: [
+                variant(2),
+                variant(0, line(4, "after clear", generation=1)),
+                variant(14, 1),
+                variant(3, "final title"),
+                variant(6),
+            ],
+        },
+    ]
+    accumulator = PresentationDeltaAccumulator()
+    for delta in original:
+        accumulator.add(delta)
+    combined_delta = accumulator.take()
+    assert combined_delta is not None
+
+    sequential = PresentationModel()
+    sequential.apply_snapshot(snapshot())
+    for delta in original:
+        sequential.apply_delta(delta)
+    accumulated = PresentationModel()
+    accumulated.apply_snapshot(snapshot())
+    accumulated.apply_delta(combined_delta)
+
+    assert accumulated == sequential

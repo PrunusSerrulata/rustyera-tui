@@ -159,7 +159,6 @@ class _RuntimeTransportMixin:
 
     def pump(self) -> bool:
         pump_started = time.perf_counter()
-        self._pending_presentation_events.clear()
         self._wait_event_dirty = False
         self._presentation_boundary_dirty = False
         # Sample automatic time only when the next drive is about to start. The worker drains

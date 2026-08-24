@@ -33,6 +33,28 @@ class DisplaySegment:
     alignment: int | None = None
     right_edge: bool = False
     logical_columns: int | None = None
+    interaction_sequence: int | None = None
+
+
+def segment_interaction_enabled(
+    segment: DisplaySegment,
+    button_generation: int | None,
+    retired_interaction_sequence: int,
+) -> bool:
+    """Apply frontend-local generation and submission retirement to one segment."""
+
+    if not segment.enabled:
+        return False
+    if (
+        button_generation is not None
+        and segment.generation is not None
+        and segment.generation != button_generation
+    ):
+        return False
+    return (
+        segment.interaction_sequence is None
+        or segment.interaction_sequence > retired_interaction_sequence
+    )
 
 
 @dataclass(frozen=True, slots=True)
