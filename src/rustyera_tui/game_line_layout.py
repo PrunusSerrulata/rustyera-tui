@@ -56,7 +56,12 @@ def project_responsive_segments(line: DisplayLineModel, width: int) -> tuple[Dis
         segment_index = start
 
         if isinstance(item, SeparatorLayout):
-            projected.append(DisplaySegment(separator_text(item.pattern, width)))
+            separator_width = (
+                width
+                if item.maximum_columns is None
+                else min(width, max(1, item.maximum_columns))
+            )
+            projected.append(DisplaySegment(separator_text(item.pattern, separator_width)))
             layout_index += 1
             continue
 

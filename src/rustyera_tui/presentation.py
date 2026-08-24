@@ -43,6 +43,7 @@ class PresentationModel:
     background: str = "#000000"
     button_focus: str = DEFAULT_BUTTON_FOCUS
     maximum_physical_lines: int = VIEWPORT_BUFFER_LINES
+    drawable_width: int = 760_000
     changed_from: int | None = 0
     trimmed_prefix: int = 0
     _button_generation: int | None = field(default=None, init=False, repr=False)
@@ -61,9 +62,12 @@ class PresentationModel:
         # filtering later partial line updates locally.
         self._button_generation = None
         history = snapshot[2]
-        self.lines = [self._prepare_line(parse_line(line)) for line in history.get(0, [])]
         self._hidden_prefix = 0
         self._apply_settings(snapshot.get(6))
+        self.lines = [
+            self._prepare_line(self._project_separator_width(parse_line(line)))
+            for line in history.get(0, [])
+        ]
         self._trim_viewport_lines()
         self._rebuild_line_indices()
         self.changed_from = 0
@@ -79,7 +83,7 @@ class PresentationModel:
             tag, fields = unwrap_variant(operation)
             if tag == 0:
                 self._mark_changed(len(self.lines))
-                line = self._prepare_line(parse_line(fields[0]))
+                line = self._prepare_line(self._project_separator_width(parse_line(fields[0])))
                 self._line_indices[line.line_id] = len(self.lines)
                 self.lines.append(line)
             elif tag == 1:
@@ -104,7 +108,9 @@ class PresentationModel:
                 self.input_wait = fields[0] if fields else None
             elif tag == 7:
                 line_id, replacement = fields
-                parsed = self._prepare_line(parse_line(replacement))
+                parsed = self._prepare_line(
+                    self._project_separator_width(parse_line(replacement))
+                )
                 index = self._line_indices.get(line_id)
                 if index is not None:
                     self._mark_changed(index)
@@ -113,7 +119,11 @@ class PresentationModel:
                         self._line_indices.pop(line_id, None)
                         self._line_indices[parsed.line_id] = index
             elif tag == 8:
+                previous_drawable_width = self.drawable_width
                 self._apply_settings(fields[0])
+                if self.drawable_width != previous_drawable_width:
+                    self.lines = [self._project_separator_width(line) for line in self.lines]
+                    self._mark_changed(0)
             elif tag == 13:
                 self._button_generation = int(fields[0])
                 self._disable_old_buttons(self._button_generation)
@@ -167,7 +177,22 @@ class PresentationModel:
         self.background = color_hex(settings[2])
         self.button_focus = color_hex(settings[3])
         self.maximum_physical_lines = max(500, int(settings.get(4, VIEWPORT_BUFFER_LINES)))
+        self.drawable_width = max(1, int(settings.get(0, self.drawable_width)))
         self._trim_viewport_lines()
+
+    def _project_separator_width(self, line: DisplayLineModel) -> DisplayLineModel:
+        layout = tuple(
+            replace(
+                item,
+                # Runtime dimensions are milli-pixels; one terminal half-width cell is
+                # approximated as half the configured font size, hence the factor of two.
+                maximum_columns=max(1, self.drawable_width * 2 // item.font_millipixels),
+            )
+            if isinstance(item, SeparatorLayout) and item.font_millipixels > 0
+            else item
+            for item in line.layout
+        )
+        return replace(line, layout=layout) if layout != line.layout else line
 
     def _disable_old_buttons(self, generation: int) -> None:
         for index, line in enumerate(self.lines):

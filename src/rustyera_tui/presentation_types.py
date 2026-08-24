@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 DEFAULT_VIEWPORT_COLUMNS = 100
+DEFAULT_SEPARATOR_FONT_MILLIPIXELS = 18_000
 MIN_TABLE_COLUMN_WIDTH = 16
 MAX_TABLE_COLUMN_WIDTH = 24
 TARGET_TABLE_COLUMNS = 5
@@ -50,6 +51,8 @@ class SeparatorLayout:
 
     index: int
     pattern: str
+    font_millipixels: int = DEFAULT_SEPARATOR_FONT_MILLIPIXELS
+    maximum_columns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
