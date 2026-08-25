@@ -141,7 +141,11 @@ class _WorkerEventMixin:
         return True
 
     def _handle_export_event(self, kind: str, value: Any) -> bool:
-        if kind == "snapshot_export_finished":
+        if kind == "input_replay_export_finished":
+            self.input_replay_exporting = False
+            self._update_prompt()
+            self._refresh_interaction_lock()
+        elif kind == "snapshot_export_finished":
             self.snapshot_exporting = False
             self._update_prompt()
             self._refresh_interaction_lock()
@@ -250,6 +254,7 @@ class _WorkerEventMixin:
                 self._refresh_interaction_lock()
         elif kind == "runtime_fault":
             self._cancel_progress_loss_confirmation()
+            self.input_replay_exporting = False
             self.snapshot_exporting = False
             self.active_wait = None
             self._activated_wait = None
@@ -291,7 +296,8 @@ class _WorkerEventMixin:
         elif kind == "worker_stopped":
             self._cancel_progress_loss_confirmation()
             self._finish_project_progress()
-            if self.snapshot_exporting:
+            if self.input_replay_exporting or self.snapshot_exporting:
+                self.input_replay_exporting = False
                 self.snapshot_exporting = False
                 self._update_prompt()
                 self._refresh_interaction_lock()

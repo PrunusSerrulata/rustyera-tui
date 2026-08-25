@@ -310,6 +310,17 @@ def test_real_c_abi_loads_starts_and_serves_debug_protocol(
         assert "compiled_cache_hit" in cache_hit.value
         wait_for_input(worker)
 
+        replay_path = tmp_path / "input-replay.jsonl"
+        worker.send("export_input_replay", replay_path)
+        replay_exported = wait_for(
+            worker,
+            lambda event: event.kind == "input_replay_export_finished",
+        )
+        assert replay_exported.value is True
+        replay_header = json.loads(replay_path.read_text(encoding="utf-8").splitlines()[0])
+        assert replay_header["record"] == "header"
+        assert replay_header["fidelity"] == "manual_path"
+
         snapshot_path = tmp_path / "runtime.snapshot"
         worker.send("export_snapshot", (snapshot_path, "normal"))
         exported = wait_for(

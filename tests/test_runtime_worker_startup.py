@@ -249,6 +249,29 @@ def test_failed_wait_bound_worker_command_releases_the_app_input_gate() -> None:
     assert worker.events.get_nowait() == FrontendEvent("error", "submission failed")
 
 
+def test_failed_operation_sequence_export_releases_the_app_export_gate(tmp_path: Path) -> None:
+    class Client:
+        pending_export = (tmp_path / "input-replay.jsonl", bytearray(), None)
+        pending_export_kind = 7
+        pending_export_message = 41
+
+        @staticmethod
+        def export_input_replay(_path: Path) -> None:
+            raise RuntimeError("export submission failed")
+
+        @staticmethod
+        def fail_startup(_error: object) -> None:
+            pass
+
+    worker = RuntimeWorker(None, None)
+    worker.client = Client()  # type: ignore[assignment]
+
+    worker._process_command(FrontendCommand("export_input_replay", tmp_path / "input-replay.jsonl"))
+
+    assert worker.events.get_nowait() == FrontendEvent("input_replay_export_finished", False)
+    assert worker.events.get_nowait() == FrontendEvent("error", "export submission failed")
+
+
 def test_worker_delivers_presentation_and_wait_as_one_atomic_batch() -> None:
     client = object.__new__(RuntimeClient)
     client.events = queue.Queue()

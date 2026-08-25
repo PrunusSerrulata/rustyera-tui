@@ -15,7 +15,12 @@ from .dialogs import (
     PreferencesDialog,
     ProjectSettingsDialog,
 )
-from .app_export_paths import log_default_path, project_file_default_path, snapshot_default_path
+from .app_export_paths import (
+    input_replay_default_path,
+    log_default_path,
+    project_file_default_path,
+    snapshot_default_path,
+)
 from .diagnosis import diagnosis_default_path
 from .log_model import format_log_entries
 from .presentation import DEFAULT_PRESENTATION_TITLE
@@ -90,7 +95,11 @@ class _MenuAndExportMixin:
         self.query_one("#help-menu").remove_class("visible")
 
     def _file_action(self, item_id: str) -> None:
-        if (self.snapshot_exporting or self.project_file_exporting) and item_id != "file-exit":
+        if (
+            self.input_replay_exporting
+            or self.snapshot_exporting
+            or self.project_file_exporting
+        ) and item_id != "file-exit":
             self.notify("文件导出完成前不能执行此操作", severity="warning")
             return
         if item_id == "file-restart":
@@ -117,6 +126,11 @@ class _MenuAndExportMixin:
             self.push_screen(
                 PathDialog("导出当前 VM 快照", "save", initial),
                 self._start_snapshot_export,
+            )
+        elif item_id == "file-export-input-replay":
+            self.push_screen(
+                PathDialog("导出操作序列", "save", self._input_replay_default_path()),
+                self._start_input_replay_export,
             )
         elif item_id == "file-restore-snapshot":
             self._choose_path("恢复 VM 快照", "file", "restore_snapshot")
@@ -231,6 +245,9 @@ class _MenuAndExportMixin:
     def _snapshot_default_path(self, now: datetime | None = None) -> Path:
         return snapshot_default_path(self.project, now)
 
+    def _input_replay_default_path(self, now: datetime | None = None) -> Path:
+        return input_replay_default_path(self.project, now)
+
     def _project_file_default_path(self) -> Path:
         presentation_title = (
             "" if self.presentation.title == DEFAULT_PRESENTATION_TITLE else self.presentation.title
@@ -258,6 +275,14 @@ class _MenuAndExportMixin:
         self._refresh_interaction_lock()
         purpose = "debug" if self.debug_enabled else "normal"
         self.worker.send("export_snapshot", (path, purpose))
+
+    def _start_input_replay_export(self, path: Path | None) -> None:
+        if path is None or self.input_replay_exporting:
+            return
+        self.input_replay_exporting = True
+        self._update_prompt()
+        self._refresh_interaction_lock()
+        self.worker.send("export_input_replay", path)
 
     def _start_project_file_export(self, path: Path | None) -> None:
         if path is None or self.project_file_exporting:

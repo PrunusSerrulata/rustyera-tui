@@ -24,8 +24,8 @@ from .widgets import GameLine, GameViewport
 
 class _InteractionMixin(_ViewportProjectionMixin):
     def _debug_action(self, item_id: str) -> None:
-        if self.snapshot_exporting and item_id != "debug-logs":
-            self.notify("VM 快照导出完成前不能执行调试操作", severity="warning")
+        if (self.input_replay_exporting or self.snapshot_exporting) and item_id != "debug-logs":
+            self.notify("状态导出完成前不能执行调试操作", severity="warning")
             return
         if item_id == "debug-toggle":
             self.worker.send("debug_disable" if self.debug_enabled else "debug_enable")

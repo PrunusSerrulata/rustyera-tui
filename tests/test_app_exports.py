@@ -159,6 +159,46 @@ def test_log_export_default_path_uses_timestamp(tmp_path: Path) -> None:
     assert app._log_default_path(now) == tmp_path / "log_20260726-140506.log"
 
 
+async def test_operation_sequence_export_uses_file_menu_and_locks_gameplay(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        worker.events.put(FrontendEvent("phase", 4))
+        await pilot.pause()
+        app.active_wait = {0: 7, 1: 0, 11: {0: 1, 1: 2}}
+        app._update_prompt()
+        assert app._input_replay_default_path(datetime(2026, 7, 26, 14, 5, 6)) == (
+            tmp_path / "input-replay_20260726-140506.jsonl"
+        )
+
+        await pilot.click("#menu-file")
+        await pilot.click("#file-export-input-replay")
+        assert isinstance(app.screen, PathDialog)
+        assert app.screen.initial_value.parent == tmp_path
+        assert app.screen.initial_value.name.startswith("input-replay_")
+        assert app.screen.initial_value.suffix == ".jsonl"
+        target = tmp_path / "input-replay.jsonl"
+        app.screen.query_one("#path-value", Input).value = str(target)
+        await pilot.click("#path-accept")
+
+        prompt = app.query_one("#prompt", Input)
+        viewport = app.query_one(GameViewport)
+        assert app.input_replay_exporting
+        assert prompt.disabled
+        assert prompt.placeholder == "操作序列导出中……"
+        assert not viewport.interactions_enabled
+        assert ("export_input_replay", target) in worker.commands
+
+        app._handle_worker_event(FrontendEvent("input_replay_export_finished", True))
+
+        assert not app.input_replay_exporting
+        assert not prompt.disabled
+        assert viewport.interactions_enabled
+
+
 async def test_snapshot_export_locks_gameplay_and_uses_a_timestamped_name(
     tmp_path: Path,
 ) -> None:

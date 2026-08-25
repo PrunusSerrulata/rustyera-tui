@@ -60,6 +60,10 @@ class _RuntimeRejectionMixin:
             correlation_id == self.pending_export_message
             and self.pending_export_kind == ExportStage.SNAPSHOT
         )
+        input_replay_export_rejection = (
+            correlation_id == self.pending_export_message
+            and self.pending_export_kind == ExportStage.INPUT_REPLAY
+        )
         project_file_export_rejection = (
             correlation_id == self.pending_export_message
             and self.pending_export_kind == ExportStage.PROJECT_FILE
@@ -133,6 +137,11 @@ class _RuntimeRejectionMixin:
             self.pending_export_kind = None
             self.pending_export_message = None
             self.events.put(FrontendEvent("snapshot_export_finished", False))
+        elif input_replay_export_rejection:
+            self.pending_export = None
+            self.pending_export_kind = None
+            self.pending_export_message = None
+            self.events.put(FrontendEvent("input_replay_export_finished", False))
         elif project_file_export_rejection:
             self.pending_export = None
             self.pending_export_kind = None

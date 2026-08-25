@@ -67,13 +67,14 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         ("file-reload-all", "重新加载全部脚本"),
         ("file-reload-folder", "重新加载文件夹…"),
         ("file-reload-file", "重新加载单个脚本…"),
+        ("file-export-input-replay", "导出操作序列…"),
         ("file-export-snapshot", "导出 VM 快照…"),
         ("file-restore-snapshot", "恢复 VM 快照…"),
         ("file-project-settings", "项目设置…"),
         ("file-preferences", "偏好设置…"),
         ("file-exit", "退出"),
     )
-    FILE_SEPARATORS = frozenset({"file-export-snapshot", "file-preferences", "file-exit"})
+    FILE_SEPARATORS = frozenset({"file-export-input-replay", "file-preferences", "file-exit"})
     GAME_READY_PHASES = {4, 5, 6, 7, 10, 11}
     GAME_FILE_ITEMS = (
         "file-restart",
@@ -82,6 +83,7 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         "file-reload-folder",
         "file-reload-file",
         "file-export-project",
+        "file-export-input-replay",
         "file-export-snapshot",
         "file-restore-snapshot",
     )
@@ -144,6 +146,7 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         self.runtime_phase = 0
         self.environment_revision = 0
         self.exit_pending = False
+        self.input_replay_exporting = False
         self.snapshot_exporting = False
         self.project_file_exporting = False
         self.export_progress_dialog: ExportProgressDialog | None = None
@@ -227,6 +230,7 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
             self._finish_project_progress()
         if (
             self.project_progress_active
+            or self.input_replay_exporting
             or self.snapshot_exporting
             or self.project_file_exporting
             or self.presentation_rendering
@@ -296,6 +300,11 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
             self._set_prompt_state("prompt-running")
             prompt.disabled = True
             prompt.placeholder = "VM 快照导出中……"
+            return
+        if self.input_replay_exporting:
+            self._set_prompt_state("prompt-running")
+            prompt.disabled = True
+            prompt.placeholder = "操作序列导出中……"
             return
         if self.project_file_exporting:
             self._set_prompt_state("prompt-running")
@@ -371,7 +380,8 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
 
     def _game_interactions_blocked(self) -> bool:
         return (
-            self.snapshot_exporting
+            self.input_replay_exporting
+            or self.snapshot_exporting
             or self.project_file_exporting
             or self.diagnosis_exporting
             or self.presentation_rendering
@@ -387,6 +397,7 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         return (
             not self.debug_enabled
             or not self._runtime_menu_actions_available()
+            or self.input_replay_exporting
             or self.snapshot_exporting
             or self.project_file_exporting
             or self.diagnosis_exporting

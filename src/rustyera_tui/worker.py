@@ -191,6 +191,8 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
                 case "export_snapshot":
                     path, purpose = command.value
                     client.export_snapshot(Path(path), str(purpose))
+                case "export_input_replay":
+                    client.export_input_replay(Path(command.value))
                 case "export_project_file":
                     self._project_export_cancelled.clear()
                     client.export_project_file(
@@ -237,11 +239,16 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
             client.fail_startup(error)
             if wait_bound_input and submitted_wait is not None:
                 self.events.put(FrontendEvent("interaction_rejected", submitted_wait))
-            if command.kind == "export_snapshot":
+            if command.kind in {"export_snapshot", "export_input_replay"}:
                 client.pending_export = None
                 client.pending_export_kind = None
                 client.pending_export_message = None
-                self.events.put(FrontendEvent("snapshot_export_finished", False))
+                event = (
+                    "input_replay_export_finished"
+                    if command.kind == "export_input_replay"
+                    else "snapshot_export_finished"
+                )
+                self.events.put(FrontendEvent(event, False))
             elif command.kind == "export_project_file":
                 client._finish_project_file_export(False)
             elif command.kind == "export_diagnosis":

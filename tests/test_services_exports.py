@@ -14,6 +14,7 @@ from services_test_support import (
     next_event_of_kind,
     pytest,
     runtime_module,
+    variant,
 )
 from rustyera_tui.runtime_export import PendingStateImport
 
@@ -132,6 +133,56 @@ def test_snapshot_export_purposes_and_restore_warnings_are_frontend_visible(
     warning = next_event_of_kind(client, "snapshot_restore_warning")
     assert warning.kind == "snapshot_restore_warning"
     assert "诊断信息" in warning.value
+
+
+def test_operation_sequence_export_reuses_the_state_transfer_pipeline(tmp_path: Path) -> None:
+    client, captured = client_with_capture()
+    target = tmp_path / "input-replay.jsonl"
+    data = b'{"record":"header"}\n'
+
+    client.export_input_replay(target)
+
+    assert captured.pop() == (60, {0: 4, 1: 0})
+    assert client.pending_export_kind == ExportStage.INPUT_REPLAY
+    descriptor = {0: 17, 1: 4, 2: len(data), 3: blake3.blake3(data).digest()}
+    client._handle_export_ready({0: 4, 1: variant(0, descriptor)}, 1)
+    assert captured.pop() == (67, {0: 17, 1: 0, 2: 16 * 1024 * 1024})
+
+    client._handle_export_chunk({0: 17, 1: 0, 2: data, 3: True})
+
+    assert target.read_bytes() == data
+    assert next_event_of_kind(client, "input_replay_export_finished").value is True
+    assert "操作序列已导出" in next_event_of_kind(client, "status").value
+
+
+def test_manual_state_export_does_not_replace_an_active_transfer(tmp_path: Path) -> None:
+    client, captured = client_with_capture()
+    active = (tmp_path / "cache.reracache", bytearray(b"active"), {0: 9})
+    client.pending_export = active
+    client.pending_export_kind = ExportStage.COMPILED_CACHE
+    client.pending_export_message = 41
+
+    with pytest.raises(RuntimeError, match="another state export is already active"):
+        client.export_input_replay(tmp_path / "input-replay.jsonl")
+
+    assert client.pending_export is active
+    assert client.pending_export_kind == ExportStage.COMPILED_CACHE
+    assert client.pending_export_message == 41
+    assert captured == []
+
+
+def test_manual_state_export_rolls_back_when_submission_fails(tmp_path: Path) -> None:
+    client, _captured = client_with_capture()
+    client.send_runtime = (  # type: ignore[method-assign]
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("transport failed"))
+    )
+
+    with pytest.raises(RuntimeError, match="transport failed"):
+        client.export_input_replay(tmp_path / "input-replay.jsonl")
+
+    assert client.pending_export is None
+    assert client.pending_export_kind is None
+    assert client.pending_export_message is None
 
 
 def test_diagnosis_export_waits_for_an_existing_state_transfer(tmp_path: Path) -> None:

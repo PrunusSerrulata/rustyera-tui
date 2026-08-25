@@ -19,6 +19,7 @@ class ExportStage(IntEnum):
     DIAGNOSIS_PROJECT = 4
     PROJECT_FILE = 5
     DIAGNOSIS_REPLAY = 6
+    INPUT_REPLAY = 7
 
 
 RUNTIME_EXPORT_KIND = {
@@ -28,6 +29,7 @@ RUNTIME_EXPORT_KIND = {
     ExportStage.DIAGNOSIS_PROJECT: 3,
     ExportStage.PROJECT_FILE: 3,
     ExportStage.DIAGNOSIS_REPLAY: 4,
+    ExportStage.INPUT_REPLAY: 4,
 }
 DIAGNOSIS_EXPORT_STAGES = {
     ExportStage.DIAGNOSIS_REPLAY,

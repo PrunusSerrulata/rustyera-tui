@@ -168,9 +168,28 @@ class _RuntimeTransferMixin:
         purpose_id = {"normal": 0, "debug": 1}.get(purpose)
         if purpose_id is None:
             raise ValueError(f"unknown snapshot export purpose {purpose}")
+        self._start_buffered_state_export(path, ExportStage.SNAPSHOT, 1, purpose_id)
+
+    def export_input_replay(self, path: Path) -> None:
+        self._start_buffered_state_export(path, ExportStage.INPUT_REPLAY, 4, 0)
+
+    def _start_buffered_state_export(
+        self, path: Path, stage: ExportStage, runtime_kind: int, purpose: int
+    ) -> None:
+        if self.pending_export is not None:
+            raise RuntimeError("another state export is already active")
         self.pending_export = (path, bytearray(), None)
-        self.pending_export_kind = ExportStage.SNAPSHOT
-        self.pending_export_message = self.send_runtime(60, {0: 1, 1: purpose_id})
+        self.pending_export_kind = stage
+        self.pending_export_message = None
+        try:
+            self.pending_export_message = self.send_runtime(
+                60, {0: runtime_kind, 1: purpose}
+            )
+        except Exception:
+            self.pending_export = None
+            self.pending_export_kind = None
+            self.pending_export_message = None
+            raise
 
     def export_project_file(self, path: Path, cancelled: Callable[[], bool] | None = None) -> None:
         if self.bundle is None:
@@ -284,7 +303,12 @@ class _RuntimeTransferMixin:
             reasons = enum_list_text(
                 fields[0], SNAPSHOT_INELIGIBLE_REASONS, "SnapshotIneligibleReason"
             )
-            self.events.put(FrontendEvent("runtime_error", f"当前状态不能生成快照：{reasons}"))
+            label = (
+                "导出操作序列"
+                if self.pending_export_kind == ExportStage.INPUT_REPLAY
+                else "生成快照"
+            )
+            self.events.put(FrontendEvent("runtime_error", f"当前状态不能{label}：{reasons}"))
             self.pending_export = None
             self.pending_export_message = None
             if self.pending_export_kind == ExportStage.COMPILED_CACHE:
@@ -293,6 +317,9 @@ class _RuntimeTransferMixin:
                 self._finish_project_file_export(False)
             elif self.pending_export_kind in DIAGNOSIS_EXPORT_STAGES:
                 self._finish_diagnosis_export(False, f"当前状态不能导出：{reasons}")
+            elif self.pending_export_kind == ExportStage.INPUT_REPLAY:
+                self.pending_export_kind = None
+                self.events.put(FrontendEvent("input_replay_export_finished", False))
             else:
                 self.pending_export_kind = None
                 self.events.put(FrontendEvent("snapshot_export_finished", False))
@@ -415,6 +442,11 @@ class _RuntimeTransferMixin:
                 self._finish_diagnosis_export(False, str(error))
             else:
                 self._finish_diagnosis_export(True, str(self.pending_diagnosis.target))
+        elif export_kind == ExportStage.INPUT_REPLAY:
+            atomic_write(path, data)
+            self.pending_export_kind = None
+            self.events.put(FrontendEvent("input_replay_export_finished", True))
+            self.events.put(FrontendEvent("status", f"操作序列已导出到 {path}"))
         else:
             atomic_write(path, data)
             self.pending_export_kind = None
