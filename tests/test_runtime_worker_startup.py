@@ -21,6 +21,31 @@ def test_worker_applies_backpressure_to_presentation_events() -> None:
     assert worker.events.maxsize == 4_096
 
 
+def test_worker_notifies_after_each_successful_event_publish() -> None:
+    worker = RuntimeWorker(None, None)
+    notifications: list[bool] = []
+    worker.set_event_notifier(lambda: notifications.append(True))
+
+    worker.events.put_nowait(FrontendEvent("status", "ready"))
+    worker.set_event_notifier(None)
+    worker.events.put_nowait(FrontendEvent("status", "quiet"))
+
+    assert notifications == [True]
+
+
+def test_worker_notification_failure_does_not_lose_the_published_event() -> None:
+    worker = RuntimeWorker(None, None)
+
+    def fail_notification() -> None:
+        raise RuntimeError("UI already stopped")
+
+    worker.set_event_notifier(fail_notification)
+    event = FrontendEvent("status", "retained")
+    worker.events.put_nowait(event)
+
+    assert worker.events.get_nowait() == event
+
+
 def test_worker_shutdown_closes_once_when_event_queue_is_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -467,9 +492,7 @@ def test_unchanged_wait_does_not_enqueue_redundant_running_notifications() -> No
     ],
     ids=("terminal-phase", "exit", "wait", "shutdown", "fault"),
 )
-def test_visible_runtime_boundaries_flush_staged_presentation_once(
-    tag: int, value: object
-) -> None:
+def test_visible_runtime_boundaries_flush_staged_presentation_once(tag: int, value: object) -> None:
     client = object.__new__(RuntimeClient)
     client.events = queue.Queue()
     client._pending_presentation = PresentationEventAccumulator()

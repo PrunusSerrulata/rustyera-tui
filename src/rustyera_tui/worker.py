@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,23 @@ from .worker_project import _WorkerProjectMixin
 
 if TYPE_CHECKING:
     from .runtime import RuntimeClient
+
+
+class _NotifyingEventQueue(queue.Queue[FrontendEvent]):
+    """Bounded worker queue that nudges Textual after a successful publish."""
+
+    def __init__(self, maxsize: int, notify: Callable[[], None]) -> None:
+        super().__init__(maxsize)
+        self._notify = notify
+
+    def put(
+        self,
+        item: FrontendEvent,
+        block: bool = True,
+        timeout: float | None = None,
+    ) -> None:
+        super().put(item, block, timeout)
+        self._notify()
 
 
 class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
@@ -41,12 +59,31 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
         self.commands: queue.Queue[FrontendCommand] = queue.Queue()
         # Backpressure is preferable to retaining an unbounded number of presentation
         # revisions when Runtime can produce output faster than Textual lays it out.
-        self.events: queue.Queue[FrontendEvent] = queue.Queue(maxsize=4_096)
+        self._event_notifier_lock = threading.Lock()
+        self._event_notifier: Callable[[], None] | None = None
+        self.events: queue.Queue[FrontendEvent] = _NotifyingEventQueue(
+            4_096, self._notify_event_available
+        )
         self._stop_requested = threading.Event()
         self._project_export_cancelled = threading.Event()
         self._shutdown_lock = threading.Lock()
         self._shutdown_complete = False
         self.client: RuntimeClient | None = None
+
+    def set_event_notifier(self, notifier: Callable[[], None] | None) -> None:
+        """Install the UI-thread bridge used to drain newly published events promptly."""
+
+        with self._event_notifier_lock:
+            self._event_notifier = notifier
+
+    def _notify_event_available(self) -> None:
+        with self._event_notifier_lock:
+            notifier = self._event_notifier
+        if notifier is not None:
+            try:
+                notifier()
+            except Exception:  # noqa: BLE001 - notification is advisory; polling remains active
+                pass
 
     def send(self, kind: str, value: Any = None) -> None:
         if kind == "cancel_project_file_export":

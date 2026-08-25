@@ -421,9 +421,7 @@ class GameViewport(ScrollableContainer):
 
     def _register_interaction_child(self, child: GameLine) -> None:
         generations = {
-            segment.generation
-            for segment in child.line.segments
-            if segment.token is not None
+            segment.generation for segment in child.line.segments if segment.token is not None
         }
         if not any(segment.token is not None for segment in child.line.segments):
             return
@@ -437,9 +435,7 @@ class GameViewport(ScrollableContainer):
         self._interactive_children.discard(child)
         self._enabled_interaction_children.discard(child)
         generations = {
-            segment.generation
-            for segment in child.line.segments
-            if segment.token is not None
+            segment.generation for segment in child.line.segments if segment.token is not None
         }
         for generation in generations:
             children = self._interaction_children_by_generation.get(generation)
@@ -505,12 +501,8 @@ class GameViewport(ScrollableContainer):
 
     def _reproject_all_lines(self, width: int) -> None:
         self._projected_width = width
-        self._projected_line_widths = [
-            _projected_line_width(line, width) for line in self.models
-        ]
-        self._overflowing_line_count = sum(
-            value > width for value in self._projected_line_widths
-        )
+        self._projected_line_widths = [_projected_line_width(line, width) for line in self.models]
+        self._overflowing_line_count = sum(value > width for value in self._projected_line_widths)
 
     def set_presentation_background(self, color: str) -> None:
         if color == self.presentation_background:
@@ -539,19 +531,31 @@ class GameViewport(ScrollableContainer):
     ) -> bool:
         self._apply_interaction_policy(button_generation, retired_interaction_sequence)
         changed_from = None if changed_from is None else max(0, changed_from)
+        requested_trim = max(0, trimmed_prefix)
+        source_trim = min(
+            requested_trim,
+            self._source_line_count,
+            len(self._box_aligned_source),
+            len(self._source_prefix_lengths) - 1,
+        )
+        cached_change = source_trim + (changed_from or 0)
         incremental_box_projection = (
             changed_from is not None
-            and changed_from <= self._source_line_count
-            and changed_from < len(self._box_projection_states)
-            and not trimmed_prefix
+            and cached_change <= self._source_line_count
+            and cached_change < len(self._box_projection_states)
+            and changed_from <= len(lines)
+            and requested_trim == source_trim
         )
         if incremental_box_projection:
             projected_tail, tail_states = _project_html_box_rows(
-                lines[changed_from:], self._box_projection_states[changed_from]
+                lines[changed_from:], self._box_projection_states[cached_change]
             )
-            source_lines = [*self._box_aligned_source[:changed_from], *projected_tail]
+            source_lines = [
+                *self._box_aligned_source[source_trim:cached_change],
+                *projected_tail,
+            ]
             box_projection_states = [
-                *self._box_projection_states[: changed_from + 1],
+                *self._box_projection_states[source_trim : cached_change + 1],
                 *tail_states[1:],
             ]
         else:
@@ -560,8 +564,20 @@ class GameViewport(ScrollableContainer):
         has_changed_right_edge = any(
             segment.right_edge for line in changed_lines for segment in line.segments
         )
-        old = self.models
         children = list(self.children)
+        rendered_trim = self._source_prefix_lengths[source_trim] if source_trim else 0
+        if rendered_trim:
+            removed_children = children[:rendered_trim]
+            self._discard_children(removed_children)
+            await self.remove_children(removed_children)
+            children = children[rendered_trim:]
+            del self.models[:rendered_trim]
+            removed_widths = self._projected_line_widths[:rendered_trim]
+            self._overflowing_line_count -= sum(
+                value > self.content_width for value in removed_widths
+            )
+            del self._projected_line_widths[:rendered_trim]
+        old = self.models
         incremental_suffix = (
             changed_from is not None
             and changed_from <= self._source_line_count
@@ -615,9 +631,7 @@ class GameViewport(ScrollableContainer):
                 value > width for value in self._projected_line_widths[common:]
             )
             del self._projected_line_widths[common:]
-            projected_tail = [
-                _projected_line_width(line, width) for line in self.models[common:]
-            ]
+            projected_tail = [_projected_line_width(line, width) for line in self.models[common:]]
             self._projected_line_widths.extend(projected_tail)
             self._overflowing_line_count += sum(value > width for value in projected_tail)
         self._set_horizontal_overflow(self._overflowing_line_count > 0)

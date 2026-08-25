@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from app_test_support import (
     Any,
     Button,
@@ -21,6 +23,135 @@ from app_test_support import (
     pytest,
     variant,
 )
+
+
+class NotifyingFakeWorker(FakeWorker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.notifier: Callable[[], None] | None = None
+
+    def set_event_notifier(self, notifier: Callable[[], None] | None) -> None:
+        self.notifier = notifier
+
+    def publish(self, event: FrontendEvent) -> None:
+        self.events.put_nowait(event)
+        if self.notifier is not None:
+            self.notifier()
+
+
+async def test_worker_notification_commits_without_the_polling_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = NotifyingFakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    monkeypatch.setattr(app, "set_interval", lambda *_args, **_kwargs: None)
+    drain_calls = 0
+    original_drain = app._drain_worker_events
+
+    async def counted_drain() -> None:
+        nonlocal drain_calls
+        drain_calls += 1
+        await original_drain()
+
+    monkeypatch.setattr(app, "_drain_worker_events", counted_drain)
+    line = {0: 1, 1: False, 2: True, 3: True, 4: 0, 5: [variant(0, "ready", None, None)]}
+    wait = {0: 1, 1: 0, 11: {0: 1, 1: 1}}
+    snapshot = {0: 1, 1: "Game", 2: {0: [line], 1: []}, 5: wait}
+
+    async with app.run_test(size=(100, 20)) as pilot:
+        worker.publish(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(snapshot, None, wait, True),
+            )
+        )
+        await pilot.pause()
+
+        assert [model.segments[0].text for model in app.query_one(GameViewport).models] == ["ready"]
+        assert drain_calls == 1
+
+
+async def test_worker_notifications_coalesce_and_continue_after_the_drain_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = NotifyingFakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    monkeypatch.setattr(app, "set_interval", lambda *_args, **_kwargs: None)
+    handled: list[int] = []
+    drain_calls = 0
+    original_drain = app._drain_worker_events
+
+    def record(event: FrontendEvent) -> bool:
+        handled.append(event.value)
+        return False
+
+    async def counted_drain() -> None:
+        nonlocal drain_calls
+        drain_calls += 1
+        await original_drain()
+
+    monkeypatch.setattr(app, "_handle_worker_event", record)
+    monkeypatch.setattr(app, "_drain_worker_events", counted_drain)
+
+    async with app.run_test(size=(100, 20)) as pilot:
+        for index in range(3):
+            worker.publish(FrontendEvent("test", index))
+        await pilot.pause()
+
+        assert handled == [0, 1, 2]
+        assert drain_calls == 1
+
+        handled.clear()
+        drain_calls = 0
+        for index in range(1001):
+            worker.publish(FrontendEvent("test", index))
+        await pilot.pause()
+
+        assert handled == list(range(1001))
+        assert drain_calls == 2
+        assert worker.events.empty()
+
+
+async def test_presentation_batch_locks_the_old_wait_before_installing_the_new_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    old_wait = {0: 1, 1: 0, 11: {0: 1, 1: 1}}
+    new_wait = {0: 2, 1: 0, 11: {0: 1, 1: 2}}
+    line = {0: 1, 1: False, 2: True, 3: True, 4: 0, 5: [variant(0, "next", None, None)]}
+
+    async with app.run_test(size=(100, 20)):
+        viewport = app.query_one(GameViewport)
+        app.active_wait = old_wait
+        viewport.enable_interactions()
+        interaction_states: list[bool] = []
+        original_refresh = app._refresh_interaction_lock
+
+        def tracked_refresh() -> None:
+            original_refresh()
+            interaction_states.append(viewport.interactions_enabled)
+
+        monkeypatch.setattr(app, "_refresh_interaction_lock", tracked_refresh)
+        dirty = app._handle_worker_event(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(
+                    None,
+                    {0: 0, 1: 1, 2: [variant(0, line), variant(6, new_wait)]},
+                    new_wait,
+                    True,
+                ),
+            )
+        )
+
+        assert dirty
+        assert interaction_states
+        assert not any(interaction_states)
+        assert app.active_wait == new_wait
 
 
 async def test_gameplay_output_commits_once_at_the_next_wait_without_a_tail_flash(

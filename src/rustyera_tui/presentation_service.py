@@ -19,12 +19,16 @@ class ServicePresentationModel:
     revision: int = 0
     lines: list[dict[int, Any]] = field(default_factory=list)
     input_wait: dict[int, Any] | None = None
-    _line_indices: dict[int, int] = field(default_factory=dict, init=False, repr=False)
+    _line_indices: dict[int, int] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _line_index_offset: int = field(default=0, init=False, repr=False, compare=False)
 
     def apply_snapshot(self, snapshot: dict[int, Any]) -> None:
         self.revision = snapshot[0]
         raw_lines = snapshot[2].get(0, [])
         self.lines = list(raw_lines)
+        self._line_index_offset = 0
         self._line_indices = {line[0]: index for index, line in enumerate(raw_lines)}
         self.input_wait = snapshot.get(5)
 
@@ -37,34 +41,34 @@ class ServicePresentationModel:
             tag, fields = unwrap_variant(operation)
             if tag == 0:
                 raw_line = fields[0]
-                self._line_indices[raw_line[0]] = len(self.lines)
+                self._line_indices[raw_line[0]] = self._line_index_offset + len(self.lines)
                 self.lines.append(raw_line)
             elif tag == 1:
                 count = min(fields[0], len(self.lines))
                 if count:
-                    first_removed = len(self.lines) - count
-                    self._line_indices = {
-                        line_id: index
-                        for line_id, index in self._line_indices.items()
-                        if index < first_removed
-                    }
+                    for line in self.lines[-count:]:
+                        self._line_indices.pop(line[0], None)
                     del self.lines[-count:]
             elif tag == 2:
                 self.lines.clear()
                 self._line_indices.clear()
+                self._line_index_offset = 0
             elif tag == 6:
                 self.input_wait = fields[0] if fields else None
             elif tag == 7:
                 line_id, raw_line = fields
-                index = self._line_indices.get(line_id)
-                if index is not None:
+                absolute_index = self._line_indices.get(line_id)
+                if absolute_index is not None:
+                    index = absolute_index - self._line_index_offset
                     self.lines[index] = raw_line
                     if raw_line[0] != line_id:
                         self._line_indices.pop(line_id, None)
-                        self._line_indices[raw_line[0]] = index
+                        self._line_indices[raw_line[0]] = absolute_index
             elif tag == 14:
                 count = min(fields[0], len(self.lines))
                 if count:
+                    for line in self.lines[:count]:
+                        self._line_indices.pop(line[0], None)
                     del self.lines[:count]
-                    self._line_indices = {line[0]: index for index, line in enumerate(self.lines)}
+                    self._line_index_offset += count
         self.revision = delta[1]

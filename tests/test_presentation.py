@@ -866,10 +866,21 @@ def test_trim_lines_removes_the_oldest_history_and_reports_incremental_hints() -
 
     rich.apply_delta(delta)
     service.apply_delta(delta)
+    replacement = {
+        0: 2,
+        1: 3,
+        2: [variant(7, 2, line(2, "TWO"))],
+    }
+    rich.apply_delta(replacement)
+    service.apply_delta(replacement)
 
     assert [item.line_id for item in rich.lines] == [2, 3, 4]
     assert [item[0] for item in service.lines] == [2, 3, 4]
-    assert rich.take_render_change() == (2, 1)
+    assert rich.lines[0].segments[0].text == "TWO"
+    assert plain_line(service.lines[0]) == "TWO"
+    # The replacement targets the first retained row after the prefix trim. The trim hint lets
+    # the viewport discard the old prefix, while changed_from remains relative to the new list.
+    assert rich.take_render_change() == (0, 1)
 
 
 def test_main_viewport_tracks_the_runtime_max_log_setting() -> None:
@@ -1033,9 +1044,7 @@ def test_delta_coalescing_preserves_button_generation_order() -> None:
 
     assert combined == sequential
     assert [
-        combined.segment_enabled(segment)
-        for item in combined.lines
-        for segment in item.segments
+        combined.segment_enabled(segment) for item in combined.lines for segment in item.segments
     ] == [
         False,
         False,

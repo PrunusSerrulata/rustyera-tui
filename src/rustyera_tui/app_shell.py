@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -156,6 +157,8 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         self._presentation_dirty = False
         self._presentation_commit_ready = False
         self._projection_refresh_scheduled = False
+        self._worker_event_notification_lock = threading.Lock()
+        self._worker_event_notification_pending = False
         self.variable_dialog: VariableDialog | None = None
         self.stack_dialog: StackDialog | None = None
         self.console_dialog: DebugConsoleDialog | None = None
@@ -202,6 +205,9 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
             yield Button("关于…", id="help-about", classes="menu-item")
 
     def on_mount(self) -> None:
+        set_notifier = getattr(self.worker, "set_event_notifier", None)
+        if set_notifier is not None:
+            set_notifier(self._notify_worker_events)
         if self.worker.ident is None:
             self.worker.start()
         self.set_interval(0.03, self._drain_worker_events)
@@ -211,6 +217,9 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         self.query_one("#prompt", Input).focus()
 
     def on_unmount(self) -> None:
+        set_notifier = getattr(self.worker, "set_event_notifier", None)
+        if set_notifier is not None:
+            set_notifier(None)
         self.worker.shutdown()
 
     def _set_active_wait(self, value: dict[int, Any] | None) -> None:
@@ -426,7 +435,5 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         self._refresh_interaction_lock()
 
     def _queue_local_presentation_render(self) -> None:
-        if not self._presentation_dirty:
-            self._begin_presentation_render()
-        self._presentation_dirty = True
+        self._mark_presentation_dirty()
         self._presentation_commit_ready = True

@@ -52,7 +52,10 @@ class PresentationModel:
     _retired_interaction_sequence: int = field(default=0, init=False, repr=False)
     # Runtime TrimLines counts canonical rows that may already be outside this viewport.
     _hidden_prefix: int = field(default=0, init=False, repr=False)
-    _line_indices: dict[int, int] = field(default_factory=dict, init=False, repr=False)
+    _line_indices: dict[int, int] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _line_index_offset: int = field(default=0, init=False, repr=False, compare=False)
 
     def apply_snapshot(self, snapshot: dict[int, Any]) -> None:
         previous_sequences = self._collect_interaction_sequences(self.lines)
@@ -72,6 +75,7 @@ class PresentationModel:
             self._assign_interaction_sequences(parse_line(line), previous_sequences)
             for line in retained_lines
         ]
+        self._line_index_offset = 0
         self._rebuild_line_indices()
         self.changed_from = 0
         self.trimmed_prefix = 0
@@ -87,7 +91,7 @@ class PresentationModel:
             if tag == 0:
                 self._mark_changed(len(self.lines))
                 line = self._assign_interaction_sequences(parse_line(fields[0]))
-                self._line_indices[line.line_id] = len(self.lines)
+                self._line_indices[line.line_id] = self._line_index_offset + len(self.lines)
                 self.lines.append(line)
             elif tag == 1:
                 requested = fields[0]
@@ -102,6 +106,7 @@ class PresentationModel:
                 self.lines.clear()
                 self._hidden_prefix = 0
                 self._line_indices.clear()
+                self._line_index_offset = 0
                 self._mark_changed(0)
             elif tag == 3:
                 self.title = fields[0]
@@ -111,11 +116,10 @@ class PresentationModel:
                 self.input_wait = fields[0] if fields else None
             elif tag == 7:
                 line_id, replacement = fields
-                index = self._line_indices.get(line_id)
-                if index is not None:
-                    previous_sequences = self._collect_interaction_sequences(
-                        (self.lines[index],)
-                    )
+                absolute_index = self._line_indices.get(line_id)
+                if absolute_index is not None:
+                    index = absolute_index - self._line_index_offset
+                    previous_sequences = self._collect_interaction_sequences((self.lines[index],))
                     parsed = self._assign_interaction_sequences(
                         parse_line(replacement),
                         previous_sequences,
@@ -124,7 +128,7 @@ class PresentationModel:
                     self.lines[index] = parsed
                     if parsed.line_id != line_id:
                         self._line_indices.pop(line_id, None)
-                        self._line_indices[parsed.line_id] = index
+                        self._line_indices[parsed.line_id] = absolute_index
             elif tag == 8:
                 self._apply_settings(fields[0])
             elif tag == 13:
@@ -136,8 +140,10 @@ class PresentationModel:
                 self._hidden_prefix -= hidden
                 count = min(requested - hidden, len(self.lines))
                 if count:
+                    for line in self.lines[:count]:
+                        self._line_indices.pop(line.line_id, None)
                     del self.lines[:count]
-                    self._rebuild_line_indices()
+                    self._line_index_offset += count
                     self.trimmed_prefix += count
                     if self.changed_from is None:
                         self.changed_from = len(self.lines)
@@ -161,15 +167,19 @@ class PresentationModel:
     def _rebuild_line_indices(self) -> None:
         # Line IDs are runtime-issued stable identities. Indexing them avoids an O(history)
         # scan for every update to the pending logical line during output-heavy game startup.
-        self._line_indices = {line.line_id: index for index, line in enumerate(self.lines)}
+        self._line_indices = {
+            line.line_id: self._line_index_offset + index for index, line in enumerate(self.lines)
+        }
 
     def _trim_viewport_lines(self) -> None:
         count = len(self.lines) - self.maximum_physical_lines
         if count <= 0:
             return
+        for line in self.lines[:count]:
+            self._line_indices.pop(line.line_id, None)
         del self.lines[:count]
         self._hidden_prefix += count
-        self._rebuild_line_indices()
+        self._line_index_offset += count
         self.trimmed_prefix += count
         if self.changed_from is not None:
             self.changed_from = max(0, self.changed_from - count)

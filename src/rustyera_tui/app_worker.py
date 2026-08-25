@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.widgets import Input
 
 from .dialogs import FatalErrorDialog, PreferencesDialog, ProjectSettingsDialog
@@ -18,7 +19,41 @@ from .version import CORE_REVISION
 from .widgets import GameViewport
 
 
+class WorkerEventsAvailable(Message):
+    """Advisory, coalesced notification that the runtime queue has work."""
+
+
 class _WorkerEventMixin:
+    def _notify_worker_events(self) -> None:
+        """Coalesce worker-thread publications into one prompt UI-loop drain."""
+
+        with self._worker_event_notification_lock:
+            if self._worker_event_notification_pending:
+                return
+            self._worker_event_notification_pending = True
+        try:
+            # post_message is thread-safe and non-blocking. In particular, the runtime worker must
+            # never wait for Textual's loop while that loop may be joining the worker on shutdown.
+            posted = self.post_message(WorkerEventsAvailable())
+        except RuntimeError:
+            posted = False
+        if not posted:
+            with self._worker_event_notification_lock:
+                self._worker_event_notification_pending = False
+
+    def on_worker_events_available(self, _message: WorkerEventsAvailable) -> None:
+        self.call_next(self._drain_notified_worker_events)
+
+    async def _drain_notified_worker_events(self) -> None:
+        await self._drain_worker_events()
+        with self._worker_event_notification_lock:
+            self._worker_event_notification_pending = False
+            reschedule = not self.worker.events.empty()
+            if reschedule:
+                self._worker_event_notification_pending = True
+        if reschedule:
+            self.call_next(self._drain_notified_worker_events)
+
     async def _drain_worker_events(self) -> None:
         queue_exhausted = False
         for _ in range(1000):
@@ -28,11 +63,18 @@ class _WorkerEventMixin:
                 queue_exhausted = True
                 break
             dirty = self._handle_worker_event(event)
-            if dirty and not self._presentation_dirty:
-                self._begin_presentation_render()
-            self._presentation_dirty = self._presentation_dirty or dirty
+            if dirty:
+                self._mark_presentation_dirty()
         if queue_exhausted and self._presentation_dirty and self._presentation_commit_ready:
             await self._commit_presentation()
+
+    def _mark_presentation_dirty(self) -> None:
+        """Lock the outgoing interaction surface at the first pending projection change."""
+
+        if self._presentation_dirty:
+            return
+        self._begin_presentation_render()
+        self._presentation_dirty = True
 
     async def _commit_presentation(self) -> None:
         try:
@@ -50,9 +92,7 @@ class _WorkerEventMixin:
                 changed_from=changed_from,
                 trimmed_prefix=trimmed_prefix,
                 button_generation=self.presentation.button_generation,
-                retired_interaction_sequence=(
-                    self.presentation.retired_interaction_sequence
-                ),
+                retired_interaction_sequence=(self.presentation.retired_interaction_sequence),
             )
             self.query_one("#separator-line").display = not horizontal_overflow
             self.title = self.presentation.title or self.TITLE
@@ -83,6 +123,11 @@ class _WorkerEventMixin:
                     self._log(str(error), LogLevel.WARNING)
                 else:
                     dirty = True
+            if dirty:
+                # Lock the old interaction surface before installing the batch's new wait. This
+                # prevents the outgoing menu from being enabled and rendered once in between the
+                # atomic presentation and wait halves.
+                self._mark_presentation_dirty()
             self._set_active_wait(value.active_wait)
             self._presentation_commit_ready = value.render
             return dirty

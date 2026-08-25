@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from app_test_support import (
     Button,
     CORE_VERSION,
@@ -24,6 +26,45 @@ async def test_mount_does_not_restart_a_prestarted_runtime_worker(tmp_path: Path
         assert worker.ident == 1
         assert worker.started
         assert worker.start_calls == 1
+
+
+async def test_shutdown_does_not_wait_for_an_inflight_worker_notification(
+    tmp_path: Path,
+) -> None:
+    class NotifyingWorker(FakeWorker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.notifier: object = None
+            self.notification_completed = False
+
+        def set_event_notifier(self, notifier: object) -> None:
+            self.notifier = notifier
+
+        def shutdown(self) -> None:
+            notifier = self.notifier
+            if callable(notifier):
+                notification = threading.Thread(target=notifier)
+                notification.start()
+                notification.join(timeout=0.2)
+                self.notification_completed = not notification.is_alive()
+            super().shutdown()
+
+    worker = NotifyingWorker()
+    app = RustyEraTui(tmp_path, None, worker=worker)  # type: ignore[arg-type]
+
+    async with app.run_test(size=(100, 30)):
+        # Capture a publication callback that was already in flight when unmount detached it.
+        inflight_notifier = worker.notifier
+        original_set_notifier = worker.set_event_notifier
+
+        def retain_inflight_notifier(notifier: object) -> None:
+            if notifier is not None:
+                original_set_notifier(notifier)
+
+        worker.set_event_notifier = retain_inflight_notifier  # type: ignore[method-assign]
+        worker.notifier = inflight_notifier
+
+    assert worker.notification_completed
 
 
 async def test_restart_and_return_to_title_require_confirmation(tmp_path: Path) -> None:
