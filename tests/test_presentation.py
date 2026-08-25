@@ -1,6 +1,5 @@
 from rich.cells import cell_len
 
-from rustyera_tui.game_line_layout import project_responsive_segments
 from rustyera_tui.presentation import (
     DEFAULT_VIEWPORT_COLUMNS,
     MAX_TABLE_COLUMN_WIDTH,
@@ -701,100 +700,6 @@ def test_width_independent_separator_uses_the_100_column_default() -> None:
     )
     assert parsed.segments == ()
     assert parsed.layout == (SeparatorLayout(0, "～"),)
-
-
-def test_separator_stops_at_the_game_drawable_width_on_a_wider_terminal() -> None:
-    raw = snapshot()
-    raw[6][0] = 1_080_000
-    raw[2][0] = [
-        {
-            0: 1,
-            1: False,
-            2: True,
-            3: True,
-            4: 0,
-            5: [variant(6, "-", 0, style(color(255, 255, 255)) | {7: 16_000})],
-        }
-    ]
-
-    model = PresentationModel()
-    model.apply_snapshot(raw)
-    separator = model.lines[0].layout[0]
-    assert isinstance(separator, SeparatorLayout)
-    assert separator.maximum_columns == 135
-    wide = "".join(part.text for part in project_responsive_segments(model.lines[0], 180))
-    narrow = "".join(part.text for part in project_responsive_segments(model.lines[0], 90))
-    assert cell_len(wide) == 135
-    assert cell_len(narrow) == 90
-
-    updated_settings = raw[6] | {0: 800_000}
-    model.apply_delta({0: 1, 1: 2, 2: [variant(8, updated_settings)]})
-    updated_separator = model.lines[0].layout[0]
-    assert isinstance(updated_separator, SeparatorLayout)
-    assert updated_separator.maximum_columns == 100
-
-
-def test_separator_width_tracks_game_font_sizes_without_overflow_or_underfill() -> None:
-    for font_millipixels, expected_columns in (
-        (12_000, 180),
-        (16_000, 135),
-        (18_000, 120),
-        (24_000, 90),
-    ):
-        raw = snapshot()
-        raw[6][0] = 1_080_000
-        raw[2][0] = [
-            {
-                0: 1,
-                1: False,
-                2: True,
-                3: True,
-                4: 0,
-                5: [
-                    variant(
-                        6,
-                        "-",
-                        0,
-                        style(color(255, 255, 255)) | {7: font_millipixels},
-                    )
-                ],
-            }
-        ]
-
-        model = PresentationModel()
-        model.apply_snapshot(raw)
-        separator = model.lines[0].layout[0]
-        assert isinstance(separator, SeparatorLayout)
-        assert separator.maximum_columns == expected_columns
-        assert cell_len(
-            "".join(part.text for part in project_responsive_segments(model.lines[0], 240))
-        ) == expected_columns
-        assert cell_len(
-            "".join(part.text for part in project_responsive_segments(model.lines[0], 72))
-        ) == 72
-
-
-def test_legacy_separator_uses_the_protocol_default_font_width() -> None:
-    raw = snapshot()
-    raw[6][0] = 760_000
-    raw[2][0] = [
-        {
-            0: 1,
-            1: False,
-            2: True,
-            3: True,
-            4: 0,
-            5: [variant(6, "-", 0)],
-        }
-    ]
-
-    model = PresentationModel()
-    model.apply_snapshot(raw)
-
-    separator = model.lines[0].layout[0]
-    assert isinstance(separator, SeparatorLayout)
-    assert separator.font_millipixels == 18_000
-    assert separator.maximum_columns == 84
 
 
 def test_delta_append_replace_delete_and_revision_check() -> None:

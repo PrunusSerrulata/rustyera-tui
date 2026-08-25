@@ -17,7 +17,6 @@ from .presentation_text import (
     plain_run as plain_run,
 )
 from .presentation_types import (
-    DEFAULT_SEPARATOR_FONT_MILLIPIXELS,
     DEFAULT_VIEWPORT_COLUMNS,
     ColumnCellLayout,
     DisplayLineModel,
@@ -69,19 +68,7 @@ def parse_line(line: dict[int, Any]) -> DisplayLineModel:
                 ColumnCellLayout(start, len(segments), int(alignment), int(preferred_columns))
             )
         elif tag == 6:  # Width-independent separator
-            separator_style = fields[2] if len(fields) > 2 and isinstance(fields[2], dict) else {}
-            layout.append(
-                SeparatorLayout(
-                    len(segments),
-                    fields[0] or "-",
-                    max(
-                        0,
-                        int(
-                            separator_style.get(7, DEFAULT_SEPARATOR_FONT_MILLIPIXELS)
-                        ),
-                    ),
-                )
-            )
+            layout.append(SeparatorLayout(len(segments), fields[0] or "-"))
         else:
             segments.extend(parse_run(run))
     return DisplayLineModel(
