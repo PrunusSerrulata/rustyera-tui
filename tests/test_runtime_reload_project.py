@@ -21,6 +21,9 @@ def test_project_file_read_failure_terminates_the_attempt(tmp_path: Path) -> Non
         def begin_startup_attempt(self, *, project_file: bool) -> None:
             self.events.append(("begin", project_file))
 
+        def begin_session_reset(self) -> None:
+            pass
+
         def fail_startup(self, error: object) -> None:
             self.events.append(("failed", str(error)))
 

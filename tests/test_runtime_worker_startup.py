@@ -5,6 +5,7 @@ from runtime_cabi_test_support import (
     FrontendEvent,
     Path,
     PresentationBatch,
+    ProjectBundle,
     RuntimeClient,
     RuntimeWorker,
     pytest,
@@ -206,20 +207,109 @@ def test_project_scan_failure_terminates_the_attempt_before_recreate(
         def begin_startup_attempt(self, *, project_file: bool) -> None:
             self.events.append(("begin", project_file))
 
+        def begin_session_reset(self) -> None:
+            self.events.append(("reset", None))
+
         def fail_startup(self, error: object) -> None:
             self.events.append(("failed", str(error)))
+
+        def record_host_metrics(self, _metrics: object) -> None:
+            self.events.append(("metrics", None))
+
+        def recreate(self, _bundle: ProjectBundle, _restore: object = None) -> None:
+            self.events.append(("recreate", None))
 
     worker = RuntimeWorker(None, None)
     client = Client()
     worker.client = client  # type: ignore[assignment]
-    monkeypatch.setattr(
-        "rustyera_tui.worker.ProjectBundle.scan_quick",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("scan failed")),
-    )
+    attempts = iter((OSError("scan failed"), ProjectBundle(tmp_path, 1, {})))
+
+    def scan(*_args: object, **_kwargs: object) -> ProjectBundle:
+        result = next(attempts)
+        if isinstance(result, OSError):
+            raise result
+        return result
+
+    monkeypatch.setattr("rustyera_tui.worker.ProjectBundle.scan_quick", scan)
 
     worker._process_command(FrontendCommand("load_project", tmp_path))
 
-    assert client.events == [("begin", False), ("failed", "scan failed")]
+    assert client.events == [
+        ("begin", False),
+        ("reset", None),
+        ("failed", "scan failed"),
+    ]
+
+    worker._process_command(FrontendCommand("load_project", tmp_path))
+
+    assert client.events[-4:] == [
+        ("begin", False),
+        ("reset", None),
+        ("metrics", None),
+        ("recreate", None),
+    ]
+
+
+def test_packaged_project_uses_one_replacement_session_for_decode_and_hello(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class FakeAbi:
+        def submit(self, _data: bytes) -> None:
+            calls.append("submit")
+
+        def destroy_session(self) -> None:
+            calls.append("destroy")
+
+        def create_session(self) -> None:
+            calls.append("create")
+
+        def project_file_manifest(self, _payload: bytes) -> dict[int, object]:
+            calls.append("decode")
+            return {0: 1, 1: []}
+
+    project_file = tmp_path / "game.reraproj"
+    project_file.write_bytes(b"package")
+    worker = RuntimeWorker(None, None)
+    worker.client = RuntimeClient(FakeAbi(), worker.events)  # type: ignore[arg-type]
+    calls.clear()
+
+    worker._load_project_file(project_file)
+
+    assert calls == ["destroy", "create", "decode", "submit"]
+    assert worker.client.pending_bundle is not None
+    assert worker.client.pending_bundle.project_file == project_file
+    assert worker.client.can_pump
+
+
+def test_packaged_manifest_decode_failure_destroys_replacement_once(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    class FakeAbi:
+        def submit(self, _data: bytes) -> None:
+            pass
+
+        def destroy_session(self) -> None:
+            calls.append("destroy")
+
+        def create_session(self) -> None:
+            calls.append("create")
+
+        def project_file_manifest(self, _payload: bytes) -> dict[int, object]:
+            raise RuntimeError("decode failed")
+
+    project_file = tmp_path / "broken.reraproj"
+    project_file.write_bytes(b"broken")
+    worker = RuntimeWorker(None, None)
+    worker.client = RuntimeClient(FakeAbi(), worker.events)  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="decode failed"):
+        worker._load_project_file(project_file)
+
+    assert calls == ["destroy", "create", "destroy"]
+    assert not worker.client.can_pump
+    assert worker.client.pending_bundle is None
 
 
 def test_failed_wait_bound_worker_command_releases_the_app_input_gate() -> None:

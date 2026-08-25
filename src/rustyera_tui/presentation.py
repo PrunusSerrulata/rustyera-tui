@@ -60,17 +60,18 @@ class PresentationModel:
         self.title = snapshot[1]
         history = snapshot[2]
         self.lines = []
-        self._hidden_prefix = 0
         self._apply_settings(snapshot.get(6))
         # Snapshots carry each button's authoritative enabled state, but not the
         # current BREAKBUTTON generation. Wait for a generation delta before
         # filtering later partial line updates locally.
         self._button_generation = None
+        raw_lines = history.get(0, [])
+        self._hidden_prefix = max(0, len(raw_lines) - self.maximum_physical_lines)
+        retained_lines = raw_lines[self._hidden_prefix :]
         self.lines = [
             self._assign_interaction_sequences(parse_line(line), previous_sequences)
-            for line in history.get(0, [])
+            for line in retained_lines
         ]
-        self._trim_viewport_lines()
         self._rebuild_line_indices()
         self.changed_from = 0
         self.trimmed_prefix = 0

@@ -11,6 +11,7 @@ from textual.widgets import Input
 
 from .dialogs import FatalErrorDialog, PreferencesDialog, ProjectSettingsDialog
 from .log_model import LogLevel, LogMessage, format_log_entries
+from .presentation import PresentationModel
 from .runtime import DiagnosisProgress, FrontendEvent, PresentationBatch
 from .runtime_types import GameInformation
 from .version import CORE_REVISION
@@ -64,6 +65,9 @@ class _WorkerEventMixin:
 
     def _handle_worker_event(self, event: FrontendEvent) -> bool:
         kind, value = event.kind, event.value
+        if kind == "session_reset":
+            self._reset_session_state()
+            return True
         if kind == "presentation_batch":
             if not isinstance(value, PresentationBatch):
                 self._log("worker returned an invalid presentation batch", LogLevel.WARNING)
@@ -92,6 +96,50 @@ class _WorkerEventMixin:
             return False
         self._handle_debug_or_lifecycle_event(kind, value)
         return False
+
+    def _reset_session_state(self) -> None:
+        """Drop every UI object whose contents belong to the previous runtime session."""
+
+        self._cancel_progress_loss_confirmation()
+        for attribute in (
+            "variable_dialog",
+            "stack_dialog",
+            "console_dialog",
+            "fatal_dialog",
+            "export_progress_dialog",
+        ):
+            dialog = getattr(self, attribute)
+            setattr(self, attribute, None)
+            if dialog is not None and dialog.is_mounted:
+                dialog.dismiss(None)
+        self.presentation = PresentationModel()
+        self.active_wait = None
+        self._activated_wait = None
+        self._pending_retired_interaction_boundary = None
+        self.input_undo_token = None
+        self.blocking_error = None
+        self.fault_logs = ""
+        self.runtime_phase = 0
+        self.input_replay_exporting = False
+        self.snapshot_exporting = False
+        self.project_file_exporting = False
+        self.diagnosis_exporting = False
+        self.diagnosis_export_at_fault = False
+        self.export_progress_dialog = None
+        self.configuration_snapshot = None
+        self.configuration_read_only = False
+        self.project_preferences = None
+        self.game_information = GameInformation()
+        self.presentation_rendering = False
+        self._presentation_dirty = False
+        self._presentation_commit_ready = True
+        self._finish_project_progress()
+        self._hide_diagnosis_progress()
+        self._reset_client_preferences()
+        self._set_debug_enabled(False)
+        self._update_prompt()
+        self._refresh_menu_availability()
+        self._refresh_interaction_lock()
 
     def _handle_runtime_state_event(self, kind: str, value: Any) -> bool:
         if kind == "wait":

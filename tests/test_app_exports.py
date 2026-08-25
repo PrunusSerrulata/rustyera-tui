@@ -266,6 +266,23 @@ async def test_full_project_export_uses_a_cancellable_modal_and_locks_gameplay(
         assert not app.query_one("#prompt", Input).disabled
 
 
+async def test_session_reset_dismisses_export_dialog_without_stale_cancel(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._start_project_file_export(tmp_path / "full.reraproj")
+        await pilot.pause()
+        worker.commands.clear()
+
+        app._handle_worker_event(FrontendEvent("session_reset"))
+        await pilot.pause()
+
+        assert app.export_progress_dialog is None
+        assert not app.project_file_exporting
+        assert ("cancel_project_file_export", None) not in worker.commands
+
+
 async def test_background_cache_packaging_progress_does_not_lock_gameplay(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     app.worker = FakeWorker()  # type: ignore[assignment]

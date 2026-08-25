@@ -4,6 +4,7 @@ import pytest
 from rich.text import Text
 
 from rustyera_tui.log_model import (
+    BudgetedLogEntries,
     LogLevel,
     LogMessage,
     filter_log_entries,
@@ -64,6 +65,27 @@ def test_log_filter_is_threshold_only_but_export_always_contains_every_entry() -
         "[00:00:03] WARN  warning\n"
         "[00:00:04] ERROR error\n"
     )
+
+
+def test_log_entries_enforce_count_and_utf8_byte_budgets() -> None:
+    first = make_log_entry("first", timestamp="00:00:01")
+    second = make_log_entry("第二条", timestamp="00:00:02")
+    third = make_log_entry("third", timestamp="00:00:03")
+    by_count = BudgetedLogEntries(max_entries=2, max_utf8_bytes=1_024)
+
+    by_count.extend((first, second, third))
+
+    assert [entry.message for entry in by_count] == ["第二条", "third"]
+    byte_budget = len(second.plain_text.encode("utf-8")) + 1
+    by_size = BudgetedLogEntries(max_entries=10, max_utf8_bytes=byte_budget)
+    by_size.extend((first, second))
+    assert len(by_size) == 1
+    assert by_size.utf8_bytes <= byte_budget
+    by_size.append(make_log_entry("界" * 1_000, timestamp="00:00:04"))
+    assert len(by_size) == 1
+    assert by_size[0].message.endswith("…")
+    assert by_size.utf8_bytes <= byte_budget
+    assert len(format_log_entries(by_size).encode("utf-8")) <= byte_budget
 
 
 def test_runtime_diagnostic_severity_is_preserved_as_structured_log_data() -> None:

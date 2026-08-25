@@ -146,6 +146,49 @@ async def test_menu_hover_click_and_debug_gating(tmp_path: Path) -> None:
         assert app.query_one("#menu-file").styles.content_align[0] == "left"
 
 
+async def test_closed_debug_dialogs_release_app_references(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        worker.events.put(FrontendEvent("phase", 5))
+        worker.events.put(FrontendEvent("debug_enabled", True))
+        await pilot.pause(0.1)
+
+        for menu_item, attribute, owner in (
+            ("debug-console", "console_dialog", "console"),
+            ("debug-variables", "variable_dialog", "variables"),
+            ("debug-stack", "stack_dialog", "stack"),
+        ):
+            await pilot.click("#menu-debug")
+            await pilot.click(f"#{menu_item}")
+            assert getattr(app, attribute) is app.screen
+            await pilot.click("#dialog-close")
+            await pilot.pause()
+            assert getattr(app, attribute) is None
+            assert ("debug_surface_closed", owner) in worker.commands
+
+
+async def test_session_reset_dismisses_debug_dialog_without_stale_runtime_command(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    async with app.run_test(size=(100, 30)) as pilot:
+        app._handle_worker_event(FrontendEvent("phase", 5))
+        app._set_debug_enabled(True)
+        app._debug_action("debug-console")
+        await pilot.pause()
+        worker.commands.clear()
+
+        app._handle_worker_event(FrontendEvent("session_reset"))
+        await pilot.pause()
+
+        assert app.console_dialog is None
+        assert not any(kind == "debug_surface_closed" for kind, _value in worker.commands)
+
+
 async def test_single_step_prompt_shows_source_and_f10_advances(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()

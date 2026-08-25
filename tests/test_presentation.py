@@ -1,4 +1,7 @@
+import pytest
 from rich.cells import cell_len
+
+import rustyera_tui.presentation as presentation_module
 
 from rustyera_tui.presentation import (
     DEFAULT_VIEWPORT_COLUMNS,
@@ -890,6 +893,33 @@ def test_main_viewport_tracks_the_runtime_max_log_setting() -> None:
     model.apply_delta({0: 1, 1: 2, 2: [variant(14, 2)]})
     assert len(model.lines) == configured_limit
     assert model.lines[0].line_id == 3
+    assert model.take_render_change() == (None, 0)
+
+
+def test_snapshot_parses_only_the_retained_viewport_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = PresentationModel()
+    initial = snapshot()
+    configured_limit = 500
+    initial[2][0] = [line(line_id, str(line_id)) for line_id in range(1, 701)]
+    initial[6][4] = configured_limit
+    parsed: list[int] = []
+    original_parse_line = presentation_module.parse_line
+
+    def tracked_parse_line(raw: dict[int, object]):
+        parsed.append(int(raw[0]))
+        return original_parse_line(raw)
+
+    monkeypatch.setattr(presentation_module, "parse_line", tracked_parse_line)
+
+    model.apply_snapshot(initial)
+
+    assert parsed == list(range(201, 701))
+    assert [item.line_id for item in model.lines] == parsed
+    model.take_render_change()
+    model.apply_delta({0: 1, 1: 2, 2: [variant(14, 200)]})
+    assert [item.line_id for item in model.lines] == parsed
     assert model.take_render_change() == (None, 0)
 
 

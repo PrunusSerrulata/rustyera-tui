@@ -18,6 +18,7 @@ class _WorkerProjectMixin:
         if self.client is None:
             return
         self.client.begin_startup_attempt(project_file=False)
+        self.client.begin_session_reset()
         self.events.put(FrontendEvent("status", f"正在扫描 {root}…"))
         bundle = ProjectBundle.scan_quick(
             root,
@@ -41,14 +42,21 @@ class _WorkerProjectMixin:
         if self.client is None:
             return
         self.client.begin_startup_attempt(project_file=True)
+        self.client.begin_session_reset()
         started = time.monotonic_ns()
         resolved = path.expanduser().resolve(strict=True)
         payload = resolved.read_bytes()
-        manifest = self.client.abi.project_file_manifest(payload)
-        self.client.record_host_duration("cache_read_ms", started)
-        bundle = ProjectBundle.from_project_file_manifest(resolved, manifest)
-        self.events.put(FrontendEvent("status", f"正在载入项目文件 {resolved}…"))
-        self.client.recreate(bundle, project_file_bytes=payload)
+        self.client.prepare_replacement_session()
+        try:
+            manifest = self.client.abi.project_file_manifest(payload)
+            self.client.record_host_duration("cache_read_ms", started)
+            bundle = ProjectBundle.from_project_file_manifest(resolved, manifest)
+            self.events.put(FrontendEvent("status", f"正在载入项目文件 {resolved}…"))
+            self.client.recreate(bundle, project_file_bytes=payload)
+        except BaseException as error:
+            if self.client._replacement_session_prepared:
+                self.client.abort_session_replacement(error)
+            raise
 
     def _emit_scan_progress(self: RuntimeWorker, completed: int, total: int) -> None:
         self.events.put(FrontendEvent("project_progress", (0, completed, total)))

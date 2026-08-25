@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import IntEnum
 from typing import Iterable, Sequence
@@ -93,6 +93,68 @@ class LogEntry:
 
     def __contains__(self, value: str) -> bool:
         return value in self.plain_text
+
+
+MAX_LOG_ENTRIES = 4_096
+MAX_LOG_UTF8_BYTES = 4 * 1024 * 1024
+_TRUNCATION_MARKER = "…"
+
+
+class BudgetedLogEntries(list[LogEntry]):
+    """Retain the newest log entries within count and encoded-size budgets."""
+
+    def __init__(
+        self,
+        entries: Iterable[LogEntry] = (),
+        *,
+        max_entries: int = MAX_LOG_ENTRIES,
+        max_utf8_bytes: int = MAX_LOG_UTF8_BYTES,
+    ) -> None:
+        if max_entries < 1 or max_utf8_bytes < 1:
+            raise ValueError("log budgets must be positive")
+        super().__init__()
+        self.max_entries = max_entries
+        self.max_utf8_bytes = max_utf8_bytes
+        self._entry_sizes: list[int] = []
+        self._utf8_bytes = 0
+        self.extend(entries)
+
+    @property
+    def utf8_bytes(self) -> int:
+        return self._utf8_bytes
+
+    def append(self, entry: LogEntry) -> None:
+        entry = self._fit_entry(entry)
+        # format_log_entries terminates every retained entry with one newline.
+        size = len(entry.plain_text.encode("utf-8")) + 1
+        super().append(entry)
+        self._entry_sizes.append(size)
+        self._utf8_bytes += size
+        while len(self) > self.max_entries or self._utf8_bytes > self.max_utf8_bytes:
+            self._utf8_bytes -= self._entry_sizes.pop(0)
+            super().pop(0)
+
+    def extend(self, entries: Iterable[LogEntry]) -> None:
+        for entry in entries:
+            self.append(entry)
+
+    def clear(self) -> None:
+        super().clear()
+        self._entry_sizes.clear()
+        self._utf8_bytes = 0
+
+    def _fit_entry(self, entry: LogEntry) -> LogEntry:
+        empty = replace(entry, message="")
+        prefix_bytes = len(empty.plain_text.encode("utf-8")) + 1
+        available = max(0, self.max_utf8_bytes - prefix_bytes)
+        encoded = entry.message.encode("utf-8")
+        if len(encoded) <= available:
+            return entry
+        marker = _TRUNCATION_MARKER.encode("utf-8")
+        if available < len(marker):
+            return empty
+        message = encoded[: available - len(marker)].decode("utf-8", "ignore")
+        return replace(entry, message=message + _TRUNCATION_MARKER)
 
 
 def normalize_log_message(message: str, level: LogLevel) -> tuple[LogLevel, str]:

@@ -77,6 +77,13 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
                 self.events.put(FrontendEvent("status", "请选择 Era 项目文件夹。"))
             while not self._stop_requested.is_set():
                 self._process_commands()
+                if not self.client.can_pump:
+                    try:
+                        command = self.commands.get(timeout=0.02)
+                    except queue.Empty:
+                        continue
+                    self._process_command(command)
+                    continue
                 busy = self.client.pump()
                 self.client.maybe_refresh_compiled_cache()
                 if not busy:
@@ -157,9 +164,11 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
                         raise RuntimeError(
                             "a packaged project cannot be recompiled without sources"
                         )
+                    root = client.bundle.root
                     client.begin_startup_attempt(project_file=False)
+                    client.begin_session_reset()
                     client.recreate(
-                        ProjectBundle.scan(client.bundle.root, 1, client._project_scan_progress),
+                        ProjectBundle.scan(root, 1, client._project_scan_progress),
                         allow_compiled_cache=False,
                     )
                 case "return_title":

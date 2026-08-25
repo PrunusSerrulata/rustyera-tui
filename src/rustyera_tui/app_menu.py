@@ -290,11 +290,19 @@ class _MenuAndExportMixin:
         self.project_file_exporting = True
         self._update_prompt()
         self._refresh_interaction_lock()
-        self.export_progress_dialog = ExportProgressDialog()
-        self.push_screen(self.export_progress_dialog, self._finish_project_file_progress_dialog)
+        dialog = ExportProgressDialog()
+        self.export_progress_dialog = dialog
+        self.push_screen(
+            dialog,
+            lambda completed: self._finish_project_file_progress_dialog(dialog, completed),
+        )
         self.worker.send("export_project_file", path)
 
-    def _finish_project_file_progress_dialog(self, completed: bool | None) -> None:
+    def _finish_project_file_progress_dialog(
+        self, dialog: ExportProgressDialog, completed: bool | None
+    ) -> None:
+        if self.export_progress_dialog is not dialog:
+            return
         if completed or not self.project_file_exporting:
             return
         self.export_progress_dialog = None

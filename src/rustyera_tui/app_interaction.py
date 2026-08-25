@@ -30,23 +30,28 @@ class _InteractionMixin(_ViewportProjectionMixin):
         if item_id == "debug-toggle":
             self.worker.send("debug_disable" if self.debug_enabled else "debug_enable")
         elif item_id == "debug-console" and self.debug_enabled:
-            self.console_dialog = DebugConsoleDialog()
+            dialog = DebugConsoleDialog()
+            self.console_dialog = dialog
             self.push_screen(
-                self.console_dialog,
-                lambda _result: self.worker.send("debug_surface_closed", "console"),
+                dialog,
+                lambda _result: self._finish_debug_surface("console_dialog", dialog, "console"),
             )
         elif item_id == "debug-variables" and self.debug_enabled:
-            self.variable_dialog = VariableDialog()
+            dialog = VariableDialog()
+            self.variable_dialog = dialog
             self.push_screen(
-                self.variable_dialog,
-                lambda _result: self.worker.send("debug_surface_closed", "variables"),
+                dialog,
+                lambda _result: self._finish_debug_surface(
+                    "variable_dialog", dialog, "variables"
+                ),
             )
             self.worker.send("debug_action", ("variables", None))
         elif item_id == "debug-stack" and self.debug_enabled:
-            self.stack_dialog = StackDialog()
+            dialog = StackDialog()
+            self.stack_dialog = dialog
             self.push_screen(
-                self.stack_dialog,
-                lambda _result: self.worker.send("debug_surface_closed", "stack"),
+                dialog,
+                lambda _result: self._finish_debug_surface("stack_dialog", dialog, "stack"),
             )
         elif item_id == "debug-step-toggle" and self.debug_enabled:
             self.single_step = not self.single_step
@@ -56,6 +61,12 @@ class _InteractionMixin(_ViewportProjectionMixin):
             self.worker.send("debug_single_step", self.single_step)
         elif item_id == "debug-logs":
             self.push_screen(LogDialog(self.logs))
+
+    def _finish_debug_surface(self, attribute: str, dialog: object, owner: str) -> None:
+        if getattr(self, attribute) is not dialog:
+            return
+        setattr(self, attribute, None)
+        self.worker.send("debug_surface_closed", owner)
 
     def _handle_debug_response(self, value: tuple[str, int, list[Any]]) -> None:
         pending, response_tag, fields = value

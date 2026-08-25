@@ -21,7 +21,7 @@ from .dialogs import (
     StackDialog,
     VariableDialog,
 )
-from .log_model import LogEntry, LogLevel, make_log_entry
+from .log_model import BudgetedLogEntries, LogLevel, make_log_entry
 from .presentation import PresentationModel
 from .runtime import RuntimeWorker
 from .runtime_types import GameInformation
@@ -138,7 +138,7 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         self._pending_retired_interaction_boundary: int | None = None
         self.blocking_error: str | None = None
         self.input_undo_token: dict[int, Any] | None = None
-        self.logs: list[LogEntry] = []
+        self.logs: BudgetedLogEntries = BudgetedLogEntries()
         self.debug_enabled = False
         self.single_step = False
         self.debug_paused = False

@@ -146,6 +146,9 @@ class RuntimeClient(
         self._presentation_boundary_dirty = False
         self._projection_messages: set[int] = set()
         self._input_messages: dict[int, PendingGameInput] = {}
+        self._session_reset_active = False
+        self._session_destroy_pending = False
+        self._replacement_session_prepared = False
         self._send_hello()
 
     def _project_scan_progress(self, completed: int, total: int) -> None:
@@ -250,6 +253,79 @@ class RuntimeClient(
         self.project_preferences = None
         self.configuration_snapshot = None
         self.configuration_profile_supported = False
+        self.bundle = None
+        self.pending_bundle = None
+        self.storage = None
+        self.pending_restore = None
+        self.pending_project_file_bytes = None
+
+    def begin_session_reset(self) -> None:
+        """Release the active session and all session-owned frontend projections once."""
+
+        if not self._session_reset_active:
+            self._session_reset_active = True
+            self._session_destroy_pending = True
+            self.events.put(FrontendEvent("session_reset"))
+        if not self._session_destroy_pending:
+            return
+        self._replacement_session_prepared = False
+        try:
+            self.abi.destroy_session()
+        except BaseException as error:
+            # Python-side state must not keep the old game alive when scanning or session
+            # destruction fails. A later restart attempt may create a fresh session.
+            self._reset_wire_state_preserving(error)
+            raise
+        self._session_destroy_pending = False
+        self._reset_wire_state()
+
+    @property
+    def can_pump(self) -> bool:
+        """Whether the ABI currently owns a session that may be driven."""
+
+        return not self._session_reset_active
+
+    @staticmethod
+    def _annotate_cleanup_failure(
+        error: BaseException, operation: str, cleanup_error: BaseException
+    ) -> None:
+        add_note = getattr(error, "add_note", None)
+        if add_note is not None:
+            add_note(f"additionally failed to {operation}: {cleanup_error}")
+
+    def _reset_wire_state_preserving(self, error: BaseException) -> None:
+        try:
+            self._reset_wire_state()
+        except BaseException as cleanup_error:
+            self._annotate_cleanup_failure(error, "clear frontend session state", cleanup_error)
+
+    def abort_session_replacement(self, error: BaseException) -> None:
+        """Best-effort cleanup which preserves the replacement operation's exception."""
+
+        try:
+            self.abi.destroy_session()
+        except BaseException as cleanup_error:
+            self._session_destroy_pending = True
+            self._annotate_cleanup_failure(error, "destroy replacement session", cleanup_error)
+        else:
+            self._session_destroy_pending = False
+        finally:
+            self._replacement_session_prepared = False
+            self._session_reset_active = True
+            self._reset_wire_state_preserving(error)
+
+    def prepare_replacement_session(self) -> None:
+        """Create one empty session for manifest decoding and the subsequent hello."""
+
+        if self._replacement_session_prepared:
+            return
+        self.begin_session_reset()
+        try:
+            self.abi.create_session()
+        except BaseException as error:
+            self.abort_session_replacement(error)
+            raise
+        self._replacement_session_prepared = True
 
     def recreate(
         self,
@@ -263,14 +339,23 @@ class RuntimeClient(
             self.begin_startup_attempt(project_file=bundle.project_file is not None)
         self.events.put(FrontendEvent("configuration_cleared"))
         self.events.put(FrontendEvent("status", "正在创建新的 Runtime session…"))
-        self.abi.recreate_session()
-        self._reset_wire_state()
-        self.pending_bundle = bundle
-        self.pending_restore = restore
-        self.allow_compiled_cache_load = allow_compiled_cache
-        self.pending_project_file_bytes = project_file_bytes
-        self.storage = self._storage_for_bundle(bundle)
-        self._send_hello()
+        if not self._replacement_session_prepared:
+            # prepare_replacement_session owns cleanup for create failures. Keeping it outside
+            # this try avoids destroying the same partial handle twice when creation fails.
+            self.prepare_replacement_session()
+        try:
+            self.pending_bundle = bundle
+            self.pending_restore = restore
+            self.allow_compiled_cache_load = allow_compiled_cache
+            self.pending_project_file_bytes = project_file_bytes
+            self.storage = self._storage_for_bundle(bundle)
+            self._send_hello()
+        except BaseException as error:
+            self.abort_session_replacement(error)
+            raise
+        self._replacement_session_prepared = False
+        self._session_destroy_pending = False
+        self._session_reset_active = False
 
     def begin_startup_attempt(self, *, project_file: bool) -> None:
         self.startup_attempt += 1

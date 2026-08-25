@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import tempfile
+from collections import OrderedDict
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
@@ -12,7 +13,7 @@ import blake3
 
 from .frontend_io import IO_CONFLICT, IO_INVALID_DATA, frontend_error
 from .storage_state import _change_token, _precondition_conflict
-from .wire import variant
+from .wire import encode, variant
 
 
 class StorageBackend:
@@ -38,7 +39,21 @@ class StorageBackend:
             self.data_root = base.resolve() / "games" / project_key
         else:
             self.data_root = self.project_root
-        self.idempotent_results: dict[str, list[Any]] = {}
+        self.idempotent_results: OrderedDict[str, list[Any]] = OrderedDict()
+        self._idempotent_result_sizes: dict[str, int] = {}
+        self.idempotent_result_bytes = 0
+        self.idempotency_epoch: int | None = None
+        self.maximum_idempotent_results = 1_024
+        self.maximum_idempotent_bytes = 4 * 1024 * 1024
+
+    def begin_epoch(self, epoch: int | None) -> None:
+        """Discard command results that cannot be replayed in the next VM epoch."""
+
+        if epoch != self.idempotency_epoch:
+            self.idempotent_results.clear()
+            self._idempotent_result_sizes.clear()
+            self.idempotent_result_bytes = 0
+            self.idempotency_epoch = epoch
 
     def compiled_cache_path(self) -> Path:
         """Return the frontend-private opaque compiler cache path for this project."""
@@ -99,7 +114,9 @@ class StorageBackend:
         operation_tag, fields = request[3]
         idempotency_key = request.get(4, "")
         if idempotency_key and idempotency_key in self.idempotent_results:
-            return {0: request_id, 1: self.idempotent_results[idempotency_key]}
+            result = self.idempotent_results[idempotency_key]
+            self.idempotent_results.move_to_end(idempotency_key)
+            return {0: request_id, 1: result}
         try:
             result = self._operate(namespace, relative, operation_tag, fields)
         except ValueError as error:
@@ -107,7 +124,20 @@ class StorageBackend:
         except OSError as error:
             result = variant(4, frontend_error(error))
         if idempotency_key and operation_tag in (1, 3):
-            self.idempotent_results[idempotency_key] = result
+            retained_bytes = len(idempotency_key.encode("utf-8")) + len(encode(result))
+            if retained_bytes <= self.maximum_idempotent_bytes:
+                previous_size = self._idempotent_result_sizes.get(idempotency_key, 0)
+                self.idempotent_result_bytes -= previous_size
+                self.idempotent_results[idempotency_key] = result
+                self._idempotent_result_sizes[idempotency_key] = retained_bytes
+                self.idempotent_result_bytes += retained_bytes
+                self.idempotent_results.move_to_end(idempotency_key)
+                while (
+                    len(self.idempotent_results) > self.maximum_idempotent_results
+                    or self.idempotent_result_bytes > self.maximum_idempotent_bytes
+                ):
+                    evicted_key, _ = self.idempotent_results.popitem(last=False)
+                    self.idempotent_result_bytes -= self._idempotent_result_sizes.pop(evicted_key)
         return {0: request_id, 1: result}
 
     def _operate(

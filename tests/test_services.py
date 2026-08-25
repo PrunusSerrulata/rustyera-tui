@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import queue
+
+import pytest
+
 from services_test_support import (
     Any,
     AtomicExportStream,
@@ -19,6 +23,7 @@ from services_test_support import (
     ready_payload,
     variant,
 )
+from rustyera_tui.wire import CHANNEL_RUNTIME, RUNTIME_VERSION, encode_envelope, runtime_message
 
 
 def test_server_hello_reports_the_runtime_product_version() -> None:
@@ -28,6 +33,169 @@ def test_server_hello_reports_the_runtime_product_version() -> None:
     client._handle_runtime(1, {1: {0: 1, 1: 2}, 4: 7, 7: 1, 8: "0.6.0"}, None)
 
     assert client.events.get_nowait() == FrontendEvent("runtime_version", "0.6.0")
+
+
+def test_first_envelope_of_new_epoch_resets_storage_before_dispatch(tmp_path: Path) -> None:
+    client = object.__new__(RuntimeClient)
+    client.epoch = 7
+    client.expected_runtime_output = 0
+    client.storage = StorageBackend(tmp_path)
+    client.storage.begin_epoch(7)
+    client.storage.idempotent_results["old"] = variant(3)
+    observed: list[tuple[int | None, list[str]]] = []
+    client._handle_runtime = (  # type: ignore[method-assign]
+        lambda _tag, _value, _correlation: observed.append(
+            (client.storage.idempotency_epoch, list(client.storage.idempotent_results))
+        )
+    )
+    envelope = encode_envelope(
+        channel=CHANNEL_RUNTIME,
+        channel_version=RUNTIME_VERSION,
+        session={0: 1, 1: 2},
+        sequence=0,
+        message_id=1,
+        correlation_id=None,
+        payload_tag=42,
+        payload=runtime_message(42, {}),
+        epoch=8,
+    )
+
+    client._handle_envelope(envelope)
+
+    assert observed == [(8, [])]
+
+
+def test_session_reset_releases_old_client_state_before_recreate(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    class FakeAbi:
+        def submit(self, _data: bytes) -> None:
+            calls.append("submit")
+
+        def destroy_session(self) -> None:
+            calls.append("destroy")
+
+        def create_session(self) -> None:
+            calls.append("create")
+
+    client = RuntimeClient(FakeAbi(), queue.Queue())  # type: ignore[arg-type]
+    old_bundle = ProjectBundle(
+        tmp_path,
+        1,
+        {"main.erb": ProjectFile("main.erb", 2, variant(0, "old source"), bytes(32))},
+    )
+    client.bundle = old_bundle
+    client.pending_bundle = old_bundle
+    client.storage = StorageBackend(tmp_path)
+    client.presentation.lines = [{0: 1, 5: [variant(0, "old history", None, None)]}]
+
+    client.begin_session_reset()
+
+    assert calls[-1] == "destroy"
+    assert client.bundle is None
+    assert client.pending_bundle is None
+    assert client.storage is None
+    assert client.presentation.lines == []
+    assert "session_reset" in {
+        client.events.get_nowait().kind for _ in range(client.events.qsize())
+    }
+
+    replacement = ProjectBundle(tmp_path, 1, {})
+    client.recreate(replacement)
+    assert calls[-2:] == ["create", "submit"]
+    assert client.pending_bundle is replacement
+    assert client.storage is not None
+    assert not client._session_reset_active
+
+
+@pytest.mark.parametrize("failure", ["create", "hello"])
+def test_recreate_failure_releases_partial_session_and_preserves_original_error(
+    tmp_path: Path, failure: str
+) -> None:
+    class FakeAbi:
+        def __init__(self) -> None:
+            self.fail_create = False
+            self.fail_submit = False
+            self.active = True
+            self.destroy_calls = 0
+
+        def submit(self, _data: bytes) -> None:
+            if self.fail_submit:
+                raise RuntimeError("hello failed")
+
+        def destroy_session(self) -> None:
+            self.destroy_calls += 1
+            self.active = False
+
+        def create_session(self) -> None:
+            self.active = True
+            if self.fail_create:
+                raise RuntimeError("create failed")
+
+    abi = FakeAbi()
+    client = RuntimeClient(abi, queue.Queue())  # type: ignore[arg-type]
+    abi.fail_create = failure == "create"
+    abi.fail_submit = failure == "hello"
+
+    with pytest.raises(RuntimeError, match=f"{failure} failed"):
+        client.recreate(ProjectBundle(tmp_path, 1, {}))
+
+    assert not abi.active
+    assert abi.destroy_calls == 2
+    assert client._session_reset_active
+    assert not client._replacement_session_prepared
+    assert client.pending_bundle is None
+    assert client.storage is None
+
+
+def test_destroy_failure_clears_python_state_and_preserves_original_error(tmp_path: Path) -> None:
+    class FakeAbi:
+        def submit(self, _data: bytes) -> None:
+            pass
+
+        def destroy_session(self) -> None:
+            raise RuntimeError("destroy failed")
+
+    client = RuntimeClient(FakeAbi(), queue.Queue())  # type: ignore[arg-type]
+    client.bundle = ProjectBundle(tmp_path, 1, {})
+    client.storage = StorageBackend(tmp_path)
+
+    with pytest.raises(RuntimeError, match="destroy failed"):
+        client.begin_session_reset()
+
+    assert client.bundle is None
+    assert client.storage is None
+    assert client._session_reset_active
+    assert client._session_destroy_pending
+
+
+def test_recreate_cleanup_failure_does_not_mask_hello_failure(tmp_path: Path) -> None:
+    class FakeAbi:
+        fail_submit = False
+        destroy_calls = 0
+
+        def submit(self, _data: bytes) -> None:
+            if self.fail_submit:
+                raise RuntimeError("hello failed")
+
+        def destroy_session(self) -> None:
+            self.destroy_calls += 1
+            if self.destroy_calls == 2:
+                raise RuntimeError("cleanup failed")
+
+        def create_session(self) -> None:
+            pass
+
+    abi = FakeAbi()
+    client = RuntimeClient(abi, queue.Queue())  # type: ignore[arg-type]
+    abi.fail_submit = True
+
+    with pytest.raises(RuntimeError, match="hello failed") as failure:
+        client.recreate(ProjectBundle(tmp_path, 1, {}))
+
+    assert any("cleanup failed" in note for note in getattr(failure.value, "__notes__", ()))
+    assert client._session_destroy_pending
+    assert client._session_reset_active
 
 
 def test_project_submission_stages_manifest_once_and_sends_a_small_load_request() -> None:

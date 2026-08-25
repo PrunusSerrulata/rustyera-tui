@@ -1015,6 +1015,77 @@ def test_storage_enforces_revision_preconditions_and_lists_root(tmp_path: Path) 
     assert chunk_fields[:3] == [b"t", 0, False]
 
 
+def test_storage_idempotency_results_are_epoch_scoped_and_lru_bounded(tmp_path: Path) -> None:
+    backend = StorageBackend(tmp_path)
+    backend.maximum_idempotent_results = 2
+    backend.begin_epoch(7)
+
+    def write(request_id: int, key: str, value: bytes) -> None:
+        backend.handle(
+            {
+                0: request_id,
+                1: 1,
+                2: "save.sav",
+                3: variant(1, value, True, variant(0)),
+                4: key,
+            }
+        )
+
+    write(1, "first", b"1")
+    write(2, "second", b"2")
+    backend.handle(
+        {
+            0: 3,
+            1: 1,
+            2: "save.sav",
+            3: variant(1, b"ignored", True, variant(0)),
+            4: "first",
+        }
+    )
+    write(4, "third", b"3")
+
+    assert list(backend.idempotent_results) == ["first", "third"]
+    backend.begin_epoch(8)
+    assert backend.idempotent_results == {}
+
+
+def test_storage_idempotency_results_are_byte_bounded(tmp_path: Path) -> None:
+    backend = StorageBackend(tmp_path)
+    backend.maximum_idempotent_bytes = 15
+    backend.begin_epoch(7)
+    (tmp_path / "sav").mkdir()
+
+    for request_id, key in enumerate(("first-key", "second-key"), start=1):
+        (tmp_path / "sav" / f"{request_id}.sav").write_bytes(b"x")
+        backend.handle(
+            {
+                0: request_id,
+                1: 1,
+                2: f"{request_id}.sav",
+                3: variant(3, variant(0)),
+                4: key,
+            }
+        )
+
+    assert backend.idempotent_result_bytes <= backend.maximum_idempotent_bytes
+    assert list(backend.idempotent_results) == ["second-key"]
+
+    (tmp_path / "sav" / "large.sav").write_bytes(b"x")
+    backend.handle(
+        {
+            0: 3,
+            1: 1,
+            2: "large.sav",
+            3: variant(3, variant(0)),
+            4: "oversized-key" * 4,
+        }
+    )
+    assert "oversized-key" * 4 not in backend.idempotent_results
+    backend.begin_epoch(8)
+    assert backend.idempotent_result_bytes == 0
+    assert backend._idempotent_result_sizes == {}
+
+
 @pytest.mark.parametrize("namespace", [0, 3])
 def test_project_data_storage_fallbacks_preserve_private_writes(
     tmp_path: Path, namespace: int

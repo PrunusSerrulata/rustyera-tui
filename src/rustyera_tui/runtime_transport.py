@@ -61,6 +61,7 @@ class _RuntimeTransportMixin:
             3: 4096,
             4: 1_000_000,
             5: 1024 * 1024 * 1024,
+            6: 64 * 1024 * 1024,
         }
         self.send_runtime(
             0,
@@ -134,6 +135,8 @@ class _RuntimeTransportMixin:
         # adopt it before acknowledging the message so the acknowledgement cannot be stale.
         if envelope.epoch is not None:
             self.epoch = envelope.epoch
+            if self.storage is not None:
+                self.storage.begin_epoch(self.epoch)
         if envelope.channel == CHANNEL_RUNTIME:
             if envelope.sequence != self.expected_runtime_output:
                 raise RuntimeError(

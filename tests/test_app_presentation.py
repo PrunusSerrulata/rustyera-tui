@@ -142,6 +142,53 @@ async def test_gameplay_output_commits_once_at_the_next_wait_without_a_tail_flas
         assert viewport.models[-1].segments[0].text == "terminal output"
 
 
+async def test_session_reset_releases_presentation_and_interaction_state(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    wait = {0: 1, 1: 0, 11: {0: 1, 1: 1}}
+    snapshot = {
+        0: 1,
+        1: "Old game",
+        2: {
+            0: [
+                {
+                    0: 1,
+                    1: False,
+                    2: True,
+                    3: True,
+                    4: 0,
+                    5: [variant(0, "old history", None, None)],
+                }
+            ],
+            1: [],
+        },
+        5: wait,
+    }
+    async with app.run_test(size=(100, 20)) as pilot:
+        worker.events.put(
+            FrontendEvent("presentation_batch", PresentationBatch(snapshot, None, wait, True))
+        )
+        await pilot.pause(0.1)
+        app.input_undo_token = {0: 1}
+        app.blocking_error = "old fault"
+        app.fault_logs = "old logs"
+        app.runtime_phase = 11
+
+        worker.events.put(FrontendEvent("session_reset"))
+        await pilot.pause(0.1)
+
+        viewport = app.query_one(GameViewport)
+        assert app.presentation.lines == []
+        assert viewport.models == []
+        assert not viewport.query(GameLine)
+        assert app.active_wait is None
+        assert app.input_undo_token is None
+        assert app.blocking_error is None
+        assert app.fault_logs == ""
+        assert app.runtime_phase == 0
+
+
 async def test_log_dialog_filters_entries_at_the_selected_threshold(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()
