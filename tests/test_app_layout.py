@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from pytest import MonkeyPatch
 
 from app_test_support import (
@@ -19,7 +21,7 @@ from app_test_support import (
     variant,
 )
 from rustyera_tui import widgets
-from rustyera_tui.game_line_layout import terminal_segment_text
+from rustyera_tui.game_line_layout import project_html_box_rows, terminal_segment_text
 
 
 async def test_horizontal_scrollbar_replaces_the_prompt_separator(tmp_path: Path) -> None:
@@ -351,6 +353,164 @@ async def test_tagged_html_table_edges_stay_continuous_and_aligned(
         game_lines = list(app.query(GameLine))
         assert any(region.token == role_token for region in game_lines[0].regions)
         assert any(region.token == page_token for region in game_lines[-1].regions)
+
+
+async def test_mismatched_html_box_rows_align_across_terminal_widths(
+    tmp_path: Path,
+) -> None:
+    def html_line(line_id: int, text: str) -> DisplayLineModel:
+        return parse_line(
+            {
+                0: line_id,
+                1: False,
+                2: True,
+                3: True,
+                4: 0,
+                5: [variant(2, {0: [variant(0, text, 0, len(text))]})],
+            }
+        )
+
+    lines = [
+        html_line(1, f"┌烙印{'─' * 62}┐"),
+        html_line(2, f"│请选择要提升的能力{' ' * 104}│"),
+        html_line(3, f"└{'─' * 64}┘"),
+    ]
+
+    for width in (80, 132, 200):
+        app = RustyEraTui(tmp_path, None)
+        app.worker = FakeWorker()  # type: ignore[assignment]
+        async with app.run_test(size=(width, 20)) as pilot:
+            viewport = app.query_one(GameViewport)
+            await viewport.set_lines(lines)
+            await pilot.pause()
+            rendered = [item.render().plain for item in app.query(GameLine)]
+
+            right_edges = [
+                cell_len(row[: row.rfind(character)])
+                for row, character in zip(rendered, ("┐", "│", "┘"), strict=True)
+            ]
+            assert right_edges == [130, 130, 130]
+
+
+def test_html_box_projection_preserves_edge_interaction_and_extends_bottom_stroke() -> None:
+    token = {0: 8, 1: 77}
+    top = DisplayLineModel(
+        1,
+        False,
+        True,
+        True,
+        0,
+        (
+            DisplaySegment("┌", logical_columns=2),
+            DisplaySegment("────────", logical_columns=16),
+            DisplaySegment("┐", logical_columns=2),
+        ),
+    )
+    edge = DisplaySegment(
+        "│",
+        token=token,
+        enabled=False,
+        title="edge",
+        generation=4,
+        logical_columns=2,
+        interaction_sequence=9,
+    )
+    interior = DisplayLineModel(
+        2,
+        False,
+        True,
+        True,
+        0,
+        (DisplaySegment("│", logical_columns=2), DisplaySegment("能力"), edge),
+    )
+    bottom = DisplayLineModel(
+        3,
+        False,
+        True,
+        True,
+        0,
+        (
+            DisplaySegment("└", logical_columns=2),
+            DisplaySegment("──", logical_columns=4),
+            replace(edge, text="┘", token=None),
+        ),
+    )
+
+    projected, states = project_html_box_rows([top, interior, bottom])
+    inserted = projected[1].segments[-2]
+    assert replace(inserted, text=edge.text, logical_columns=edge.logical_columns) == edge
+    assert projected[2].segments[-2].text == "─" * 12
+    assert states == [None, 20, 20, None]
+
+
+async def test_appended_html_box_rows_inherit_cached_top_width(tmp_path: Path) -> None:
+    def html_line(line_id: int, text: str) -> DisplayLineModel:
+        return parse_line(
+            {
+                0: line_id,
+                1: False,
+                2: True,
+                3: True,
+                4: 0,
+                5: [variant(2, {0: [variant(0, text, 0, len(text))]})],
+            }
+        )
+
+    top = html_line(1, "┌────────┐")
+    interior = html_line(2, "│能力│")
+    bottom = html_line(3, "└──┘")
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+
+    async with app.run_test(size=(40, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines([top])
+        await viewport.set_lines([top, interior, bottom], changed_from=1)
+        await pilot.pause()
+        rendered = [item.render().plain for item in app.query(GameLine)]
+        right_edges = [
+            cell_len(row[: row.rfind(character)])
+            for row, character in zip(rendered, ("┐", "│", "┘"), strict=True)
+        ]
+        assert right_edges == [18, 18, 18]
+
+
+async def test_appending_after_large_history_projects_only_the_new_suffix(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    app.worker = FakeWorker()  # type: ignore[assignment]
+    lines = [
+        DisplayLineModel(
+            index,
+            False,
+            True,
+            True,
+            0,
+            (DisplaySegment("", right_edge=index > 0),),
+        )
+        for index in range(5_000)
+    ]
+    projected_lengths: list[int] = []
+    original = widgets._project_html_box_rows
+
+    def counted(
+        suffix: list[DisplayLineModel], active_columns: int | None = None
+    ) -> tuple[list[DisplayLineModel], list[int | None]]:
+        projected_lengths.append(len(suffix))
+        return original(suffix, active_columns)
+
+    monkeypatch.setattr(widgets, "_project_html_box_rows", counted)
+    async with app.run_test(size=(40, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines(lines)
+        await pilot.pause()
+        projected_lengths.clear()
+        appended = DisplayLineModel(
+            5_000, False, True, True, 0, (DisplaySegment("ordinary output"),)
+        )
+        await viewport.set_lines([*lines, appended], changed_from=5_000)
+        assert projected_lengths == [1]
 
 
 async def test_runtime_page_navigation_triangles_keep_the_footer_corner_aligned(

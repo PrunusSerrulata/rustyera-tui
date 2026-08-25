@@ -40,6 +40,82 @@ _BOX_RIGHT_CONTINUATIONS = {
     "╩": "═",
     "╬": "═",
 }
+_BOX_TOP_LEFT = frozenset("┌┏╔")
+_BOX_TOP_RIGHT = frozenset("┐┓╗")
+_BOX_BOTTOM_LEFT = frozenset("└┗╚")
+_BOX_BOTTOM_RIGHT = frozenset("┘┛╝")
+_BOX_VERTICAL = frozenset("│┃║")
+
+
+def project_html_box_rows(
+    lines: list[DisplayLineModel], active_columns: int | None = None
+) -> tuple[list[DisplayLineModel], list[int | None]]:
+    """Align HTML table interiors with their surrounding box border.
+
+    Era HTML tables are emitted one row at a time. The reference GUI measures
+    padding and box glyphs with one font engine, while a terminal must project
+    both onto integer cells. Preserve the source segments and insert only the
+    missing terminal cells immediately before a trailing vertical edge.
+    """
+
+    result: list[DisplayLineModel] = []
+    prefix_states = [active_columns]
+    for line in lines:
+        edges = _html_box_edges(line)
+        if edges is None:
+            active_columns = None
+            result.append(line)
+            prefix_states.append(active_columns)
+            continue
+        first, last, columns, last_index = edges
+        if first in _BOX_TOP_LEFT and last in _BOX_TOP_RIGHT:
+            active_columns = columns
+            result.append(line)
+            prefix_states.append(active_columns)
+            continue
+        interior = first in _BOX_VERTICAL and last in _BOX_VERTICAL
+        bottom = first in _BOX_BOTTOM_LEFT and last in _BOX_BOTTOM_RIGHT
+        if active_columns is None or not (interior or bottom):
+            active_columns = None
+            result.append(line)
+            prefix_states.append(active_columns)
+            continue
+        if columns < active_columns:
+            padding = active_columns - columns
+            edge = line.segments[last_index]
+            fill = _box_drawing_continuation(first) if bottom else " "
+            segments = list(line.segments)
+            segments.insert(
+                last_index,
+                replace(edge, text=(fill or " ") * padding, logical_columns=padding),
+            )
+            line = replace(line, segments=tuple(segments))
+        result.append(line)
+        if bottom:
+            active_columns = None
+        prefix_states.append(active_columns)
+    return result, prefix_states
+
+
+def _html_box_edges(
+    line: DisplayLineModel,
+) -> tuple[str, str, int, int] | None:
+    visible = [(index, segment) for index, segment in enumerate(line.segments) if segment.text]
+    if not visible:
+        return None
+    first = visible[0][1]
+    last_index, last = visible[-1]
+    # Structured HTML parsing assigns every box-drawing character its Era
+    # two-column width. Ordinary PRINT text must remain byte-for-byte untouched.
+    if (
+        len(first.text) != 1
+        or len(last.text) != 1
+        or first.logical_columns != 2
+        or last.logical_columns != 2
+    ):
+        return None
+    columns = sum(_segment_columns(segment) for segment in line.segments)
+    return first.text, last.text, columns, last_index
 
 
 def project_responsive_segments(line: DisplayLineModel, width: int) -> tuple[DisplaySegment, ...]:

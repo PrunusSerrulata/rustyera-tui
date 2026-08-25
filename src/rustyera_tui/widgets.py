@@ -20,6 +20,7 @@ from .presentation import (
     SegmentStyle,
 )
 from .presentation_types import segment_interaction_enabled
+from .game_line_layout import project_html_box_rows as _project_html_box_rows
 from .game_line_layout import project_responsive_segments as _project_responsive_segments
 from .game_line_layout import terminal_segment_text as _terminal_segment_text
 
@@ -342,6 +343,8 @@ class GameViewport(ScrollableContainer):
         self._overflowing_line_count = 0
         self._source_line_count = 0
         self._source_prefix_lengths = [0]
+        self._box_aligned_source: list[DisplayLineModel] = []
+        self._box_projection_states: list[int | None] = [None]
         self._button_generation: int | None = None
         self._retired_interaction_sequence = 0
         self._interactive_children: set[GameLine] = set()
@@ -535,8 +538,24 @@ class GameViewport(ScrollableContainer):
         retired_interaction_sequence: int = 0,
     ) -> bool:
         self._apply_interaction_policy(button_generation, retired_interaction_sequence)
-        source_lines = lines
         changed_from = None if changed_from is None else max(0, changed_from)
+        incremental_box_projection = (
+            changed_from is not None
+            and changed_from <= self._source_line_count
+            and changed_from < len(self._box_projection_states)
+            and not trimmed_prefix
+        )
+        if incremental_box_projection:
+            projected_tail, tail_states = _project_html_box_rows(
+                lines[changed_from:], self._box_projection_states[changed_from]
+            )
+            source_lines = [*self._box_aligned_source[:changed_from], *projected_tail]
+            box_projection_states = [
+                *self._box_projection_states[: changed_from + 1],
+                *tail_states[1:],
+            ]
+        else:
+            source_lines, box_projection_states = _project_html_box_rows(lines)
         changed_lines = source_lines if changed_from is None else source_lines[changed_from:]
         has_changed_right_edge = any(
             segment.right_edge for line in changed_lines for segment in line.segments
@@ -586,6 +605,8 @@ class GameViewport(ScrollableContainer):
         self.models[common:] = tail
         self._source_line_count = len(source_lines)
         self._source_prefix_lengths = prefix_lengths
+        self._box_aligned_source = source_lines
+        self._box_projection_states = box_projection_states
         width = self.content_width
         if width != self._projected_width:
             self._reproject_all_lines(width)
