@@ -805,6 +805,26 @@ def test_submitted_buttons_retire_while_later_partial_updates_stay_enabled() -> 
     assert model.segment_enabled(model.lines[0].segments[0])
 
 
+def test_unchanged_submitted_buttons_rearm_without_reviving_replacements() -> None:
+    model = PresentationModel()
+    model.apply_snapshot(snapshot())
+
+    unchanged_boundary = model.retire_presented_interactions()
+    assert model.restore_submitted_interaction_boundary(unchanged_boundary)
+    assert model.segment_enabled(model.lines[0].segments[0])
+
+    replaced_boundary = model.retire_presented_interactions()
+    model.apply_delta({0: 1, 1: 2, 2: [variant(0, line(2, "dynamic map"))]})
+    assert not model.restore_submitted_interaction_boundary(replaced_boundary)
+    assert not model.segment_enabled(model.lines[0].segments[0])
+    assert model.segment_enabled(model.lines[1].segments[0])
+
+    current_boundary = model.retire_presented_interactions()
+    model.apply_delta({0: 2, 1: 3, 2: [variant(13, 1)]})
+    assert model.restore_submitted_interaction_boundary(current_boundary)
+    assert not model.segment_enabled(model.lines[1].segments[0])
+
+
 def test_button_policy_changes_do_not_rewrite_accumulated_history() -> None:
     model = PresentationModel()
     initial = snapshot()

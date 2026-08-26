@@ -218,7 +218,28 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         assert await pilot.click(".game-line", offset=(1, 0))
         assert not any(kind == "activate" for kind, _value in worker.commands)
 
-        app._handle_worker_event(FrontendEvent("interaction_rejected", wait))
+        worker.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(None, None, None, True),
+            )
+        )
+        await pilot.pause(0.1)
+        assert not game_line.regions[0].enabled
+
+        next_wait = {0: 2, 1: 6, 11: {0: 1, 1: 3}}
+        worker.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(None, None, next_wait, True),
+            )
+        )
+        await pilot.pause(0.1)
+        assert game_line.regions[0].enabled
+        assert await pilot.click(".game-line", offset=(1, 0))
+        assert ("activate", token) in worker.commands
+
+        app._handle_worker_event(FrontendEvent("interaction_rejected", next_wait))
         await pilot.pause(0.1)
         assert game_line.regions[0].enabled
         assert app.query_one(GameViewport).interactions_enabled

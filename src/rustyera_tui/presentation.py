@@ -214,6 +214,14 @@ class PresentationModel:
         self._retired_interaction_sequence = boundary
         self._mark_changed(len(self.lines))
 
+    def restore_submitted_interaction_boundary(self, boundary: int) -> bool:
+        """Restore a submitted surface only when no newer interactions replaced it."""
+
+        if self._retired_interaction_sequence != self._next_interaction_sequence - 1:
+            return False
+        self.restore_interaction_boundary(boundary)
+        return True
+
     def segment_enabled(self, segment: DisplaySegment) -> bool:
         return segment_interaction_enabled(
             segment,

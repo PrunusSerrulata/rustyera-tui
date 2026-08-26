@@ -225,8 +225,15 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
     def _set_active_wait(self, value: dict[int, Any] | None) -> None:
         wait_identity = self._wait_identity(value)
         if wait_identity != self._wait_identity(self.active_wait):
-            self._pending_retired_interaction_boundary = None
             self._activated_wait = None
+            boundary = self._pending_retired_interaction_boundary
+            if wait_identity is not None and boundary is not None:
+                restored = self.presentation.restore_submitted_interaction_boundary(
+                    boundary
+                )
+                self._pending_retired_interaction_boundary = None
+                if restored:
+                    self._queue_local_presentation_render()
         self.active_wait = value
         self._update_prompt()
         self._refresh_interaction_lock()
