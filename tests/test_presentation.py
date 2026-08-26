@@ -895,7 +895,7 @@ def test_trim_lines_removes_the_oldest_history_and_reports_incremental_hints() -
     service.apply_delta(replacement)
 
     assert [item.line_id for item in rich.lines] == [2, 3, 4]
-    assert [item[0] for item in service.lines] == [2, 3, 4]
+    assert [item.line_id for item in service.lines] == [2, 3, 4]
     assert rich.lines[0].segments[0].text == "TWO"
     assert plain_line(service.lines[0]) == "TWO"
     # The replacement targets the first retained row after the prefix trim. The trim hint lets
@@ -1008,6 +1008,114 @@ def test_raw_worker_projection_tracks_rich_text_and_wait_state() -> None:
         "".join(segment.text for segment in rich.lines[0].segments)
     ]
     assert service.input_wait == rich.input_wait == {0: 2, 1: 2}
+
+
+def test_service_projection_compacts_lines_and_suppresses_retired_history_until_clear() -> None:
+    service = ServicePresentationModel()
+    initial = snapshot()
+    service.apply_snapshot(initial)
+
+    assert service.lines[0].text == "开始"
+    assert not isinstance(service.lines[0], dict)
+    with pytest.raises(ValueError, match="service limit"):
+        service.html_printed_str(0, 8)
+
+    retired_revision = service.retire_history()
+    stale = service.apply_delta(
+        {0: retired_revision, 1: 2, 2: [variant(0, line(2, "stale"))]}
+    )
+    assert stale[2] == []
+    assert service.lines == []
+
+    replacement = service.apply_delta(
+        {
+            0: 2,
+            1: 3,
+            2: [variant(2), variant(0, line(3, "title"))],
+        }
+    )
+    assert replacement[2]
+    assert [item.text for item in service.lines] == ["title"]
+
+
+def test_viewport_snapshot_enforces_line_byte_and_segment_hard_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(presentation_module, "MAXIMUM_VIEWPORT_UTF8_BYTES", 8)
+    monkeypatch.setattr(presentation_module, "MAXIMUM_VIEWPORT_SEGMENTS", 2)
+    model = PresentationModel()
+    initial = snapshot()
+    initial[6][4] = 1_000_000
+    initial[2][0] = [
+        {
+            0: line_id,
+            1: False,
+            2: True,
+            3: True,
+            4: 0,
+            5: [variant(0, text, None, None)],
+        }
+        for line_id, text in ((1, "aaaaa"), (2, "bbbbb"), (3, "cc"))
+    ]
+
+    model.apply_snapshot(initial)
+
+    assert model.maximum_physical_lines == presentation_module.MAXIMUM_VIEWPORT_BUFFER_LINES
+    assert [item.line_id for item in model.lines] == [2, 3]
+    assert model._retained_utf8_bytes <= presentation_module.MAXIMUM_VIEWPORT_UTF8_BYTES
+    assert model._retained_segments <= presentation_module.MAXIMUM_VIEWPORT_SEGMENTS
+
+
+def test_display_line_cost_includes_button_titles_and_separator_patterns() -> None:
+    button_line = parse_line(line(1, "x"))
+    separator_line = parse_line(
+        {0: 2, 1: False, 2: True, 3: True, 4: 0, 5: [variant(6, "～", 0)]}
+    )
+
+    assert button_line._retained_utf8_bytes == len("x选择".encode())
+    assert button_line._retained_segments == 1
+    assert separator_line._retained_utf8_bytes == len("～".encode())
+    assert separator_line._retained_segments == 1
+
+
+def test_rejected_replacement_stays_retired_until_resync_snapshot() -> None:
+    service = ServicePresentationModel()
+    service.apply_snapshot(snapshot())
+    revision = service.begin_replacement(41)
+
+    assert service.reject_replacement(41)
+    filtered = service.apply_delta(
+        {0: revision, 1: revision + 1, 2: [variant(0, line(2, "stale"))]}
+    )
+    assert filtered[2] == []
+    assert service.lines == []
+
+    replacement = snapshot()
+    replacement[0] = revision + 1
+    replacement[2] = {0: [line(3, "resynchronized")], 1: []}
+    service.apply_snapshot(replacement)
+    service.apply_delta(
+        {0: revision + 1, 1: revision + 2, 2: [variant(0, line(4, "new"))]}
+    )
+    assert [item.text for item in service.lines] == ["resynchronized", "new"]
+
+
+def test_rich_replacement_boundary_clears_on_clear_history() -> None:
+    model = PresentationModel()
+    model.apply_snapshot(snapshot())
+    model.retire_history(model.revision)
+
+    model.apply_delta({0: 1, 1: 2, 2: [variant(0, line(2, "stale"))]})
+    assert model.lines == []
+    model.apply_delta(
+        {
+            0: 2,
+            1: 3,
+            2: [variant(2), variant(0, line(3, "replacement"))],
+        }
+    )
+
+    assert [item.line_id for item in model.lines] == [3]
 
 
 def test_delta_coalescing_preserves_state_and_discards_superseded_lines() -> None:

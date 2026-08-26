@@ -291,7 +291,7 @@ def test_packaged_configuration_restarts_with_the_updated_identity(tmp_path: Pat
     assert len(recreated) == 1
     candidate, submitted_project = recreated[0]
     assert candidate.identity() != bundle.identity()
-    assert submitted_project == b"basejournal"
+    assert submitted_project is None
 
 
 def test_prepared_configuration_writes_and_restarts_without_exposing_wire_maps(

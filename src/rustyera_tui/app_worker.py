@@ -65,6 +65,14 @@ class _WorkerEventMixin:
             dirty = self._handle_worker_event(event)
             if dirty:
                 self._mark_presentation_dirty()
+            if (
+                event.kind in {"session_reset", "game_state_reset"}
+                and self._presentation_dirty
+                and self._presentation_commit_ready
+            ):
+                # Release the outgoing Textual widget tree before draining any new-game
+                # presentation batches that may already be queued behind the reset.
+                await self._commit_presentation()
         if queue_exhausted and self._presentation_dirty and self._presentation_commit_ready:
             await self._commit_presentation()
 
@@ -108,6 +116,9 @@ class _WorkerEventMixin:
         if kind == "session_reset":
             self._reset_session_state()
             return True
+        if kind == "game_state_reset":
+            self._reset_game_state_projection(int(value))
+            return True
         if kind == "presentation_batch":
             if not isinstance(value, PresentationBatch):
                 self._log("worker returned an invalid presentation batch", LogLevel.WARNING)
@@ -145,6 +156,27 @@ class _WorkerEventMixin:
     def _reset_session_state(self) -> None:
         """Drop every UI object whose contents belong to the previous runtime session."""
 
+        self._clear_vm_ui_state()
+        self.presentation = PresentationModel()
+        self.runtime_phase = 0
+        self.configuration_snapshot = None
+        self.configuration_read_only = False
+        self.project_preferences = None
+        self.game_information = GameInformation()
+        self._reset_client_preferences()
+        self._set_debug_enabled(False)
+        self._refresh_after_vm_cleanup()
+
+    def _reset_game_state_projection(self, revision: int) -> None:
+        """Drop VM-owned UI state while keeping the loaded project and preferences."""
+
+        self._clear_vm_ui_state()
+        self.presentation.retire_history(revision)
+        self._refresh_after_vm_cleanup()
+
+    def _clear_vm_ui_state(self) -> None:
+        """Release UI and transfer state owned by the outgoing VM instance."""
+
         self._cancel_progress_loss_confirmation()
         for attribute in (
             "variable_dialog",
@@ -157,31 +189,26 @@ class _WorkerEventMixin:
             setattr(self, attribute, None)
             if dialog is not None and dialog.is_mounted:
                 dialog.dismiss(None)
-        self.presentation = PresentationModel()
         self.active_wait = None
         self._activated_wait = None
         self._pending_retired_interaction_boundary = None
         self.input_undo_token = None
         self.blocking_error = None
         self.fault_logs = ""
-        self.runtime_phase = 0
+        self.debug_paused = False
+        self.debug_location = None
         self.input_replay_exporting = False
         self.snapshot_exporting = False
         self.project_file_exporting = False
         self.diagnosis_exporting = False
         self.diagnosis_export_at_fault = False
-        self.export_progress_dialog = None
-        self.configuration_snapshot = None
-        self.configuration_read_only = False
-        self.project_preferences = None
-        self.game_information = GameInformation()
         self.presentation_rendering = False
         self._presentation_dirty = False
         self._presentation_commit_ready = True
         self._finish_project_progress()
         self._hide_diagnosis_progress()
-        self._reset_client_preferences()
-        self._set_debug_enabled(False)
+
+    def _refresh_after_vm_cleanup(self) -> None:
         self._update_prompt()
         self._refresh_menu_availability()
         self._refresh_interaction_lock()

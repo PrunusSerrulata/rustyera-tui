@@ -11,9 +11,13 @@ from typing import TYPE_CHECKING, Any
 from .abi import RuntimeAbi
 from .log_model import LogLevel, LogMessage
 from .project import ProjectBundle
+from .runtime_export import ExportStage
 from .runtime_types import FrontendCommand, FrontendEvent
 from .startup_telemetry import emit_startup_milestone
 from .worker_project import _WorkerProjectMixin
+
+MAX_WORKER_COMMANDS = 256
+MAX_WORKER_EVENTS = 64
 
 if TYPE_CHECKING:
     from .runtime import RuntimeClient
@@ -56,13 +60,18 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
         self.metrics_threshold_ms = metrics_threshold_ms
         self.initial_state = initial_state
         self.initial_project_file = initial_project_file
-        self.commands: queue.Queue[FrontendCommand] = queue.Queue()
+        self.commands: queue.Queue[FrontendCommand] = queue.Queue(
+            maxsize=MAX_WORKER_COMMANDS
+        )
+        self._projection_command_lock = threading.Lock()
+        self._pending_projection: Any = None
+        self._projection_command_queued = False
         # Backpressure is preferable to retaining an unbounded number of presentation
         # revisions when Runtime can produce output faster than Textual lays it out.
         self._event_notifier_lock = threading.Lock()
         self._event_notifier: Callable[[], None] | None = None
         self.events: queue.Queue[FrontendEvent] = _NotifyingEventQueue(
-            4_096, self._notify_event_available
+            MAX_WORKER_EVENTS, self._notify_event_available
         )
         self._stop_requested = threading.Event()
         self._project_export_cancelled = threading.Event()
@@ -88,7 +97,23 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
     def send(self, kind: str, value: Any = None) -> None:
         if kind == "cancel_project_file_export":
             self._project_export_cancelled.set()
-        self.commands.put(FrontendCommand(kind, value))
+        if kind == "projection":
+            with self._projection_command_lock:
+                self._pending_projection = value
+                if self._projection_command_queued:
+                    return
+                self._projection_command_queued = True
+            try:
+                self.commands.put_nowait(FrontendCommand(kind))
+            except queue.Full:
+                with self._projection_command_lock:
+                    self._projection_command_queued = False
+                return
+            return
+        try:
+            self.commands.put_nowait(FrontendCommand(kind, value))
+        except queue.Full as error:
+            raise RuntimeError("runtime command queue is saturated") from error
 
     def run(self) -> None:
         from .runtime import RuntimeClient
@@ -139,7 +164,10 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
             if self.client is not None:
                 if self.client.full_project_export is not None:
                     self.client._finish_project_file_export(False)
-                if self.client.pending_cache_stream is not None:
+                if (
+                    self.client.pending_export is not None
+                    and self.client.pending_export.stage == ExportStage.COMPILED_CACHE
+                ):
                     self.client._finish_cache_export(False)
                 if self.client.pending_diagnosis is not None:
                     self.client._finish_diagnosis_export(False, str(error))
@@ -158,6 +186,22 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
                             LogMessage(LogLevel.WARNING, f"关闭 Runtime session 失败：{error}"),
                         )
                     )
+            if self.client is not None:
+                try:
+                    self.client._reset_wire_state()
+                except Exception as error:  # noqa: BLE001 - shutdown remains best effort
+                    self._emit_terminal_event(
+                        FrontendEvent(
+                            "log",
+                            LogMessage(LogLevel.WARNING, f"释放前端 Runtime 状态失败：{error}"),
+                        )
+                    )
+                self.client = None
+            while True:
+                try:
+                    self.commands.get_nowait()
+                except queue.Empty:
+                    break
             self._emit_terminal_event(FrontendEvent("worker_stopped"))
 
     def _process_commands(self) -> None:
@@ -211,7 +255,8 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
                 case "return_title":
                     if client.bundle is None:
                         raise RuntimeError("no project is active")
-                    client.send_runtime(23, {})
+                    message_id = client.send_runtime(23, {})
+                    client.begin_game_state_transition(message_id)
                 case "save_configuration":
                     changes, restart = command.value
                     client.prepare_configuration_update(changes, restart)
@@ -233,7 +278,12 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
                 case "input_undo":
                     client.input_undo(command.value)
                 case "projection":
-                    client.projection(*command.value)
+                    with self._projection_command_lock:
+                        projection = self._pending_projection
+                        self._pending_projection = None
+                        self._projection_command_queued = False
+                    if projection is not None:
+                        client.projection(*projection)
                 case "export_snapshot":
                     path, purpose = command.value
                     client.export_snapshot(Path(path), str(purpose))
@@ -286,9 +336,9 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
             if wait_bound_input and submitted_wait is not None:
                 self.events.put(FrontendEvent("interaction_rejected", submitted_wait))
             if command.kind in {"export_snapshot", "export_input_replay"}:
+                if client.pending_export is not None:
+                    client.pending_export.cancel()
                 client.pending_export = None
-                client.pending_export_kind = None
-                client.pending_export_message = None
                 event = (
                     "input_replay_export_finished"
                     if command.kind == "export_input_replay"
@@ -310,6 +360,14 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
                 self.events.get_nowait()
             except queue.Empty:
                 break
+        while True:
+            try:
+                self.commands.get_nowait()
+            except queue.Empty:
+                break
+        with self._projection_command_lock:
+            self._pending_projection = None
+            self._projection_command_queued = False
 
     def shutdown(self) -> None:
         """Stop and join exactly once so the C ABI session is closed before returning."""

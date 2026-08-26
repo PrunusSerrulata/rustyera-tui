@@ -481,7 +481,9 @@ def test_runtime_routes_import_ready_by_state_kind() -> None:
     client.pending_restore = (Path("state"), b"state", "traditional_save")
     client.events = SimpleNamespace(put=lambda _event: None)
     captured: list[tuple[int, dict[int, Any]]] = []
-    client.send_runtime = lambda tag, value: captured.append((tag, value))  # type: ignore[method-assign]
+    client.send_runtime = lambda tag, value: captured.append((tag, value)) or 41  # type: ignore[method-assign]
+    transitions: list[int | None] = []
+    client.begin_game_state_transition = transitions.append  # type: ignore[method-assign]
 
     client._handle_import_ready({0: 9, 1: 0})
 
@@ -489,3 +491,4 @@ def test_runtime_routes_import_ready_by_state_kind() -> None:
     assert captured[0][0] == 20
     assert start_tag == 1
     assert start_fields == [9]
+    assert transitions == [41]

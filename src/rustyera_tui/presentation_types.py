@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .text_budget import utf8_length
 
 DEFAULT_VIEWPORT_COLUMNS = 100
 MIN_TABLE_COLUMN_WIDTH = 16
@@ -83,3 +85,21 @@ class DisplayLineModel:
     alignment: int
     segments: tuple[DisplaySegment, ...]
     layout: tuple[ColumnCellLayout | SeparatorLayout, ...] = ()
+    _retained_utf8_bytes: int = field(init=False, repr=False, compare=False)
+    _retained_segments: int = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        utf8_bytes = 0
+        for segment in self.segments:
+            utf8_bytes += utf8_length(segment.text)
+            if segment.title is not None:
+                utf8_bytes += utf8_length(segment.title)
+        separator_count = 0
+        for item in self.layout:
+            if isinstance(item, SeparatorLayout):
+                utf8_bytes += utf8_length(item.pattern)
+                separator_count += 1
+        object.__setattr__(self, "_retained_utf8_bytes", utf8_bytes)
+        object.__setattr__(
+            self, "_retained_segments", len(self.segments) + separator_count
+        )

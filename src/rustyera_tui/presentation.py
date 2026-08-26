@@ -16,7 +16,9 @@ from .presentation_projection import (
     plain_line as plain_line,
     plain_run as plain_run,
 )
+from .presentation_replacement import ReplacementBoundary
 from .presentation_service import ServicePresentationModel as ServicePresentationModel
+from .presentation_service import ServiceLine as ServiceLine
 from .presentation_types import (
     DEFAULT_VIEWPORT_COLUMNS as DEFAULT_VIEWPORT_COLUMNS,
     MAX_TABLE_COLUMN_WIDTH as MAX_TABLE_COLUMN_WIDTH,
@@ -32,9 +34,11 @@ from .presentation_types import (
 from .wire import unwrap_variant, variant
 
 VIEWPORT_BUFFER_LINES = 1_000
+MAXIMUM_VIEWPORT_BUFFER_LINES = 10_000
+MAXIMUM_VIEWPORT_UTF8_BYTES = 16 * 1024 * 1024
+MAXIMUM_VIEWPORT_SEGMENTS = 250_000
 DEFAULT_BUTTON_FOCUS = "#ffff00"
 DEFAULT_PRESENTATION_TITLE = "RustyEra"
-
 
 @dataclass(slots=True)
 class PresentationModel:
@@ -56,6 +60,11 @@ class PresentationModel:
         default_factory=dict, init=False, repr=False, compare=False
     )
     _line_index_offset: int = field(default=0, init=False, repr=False, compare=False)
+    _retained_utf8_bytes: int = field(default=0, init=False, repr=False, compare=False)
+    _retained_segments: int = field(default=0, init=False, repr=False, compare=False)
+    _replacement: ReplacementBoundary = field(
+        default_factory=ReplacementBoundary, init=False, repr=False, compare=False
+    )
 
     def apply_snapshot(self, snapshot: dict[int, Any]) -> None:
         previous_sequences = self._collect_interaction_sequences(self.lines)
@@ -63,23 +72,28 @@ class PresentationModel:
         self.title = snapshot[1]
         history = snapshot[2]
         self.lines = []
+        self._retained_utf8_bytes = 0
+        self._retained_segments = 0
         self._apply_settings(snapshot.get(6))
         # Snapshots carry each button's authoritative enabled state, but not the
         # current BREAKBUTTON generation. Wait for a generation delta before
         # filtering later partial line updates locally.
         self._button_generation = None
         raw_lines = history.get(0, [])
-        self._hidden_prefix = max(0, len(raw_lines) - self.maximum_physical_lines)
-        retained_lines = raw_lines[self._hidden_prefix :]
+        retained_lines = self._budgeted_parsed_tail(raw_lines)
+        self._hidden_prefix = len(raw_lines) - len(retained_lines)
         self.lines = [
-            self._assign_interaction_sequences(parse_line(line), previous_sequences)
+            self._assign_interaction_sequences(line, previous_sequences)
             for line in retained_lines
         ]
         self._line_index_offset = 0
         self._rebuild_line_indices()
+        self._recalculate_retained_cost()
+        self._trim_viewport_lines()
         self.changed_from = 0
         self.trimmed_prefix = 0
         self.input_wait = snapshot.get(5)
+        self._replacement.accept_snapshot()
 
     def apply_delta(self, delta: dict[int, Any]) -> None:
         if delta[0] != self.revision:
@@ -88,17 +102,25 @@ class PresentationModel:
             )
         for operation in delta[2]:
             tag, fields = unwrap_variant(operation)
+            if not self._replacement.accepts_operation(tag):
+                continue
             if tag == 0:
                 self._mark_changed(len(self.lines))
                 line = self._assign_interaction_sequences(parse_line(fields[0]))
                 self._line_indices[line.line_id] = self._line_index_offset + len(self.lines)
                 self.lines.append(line)
+                line_bytes, line_segments = self._line_cost(line)
+                self._retained_utf8_bytes += line_bytes
+                self._retained_segments += line_segments
             elif tag == 1:
                 requested = fields[0]
                 count = min(requested, len(self.lines))
                 if count:
                     for line in self.lines[-count:]:
                         self._line_indices.pop(line.line_id, None)
+                        line_bytes, line_segments = self._line_cost(line)
+                        self._retained_utf8_bytes -= line_bytes
+                        self._retained_segments -= line_segments
                     del self.lines[-count:]
                     self._mark_changed(len(self.lines))
                 self._hidden_prefix = max(0, self._hidden_prefix - (requested - count))
@@ -107,6 +129,8 @@ class PresentationModel:
                 self._hidden_prefix = 0
                 self._line_indices.clear()
                 self._line_index_offset = 0
+                self._retained_utf8_bytes = 0
+                self._retained_segments = 0
                 self._mark_changed(0)
             elif tag == 3:
                 self.title = fields[0]
@@ -125,7 +149,11 @@ class PresentationModel:
                         previous_sequences,
                     )
                     self._mark_changed(index)
+                    previous_bytes, previous_segments = self._line_cost(self.lines[index])
+                    parsed_bytes, parsed_segments = self._line_cost(parsed)
                     self.lines[index] = parsed
+                    self._retained_utf8_bytes += parsed_bytes - previous_bytes
+                    self._retained_segments += parsed_segments - previous_segments
                     if parsed.line_id != line_id:
                         self._line_indices.pop(line_id, None)
                         self._line_indices[parsed.line_id] = absolute_index
@@ -142,6 +170,9 @@ class PresentationModel:
                 if count:
                     for line in self.lines[:count]:
                         self._line_indices.pop(line.line_id, None)
+                        line_bytes, line_segments = self._line_cost(line)
+                        self._retained_utf8_bytes -= line_bytes
+                        self._retained_segments -= line_segments
                     del self.lines[:count]
                     self._line_index_offset += count
                     self.trimmed_prefix += count
@@ -172,11 +203,28 @@ class PresentationModel:
         }
 
     def _trim_viewport_lines(self) -> None:
-        count = len(self.lines) - self.maximum_physical_lines
+        count = max(0, len(self.lines) - self.maximum_physical_lines)
+        retained_bytes = self._retained_utf8_bytes
+        retained_segments = self._retained_segments
+        for line in self.lines[:count]:
+            line_bytes, line_segments = self._line_cost(line)
+            retained_bytes -= line_bytes
+            retained_segments -= line_segments
+        while count < len(self.lines) and (
+            retained_bytes > MAXIMUM_VIEWPORT_UTF8_BYTES
+            or retained_segments > MAXIMUM_VIEWPORT_SEGMENTS
+        ):
+            line_bytes, line_segments = self._line_cost(self.lines[count])
+            retained_bytes -= line_bytes
+            retained_segments -= line_segments
+            count += 1
         if count <= 0:
             return
         for line in self.lines[:count]:
             self._line_indices.pop(line.line_id, None)
+            line_bytes, line_segments = self._line_cost(line)
+            self._retained_utf8_bytes -= line_bytes
+            self._retained_segments -= line_segments
         del self.lines[:count]
         self._hidden_prefix += count
         self._line_index_offset += count
@@ -189,8 +237,66 @@ class PresentationModel:
             return
         self.background = color_hex(settings[2])
         self.button_focus = color_hex(settings[3])
-        self.maximum_physical_lines = max(500, int(settings.get(4, VIEWPORT_BUFFER_LINES)))
+        self.maximum_physical_lines = min(
+            MAXIMUM_VIEWPORT_BUFFER_LINES,
+            max(500, int(settings.get(4, VIEWPORT_BUFFER_LINES))),
+        )
         self._trim_viewport_lines()
+
+    def retire_history(self, revision: int | None = None) -> None:
+        """Release the old game surface without breaking the next contiguous delta."""
+
+        if revision is not None:
+            self.revision = revision
+        self.title = DEFAULT_PRESENTATION_TITLE
+        self.lines.clear()
+        self.input_wait = None
+        self.changed_from = 0
+        self.trimmed_prefix = 0
+        self._button_generation = None
+        self._hidden_prefix = 0
+        self._line_indices.clear()
+        self._line_index_offset = 0
+        self._retained_utf8_bytes = 0
+        self._retained_segments = 0
+        self._replacement.begin()
+
+    @staticmethod
+    def _line_cost(line: DisplayLineModel) -> tuple[int, int]:
+        return line._retained_utf8_bytes, line._retained_segments
+
+    def _recalculate_retained_cost(self) -> None:
+        self._retained_utf8_bytes = sum(
+            line._retained_utf8_bytes for line in self.lines
+        )
+        self._retained_segments = sum(
+            line._retained_segments for line in self.lines
+        )
+
+    def _budgeted_parsed_tail(
+        self, raw_lines: list[dict[int, Any]]
+    ) -> list[DisplayLineModel]:
+        retained: list[DisplayLineModel] = []
+        retained_bytes = 0
+        retained_segments = 0
+        first_retained = 0
+        for raw_line in raw_lines[-self.maximum_physical_lines :]:
+            line = parse_line(raw_line)
+            line_bytes, line_segments = self._line_cost(line)
+            retained.append(line)
+            retained_bytes += line_bytes
+            retained_segments += line_segments
+            while first_retained < len(retained) and (
+                retained_bytes > MAXIMUM_VIEWPORT_UTF8_BYTES
+                or retained_segments > MAXIMUM_VIEWPORT_SEGMENTS
+            ):
+                removed_bytes, removed_segments = self._line_cost(
+                    retained[first_retained]
+                )
+                retained_bytes -= removed_bytes
+                retained_segments -= removed_segments
+                first_retained += 1
+        return retained[first_retained:]
 
     @property
     def button_generation(self) -> int | None:

@@ -246,9 +246,18 @@ class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
         from . import runtime as runtime_facade
 
         if self.pending_restore is not None:
-            _path, payload, purpose = self.pending_restore
+            path, payload, purpose = self.pending_restore
             kind = 0 if purpose == "traditional_save" else 1
-            self._begin_import(payload, kind, purpose)
+            if payload is None:
+                self._begin_file_import(
+                    path,
+                    path.stat().st_size,
+                    kind,
+                    purpose,
+                    delete_when_finished=False,
+                )
+            else:
+                self._begin_import(payload, kind, purpose)
             return
         if cache_hit:
             self.cache_refresh_pending = False
@@ -266,16 +275,17 @@ class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
             self.events.put(FrontendEvent("status", "项目编译完成，正在进入标题画面…"))
             self._submit_start(self._new_game_start())
 
-    def _submit_start(self, value: dict[int, Any]) -> None:
-        self.send_runtime(20, value)
+    def _submit_start(self, value: dict[int, Any]) -> int:
+        message_id = self.send_runtime(20, value)
         if not getattr(self, "startup_active", False):
-            return
+            return message_id
         self.startup_start_submitted = True
         emit_startup_milestone(
             "start_submitted",
             attempt_id=self.startup_attempt,
             scenario=self.startup_scenario,
         )
+        return message_id
 
     def _publish_configuration(
         self, value: Any, *, confirm_generated: bool = True
@@ -415,8 +425,12 @@ class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
             contents,
             self.abi.prepare_project_configuration_update,
         )
-        project_bytes = bundle.project_file.read_bytes()
-        manifest = self.abi.project_file_manifest(project_bytes)
+        decode_file = getattr(self.abi, "project_file_manifest_file", None)
+        manifest = (
+            decode_file(bundle.project_file)
+            if decode_file is not None
+            else self.abi.project_file_manifest(bundle.project_file.read_bytes())
+        )
         return ProjectBundle.from_project_file_manifest(bundle.project_file, manifest)
 
     def _handle_configuration_committed(
@@ -477,15 +491,7 @@ class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
         if outcome.candidate is None:
             raise RuntimeError("会话设置不能通过重启应用")
         try:
-            project_file_bytes = (
-                outcome.candidate.project_file.read_bytes()
-                if outcome.candidate.project_file is not None
-                else None
-            )
-            if project_file_bytes is None:
-                self.recreate(outcome.candidate)
-            else:
-                self.recreate(outcome.candidate, project_file_bytes=project_file_bytes)
+            self.recreate(outcome.candidate)
         except Exception as error:  # noqa: BLE001 - preserve the worker after a restart failure
             self.events.put(FrontendEvent("error", f"偏好选项已保存，但重启游戏失败：{error}"))
 

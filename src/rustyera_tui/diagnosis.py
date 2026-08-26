@@ -8,20 +8,20 @@ import tarfile
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import BinaryIO, Callable
 
 import zstandard
 
 
-class _ProgressReader(io.BytesIO):
+class _ProgressReader:
     """Report bytes actually consumed by tarfile without adding another payload pass."""
 
-    def __init__(self, payload: bytes, report: Callable[[int], None]) -> None:
-        super().__init__(payload)
+    def __init__(self, stream: BinaryIO, report: Callable[[int], None]) -> None:
+        self._stream = stream
         self._report = report
 
     def read(self, size: int = -1) -> bytes:
-        data = super().read(size)
+        data = self._stream.read(size)
         if data:
             self._report(len(data))
         return data
@@ -53,10 +53,10 @@ def write_diagnosis_archive(
     target: Path,
     *,
     project_name: str,
-    snapshot: bytes,
-    input_replay: bytes,
+    snapshot: bytes | Path,
+    input_replay: bytes | Path,
     logs: str,
-    project_file: bytes,
+    project_file: bytes | Path,
     exported_at: datetime | None = None,
     progress: Callable[[int, int], None] | None = None,
 ) -> None:
@@ -67,13 +67,16 @@ def write_diagnosis_archive(
     descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     timestamp = int((exported_at or datetime.now()).timestamp())
     project_name = diagnosis_project_name(project_name)
-    members = (
+    members: tuple[tuple[str, bytes | Path], ...] = (
         ("runtime.snapshot", snapshot),
         ("runtime.log", logs.encode("utf-8")),
         ("input-replay.jsonl", input_replay),
         (f"{project_name}.reraproj", project_file),
     )
-    progress_total = sum(len(payload) for _, payload in members)
+    progress_total = sum(
+        payload.stat().st_size if isinstance(payload, Path) else len(payload)
+        for _, payload in members
+    )
     progress_completed = 0
     last_reported_percent = 0
 
@@ -98,10 +101,23 @@ def write_diagnosis_archive(
             ):
                 for name, payload in members:
                     info = tarfile.TarInfo(name)
-                    info.size = len(payload)
+                    info.size = (
+                        payload.stat().st_size
+                        if isinstance(payload, Path)
+                        else len(payload)
+                    )
                     info.mtime = timestamp
                     info.mode = 0o600
-                    archive.addfile(info, _ProgressReader(payload, record_progress))
+                    if isinstance(payload, Path):
+                        with payload.open("rb") as source:
+                            archive.addfile(
+                                info, _ProgressReader(source, record_progress)
+                            )
+                    else:
+                        with io.BytesIO(payload) as source:
+                            archive.addfile(
+                                info, _ProgressReader(source, record_progress)
+                            )
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, target)

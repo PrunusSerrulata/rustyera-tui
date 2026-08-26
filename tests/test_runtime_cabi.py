@@ -232,6 +232,7 @@ def test_full_manifest_file_import_uses_exact_four_mib_chunks(tmp_path: Path) ->
         purpose="full_project_export",
         total_bytes=len(payload),
         path=path,
+        delete_path_when_finished=True,
     )
     commands: list[tuple[int, dict[int, object]]] = []
     client.send_runtime = lambda tag, value: commands.append((tag, value)) or len(commands)  # type: ignore[method-assign]

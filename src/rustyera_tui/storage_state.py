@@ -14,7 +14,11 @@ from .wire import variant
 
 def _revision(path: Path) -> str | None:
     try:
-        return blake3.blake3(path.read_bytes()).hexdigest()
+        hasher = blake3.blake3()
+        with path.open("rb") as stream:
+            while chunk := stream.read(4 * 1024 * 1024):
+                hasher.update(chunk)
+        return hasher.hexdigest()
     except FileNotFoundError:
         return None
 

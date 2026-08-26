@@ -29,10 +29,12 @@ class ManifestDecoder:
     def __init__(self, manifest: dict[int, Any]) -> None:
         self.manifest = manifest
         self.calls = 0
+        self.inputs: list[bytes] = []
         self._buffers: list[Any] = []
 
-    def __call__(self, _header: Any, _handle: Any, _input: Any, output: Any) -> int:
+    def __call__(self, _header: Any, _handle: Any, input_data: Any, output: Any) -> int:
         self.calls += 1
+        self.inputs.append(ctypes.string_at(input_data.data, input_data.len))
         payload = encode(self.manifest)
         buffer = (ctypes.c_uint8 * len(payload)).from_buffer_copy(payload)
         self._buffers.append(buffer)
@@ -72,6 +74,21 @@ def test_abi_32_falls_back_to_full_legacy_project_manifest() -> None:
 
     assert decoded == full
     assert legacy.calls == 1
+
+
+def test_project_file_manifest_maps_the_package_without_a_python_read_bytes_copy(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "game.reraproj"
+    package.write_bytes(b"package")
+    frontend = ManifestDecoder({0: 1, 1: []})
+    legacy = ManifestDecoder({0: 1, 1: []})
+
+    decoded = runtime_abi(frontend, legacy).project_file_manifest_file(package)
+
+    assert decoded == {0: 1, 1: []}
+    assert frontend.inputs == [b"package"]
+    assert legacy.calls == 0
 
 
 def test_abi_36_returns_a_compact_project_configuration_update() -> None:

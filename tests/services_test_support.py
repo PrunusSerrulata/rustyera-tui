@@ -12,7 +12,11 @@ import rustyera_tui.runtime as runtime_module
 from rustyera_tui.configuration import ConfigurationChange, ConfigurationSnapshot
 from rustyera_tui.client_preferences import LoadedPreferences, PreferenceValues
 from rustyera_tui.project import FILE_RESOURCE, ProjectBundle, ProjectFile, StorageBackend
-from rustyera_tui.presentation import ServicePresentationModel
+from rustyera_tui.presentation import (
+    PresentationEventAccumulator,
+    ServiceLine,
+    ServicePresentationModel,
+)
 from rustyera_tui.runtime import (
     AtomicExportStream,
     DiagnosisProgress,
@@ -24,7 +28,7 @@ from rustyera_tui.runtime import (
     RuntimeClient,
     RuntimeFailure,
 )
-from rustyera_tui.runtime_export import DiagnosisExport, ExportStage
+from rustyera_tui.runtime_export import DiagnosisExport, ExportStage, _PendingExport
 from rustyera_tui.wire import decode, encode, unwrap_variant, variant
 
 __all__ = [
@@ -46,6 +50,7 @@ __all__ = [
     "ProjectFile",
     "RuntimeClient",
     "RuntimeFailure",
+    "ServiceLine",
     "SimpleNamespace",
     "StorageBackend",
     "blake3",
@@ -58,6 +63,7 @@ __all__ = [
     "runtime_module",
     "unwrap_variant",
     "variant",
+    "_PendingExport",
 ]
 
 
@@ -65,25 +71,26 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client = object.__new__(RuntimeClient)
     client.presentation = ServicePresentationModel(
         revision=7,
-        lines=[{0: 1, 5: [[0, ["你好 RustyEra", None, None]]]}],
+        lines=[ServiceLine(1, True, 0, "你好 RustyEra")],
     )
     client.events = queue.Queue()
     client.session = {0: 1, 1: 2}
     client.phase = 6
+    client.expected_runtime_output = 10
     client.active_wait = None
     client._projection_messages = set()
     client._input_messages = {}
-    client.pending_cache_export_message = None
-    client.pending_export_message = None
-    client.pending_export_kind = None
     client.pending_export = None
-    client.pending_cache_stream = None
     client.full_project_export = None
+    client.pending_cache_after = None
     client.cache_preparation_started = False
     client.cache_refresh_pending = False
     client.cache_refresh_after_ns = 0
     client.pending_diagnosis = None
     client.pending_start_after_configuration = None
+    client.pending_configuration = None
+    client.reload_message_id = None
+    client.reload_candidate = None
     client.global_preferences = LoadedPreferences(
         Path("/nonexistent/rustyera-test/preferences-v1.json"), PreferenceValues({})
     )
@@ -93,6 +100,20 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client.pending_start_after_preferences = None
     client.pending_restore = None
     client.pending_import = None
+    client._pending_presentation = PresentationEventAccumulator()
+    client._wait_event_dirty = False
+    client._presentation_boundary_dirty = False
+    client.stop_token = None
+    client.selected_fiber = None
+    client.pending_debug_actions = []
+    client.debug_pending_by_message = {}
+    client.debug_pending_cost_by_message = {}
+    client.deferred_debug_refresh = {}
+    client.deferred_debug_console = []
+    client.debug_backpressure_warnings = set()
+    client.debug_step_in_flight = False
+    client.transient_pause_owner = None
+    client.transient_close_pending = None
     client.new_game_seed = None
     client.configuration_profile_supported = True
     client.abi = SimpleNamespace(
@@ -133,6 +154,10 @@ def debug_client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any, str
     client.selected_fiber = None
     client.pending_debug_actions = []
     client.debug_pending_by_message = {}
+    client.debug_pending_cost_by_message = {}
+    client.deferred_debug_refresh = {}
+    client.deferred_debug_console = []
+    client.debug_backpressure_warnings = set()
     client.single_step_enabled = False
     client.debug_step_in_flight = False
     client.debug_disable_pending = False

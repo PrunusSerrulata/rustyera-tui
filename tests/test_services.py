@@ -15,6 +15,7 @@ from services_test_support import (
     ProjectFile,
     RuntimeClient,
     RuntimeFailure,
+    ServiceLine,
     SimpleNamespace,
     StorageBackend,
     blake3,
@@ -22,6 +23,8 @@ from services_test_support import (
     encode,
     ready_payload,
     variant,
+    _PendingExport,
+    ExportStage,
 )
 from rustyera_tui.wire import CHANNEL_RUNTIME, RUNTIME_VERSION, encode_envelope, runtime_message
 
@@ -87,7 +90,7 @@ def test_session_reset_releases_old_client_state_before_recreate(tmp_path: Path)
     client.bundle = old_bundle
     client.pending_bundle = old_bundle
     client.storage = StorageBackend(tmp_path)
-    client.presentation.lines = [{0: 1, 5: [variant(0, "old history", None, None)]}]
+    client.presentation.lines = [ServiceLine(1, True, 0, "old history")]
 
     client.begin_session_reset()
 
@@ -268,9 +271,10 @@ def test_full_project_chunks_stream_to_an_atomic_target(tmp_path: Path) -> None:
     target = tmp_path / "full.reraproj"
     stream = AtomicExportStream.open(target)
     client.full_project_export = FullProjectExport(target, stream)
-    client.pending_export_kind = 5
     descriptor = {0: 7, 1: 3, 2: 6, 3: blake3.blake3(b"abcdef").digest()}
-    client.pending_export = (target, bytearray(), None)
+    client.pending_export = _PendingExport(
+        target, ExportStage.PROJECT_FILE, stream
+    )
 
     client._handle_export_ready({0: 3, 1: variant(0, descriptor)})
 
@@ -298,7 +302,7 @@ def test_display_line_service_returns_the_tui_projection() -> None:
 
 def test_html_printed_str_service_uses_newest_first_logical_lines() -> None:
     client, captured = client_with_capture()
-    client.presentation.lines.append({0: 2, 2: True, 4: 0, 5: [[0, ["A&B", None, None]]]})
+    client.presentation.lines.append(ServiceLine(2, True, 0, "A&B"))
     context = {0: 7, 1: 2, 2: 3}
 
     client._handle_service(

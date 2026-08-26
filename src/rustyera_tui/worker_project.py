@@ -34,7 +34,7 @@ class _WorkerProjectMixin:
         if self.initial_state is not None:
             path, purpose = self.initial_state
             resolved = path.expanduser().resolve(strict=True)
-            restore = (resolved, resolved.read_bytes(), purpose)
+            restore = (resolved, None, purpose)
             self.initial_state = None
         self.client.recreate(bundle, restore)
 
@@ -45,14 +45,19 @@ class _WorkerProjectMixin:
         self.client.begin_session_reset()
         started = time.monotonic_ns()
         resolved = path.expanduser().resolve(strict=True)
-        payload = resolved.read_bytes()
         self.client.prepare_replacement_session()
         try:
-            manifest = self.client.abi.project_file_manifest(payload)
+            decode_file = getattr(self.client.abi, "project_file_manifest_file", None)
+            manifest = (
+                decode_file(resolved)
+                if decode_file is not None
+                else self.client.abi.project_file_manifest(resolved.read_bytes())
+            )
             self.client.record_host_duration("cache_read_ms", started)
             bundle = ProjectBundle.from_project_file_manifest(resolved, manifest)
+            del manifest
             self.events.put(FrontendEvent("status", f"正在载入项目文件 {resolved}…"))
-            self.client.recreate(bundle, project_file_bytes=payload)
+            self.client.recreate(bundle)
         except BaseException as error:
             if self.client._replacement_session_prepared:
                 self.client.abort_session_replacement(error)

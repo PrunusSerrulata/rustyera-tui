@@ -320,6 +320,47 @@ async def test_session_reset_releases_presentation_and_interaction_state(tmp_pat
         assert app.runtime_phase == 0
 
 
+async def test_game_state_reset_retires_history_but_preserves_project_state(
+    tmp_path: Path,
+) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    line = {
+        0: 1,
+        1: False,
+        2: True,
+        3: True,
+        4: 0,
+        5: [variant(0, "old history", None, None)],
+    }
+    snapshot = {0: 7, 1: "Old game", 2: {0: [line], 1: []}, 5: None}
+
+    async with app.run_test(size=(100, 20)) as pilot:
+        worker.events.put(
+            FrontendEvent(
+                "presentation_batch",
+                PresentationBatch(snapshot, None, None, True),
+            )
+        )
+        await pilot.pause(0.1)
+        app.runtime_phase = 6
+        configuration = object()
+        project_preferences = object()
+        app.configuration_snapshot = configuration  # type: ignore[assignment]
+        app.project_preferences = project_preferences  # type: ignore[assignment]
+
+        worker.events.put(FrontendEvent("game_state_reset", 7))
+        await pilot.pause(0.1)
+
+        assert app.presentation.revision == 7
+        assert app.presentation.lines == []
+        assert app.query_one(GameViewport).models == []
+        assert app.runtime_phase == 6
+        assert app.configuration_snapshot is configuration
+        assert app.project_preferences is project_preferences
+
+
 async def test_log_dialog_filters_entries_at_the_selected_threshold(tmp_path: Path) -> None:
     app = RustyEraTui(tmp_path, None)
     worker = FakeWorker()

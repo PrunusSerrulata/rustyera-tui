@@ -12,13 +12,34 @@ from runtime_cabi_test_support import (
     queue,
 )
 from rustyera_tui.presentation import PresentationEventAccumulator
+from rustyera_tui.runtime_export import ExportStage, _PendingExport
+from rustyera_tui.worker import MAX_WORKER_EVENTS
 from rustyera_tui.wire import variant
 
 
 def test_worker_applies_backpressure_to_presentation_events() -> None:
     worker = RuntimeWorker(None, None)
 
-    assert worker.events.maxsize == 4_096
+    assert worker.events.maxsize == MAX_WORKER_EVENTS
+
+
+def test_worker_coalesces_projection_commands_to_the_latest_viewport() -> None:
+    observed: list[tuple[int, ...]] = []
+
+    class Client:
+        active_wait = None
+
+        def projection(self, *value: int) -> None:
+            observed.append(value)
+
+    worker = RuntimeWorker(None, None)
+    worker.client = Client()  # type: ignore[assignment]
+    worker.send("projection", (80, 24, 1, 7))
+    worker.send("projection", (120, 40, 2, 8))
+
+    assert worker.commands.qsize() == 1
+    worker._process_commands()
+    assert observed == [(120, 40, 2, 8)]
 
 
 def test_worker_notifies_after_each_successful_event_publish() -> None:
@@ -74,6 +95,8 @@ def test_worker_shutdown_closes_once_when_event_queue_is_full(
 
     assert not worker.is_alive()
     assert closed == [True]
+    assert worker.client is None
+    assert worker.commands.empty()
     assert "worker_stopped" in {
         worker.events.get_nowait().kind for _ in range(worker.events.qsize())
     }
@@ -144,7 +167,7 @@ def test_runtime_progress_records_structured_core_phase_duration(
     client = object.__new__(RuntimeClient)
     client.events = queue.Queue()
     client.pending_diagnosis = None
-    client.pending_export_kind = None
+    client.pending_export = None
     client.startup_attempt = 3
     client.startup_host_durations = {}
     client.startup_core_durations = {}
@@ -180,7 +203,7 @@ def test_runtime_progress_ignores_duplicate_starts_and_supports_interleaving(
     client = object.__new__(RuntimeClient)
     client.events = queue.Queue()
     client.pending_diagnosis = None
-    client.pending_export_kind = None
+    client.pending_export = None
     client.startup_attempt = 4
     client.startup_core_durations = {}
     client._startup_core_phase_started = {}
@@ -205,7 +228,7 @@ def test_runtime_progress_ignores_an_end_without_a_start_and_failure_clears_phas
     client = object.__new__(RuntimeClient)
     client.events = queue.Queue()
     client.pending_diagnosis = None
-    client.pending_export_kind = None
+    client.pending_export = None
     client.startup_attempt = 5
     client.startup_scenario = "cold"
     client.startup_active = True
@@ -366,9 +389,10 @@ def test_failed_wait_bound_worker_command_releases_the_app_input_gate() -> None:
 
 def test_failed_operation_sequence_export_releases_the_app_export_gate(tmp_path: Path) -> None:
     class Client:
-        pending_export = (tmp_path / "input-replay.jsonl", bytearray(), None)
-        pending_export_kind = 7
-        pending_export_message = 41
+        pending_export = _PendingExport.open(
+            tmp_path / "input-replay.jsonl", ExportStage.INPUT_REPLAY
+        )
+        pending_export.message_id = 41
 
         @staticmethod
         def export_input_replay(_path: Path) -> None:

@@ -15,17 +15,19 @@ from .runtime_dependencies import (
     decode_image_metadata,
     encode,
     enum_text,
-    html_printed_str,
     is_message_skip_wait,
     is_message_wait,
     log_event,
     message_wait_intent,
-    plain_line,
     secrets,
     time,
     unwrap_variant,
     variant,
 )
+from .text_budget import utf8_length
+
+
+MAXIMUM_FRONTEND_SERVICE_BYTES = 64 * 1024 * 1024
 
 
 class _RuntimeInteractionMixin:
@@ -100,20 +102,29 @@ class _RuntimeInteractionMixin:
                 )
             elif kind == 10 and operation == "get_display_line":
                 query = decode(request[4])
-                index = query[1]
-                text = ""
-                if 0 <= index < len(self.presentation.lines):
-                    text = plain_line(self.presentation.lines[index])
+                text = self.presentation.display_line(query[1])
+                if utf8_length(
+                    text, stop_after=MAXIMUM_FRONTEND_SERVICE_BYTES
+                ) > MAXIMUM_FRONTEND_SERVICE_BYTES:
+                    raise ValueError("display line exceeds the frontend service limit")
                 response = {0: query[0], 1: text}
             elif kind == 10 and operation == "html_get_printed_str":
                 query = decode(request[4])
                 response = {
                     0: query[0],
-                    1: html_printed_str(self.presentation.lines, query[1]),
+                    1: self.presentation.html_printed_str(
+                        query[1], MAXIMUM_FRONTEND_SERVICE_BYTES
+                    ),
                 }
             elif kind == 10 and operation == "serialize_physical_history":
                 query = decode(request[4])
-                body = "\n".join(plain_line(line) for line in self.presentation.lines)
+                retained_bytes = self.presentation.physical_history_utf8_bytes()
+                prefix_bytes = (
+                    0 if query[2] else utf8_length(str(query[1])) + 2
+                )
+                if retained_bytes + prefix_bytes > MAXIMUM_FRONTEND_SERVICE_BYTES:
+                    raise ValueError("physical history exceeds the frontend service limit")
+                body = self.presentation.physical_history()
                 response = {0: query[0], 1: body if query[2] else f"{query[1]}\n\n{body}"}
             elif kind == 0 and operation == "gget_text_size":
                 query = decode(request[4])

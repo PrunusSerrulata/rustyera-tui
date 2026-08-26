@@ -40,6 +40,7 @@ from .project_source_index import (
     _normalize_resource_manifest_paths,
     _path_sort_key,
 )
+from .text_budget import iter_utf8_chunks, utf8_length
 
 
 def _read_error_file(
@@ -211,7 +212,7 @@ def _payload_size(payload: list[Any]) -> int:
         return 0
     value = payload[1][0]
     if isinstance(value, str):
-        return len(value.encode("utf-8"))
+        return utf8_length(value)
     if isinstance(value, bytes):
         return len(value)
     return 0
@@ -220,34 +221,48 @@ def _payload_size(payload: list[Any]) -> int:
 def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
     relative = _normalize_relative_path(path.relative_to(root).as_posix())
     try:
-        raw = path.read_bytes()
         if category == FILE_RESOURCE:
+            hasher = blake3.blake3()
+            byte_length = 0
+            metadata_prefix = bytearray()
+            with path.open("rb") as stream:
+                while chunk := stream.read(4 * 1024 * 1024):
+                    hasher.update(chunk)
+                    byte_length += len(chunk)
+                    if len(metadata_prefix) < 1024 * 1024:
+                        needed = 1024 * 1024 - len(metadata_prefix)
+                        metadata_prefix.extend(chunk[:needed])
             metadata = None
             if path.suffix.lower() in RESOURCE_IMAGE_SUFFIXES:
                 try:
                     from .image_metadata import decode_image_metadata
 
-                    metadata = decode_image_metadata(raw[: 1024 * 1024])
+                    metadata = decode_image_metadata(bytes(metadata_prefix))
                 except ValueError:
                     metadata = None
             return ProjectFile(
                 relative,
                 category,
-                project_facade.external_resource(len(raw), metadata),
-                blake3.blake3(raw).digest(),
-                len(raw),
+                project_facade.external_resource(byte_length, metadata),
+                hasher.digest(),
+                byte_length,
                 path,
             )
+        raw = path.read_bytes()
         text = _decode_project_source(raw, strict_utf8=relative.lower() == "reraconfig.toml")
         if category == FILE_RESOURCE_MANIFEST:
             text = _normalize_resource_manifest_paths(text)
-        normalized = text.encode("utf-8")
+        hasher = blake3.blake3()
+        byte_length = 0
+        for chunk in iter_utf8_chunks(text):
+            hasher.update(chunk)
+            byte_length += len(chunk)
         return ProjectFile(
             relative,
             category,
             variant(0, text),
-            blake3.blake3(normalized).digest(),
-            len(normalized),
+            hasher.digest(),
+            byte_length,
             path,
         )
     except (OSError, UnicodeError) as error:

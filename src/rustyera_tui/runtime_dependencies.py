@@ -51,6 +51,7 @@ from .runtime_export import (
     ExportStage,
     FullProjectExport,
     PendingStateImport,
+    _PendingExport,
     atomic_write,
 )
 from .runtime_support import (
@@ -123,6 +124,17 @@ COMPILED_CACHE_RETRY_NS = 250_000_000
 STATE_IMPORT_CHUNK_BYTES = 16 * 1024 * 1024
 FULL_PROJECT_MANIFEST_CHUNK_BYTES = 4 * 1024 * 1024
 STATE_EXPORT_CHUNK_BYTES = 16 * 1024 * 1024
+
+DEBUG_LIFECYCLE_PENDING = frozenset(
+    {
+        "pause",
+        "continue",
+        "disable_continue",
+        "transient_continue",
+        "auto_continue",
+        "step",
+    }
+)
 
 
 def _debug_action_owner(action: str) -> str | None:

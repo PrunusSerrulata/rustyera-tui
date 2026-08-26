@@ -29,7 +29,7 @@ def stage_project_manifest(
 
 def decode_project_manifest(
     runtime: Any,
-    data: bytes,
+    data: Any,
     decoder: Any,
     *,
     owned_buffer_type: type[Any],
@@ -44,7 +44,8 @@ def decode_project_manifest(
         raise abi_error("runtime ABI does not support RustyEra project files")
     output = owned_buffer_type()
     call_header = header(ctypes.sizeof(owned_buffer_type))
-    status = decoder(call_header, runtime.handle, borrowed_bytes(data), ctypes.byref(output))
+    borrowed = borrowed_bytes(data) if isinstance(data, bytes) else data
+    status = decoder(call_header, runtime.handle, borrowed, ctypes.byref(output))
     runtime._check(status, "session_decode_project_file")
     try:
         decoded = decode(ctypes.string_at(output.data, output.len))

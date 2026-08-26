@@ -10,6 +10,8 @@ from typing import Iterable, Sequence
 
 from rich.text import Text
 
+from .text_budget import truncate_utf8, utf8_length
+
 
 class LogLevel(IntEnum):
     """Ordered log severity used as the log-view threshold."""
@@ -126,7 +128,7 @@ class BudgetedLogEntries(list[LogEntry]):
     def append(self, entry: LogEntry) -> None:
         entry = self._fit_entry(entry)
         # format_log_entries terminates every retained entry with one newline.
-        size = len(entry.plain_text.encode("utf-8")) + 1
+        size = utf8_length(entry.plain_text) + 1
         super().append(entry)
         self._entry_sizes.append(size)
         self._utf8_bytes += size
@@ -145,16 +147,17 @@ class BudgetedLogEntries(list[LogEntry]):
 
     def _fit_entry(self, entry: LogEntry) -> LogEntry:
         empty = replace(entry, message="")
-        prefix_bytes = len(empty.plain_text.encode("utf-8")) + 1
+        prefix_bytes = utf8_length(empty.plain_text) + 1
         available = max(0, self.max_utf8_bytes - prefix_bytes)
-        encoded = entry.message.encode("utf-8")
-        if len(encoded) <= available:
+        if utf8_length(entry.message, stop_after=available) <= available:
             return entry
-        marker = _TRUNCATION_MARKER.encode("utf-8")
-        if available < len(marker):
+        marker_bytes = utf8_length(_TRUNCATION_MARKER)
+        if available < marker_bytes:
             return empty
-        message = encoded[: available - len(marker)].decode("utf-8", "ignore")
-        return replace(entry, message=message + _TRUNCATION_MARKER)
+        return replace(
+            entry,
+            message=truncate_utf8(entry.message, available, _TRUNCATION_MARKER),
+        )
 
 
 def normalize_log_message(message: str, level: LogLevel) -> tuple[LogLevel, str]:

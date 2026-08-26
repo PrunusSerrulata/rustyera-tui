@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import mmap
 import os
 import sys
 from pathlib import Path
@@ -351,13 +352,40 @@ class RuntimeAbi:
         decoder = getattr(self, "_decode_project_file_frontend", None) or self._decode_project_file
         return self._decode_project_manifest(data, decoder)
 
+    def project_file_manifest_file(self, path: Path) -> dict[int, object]:
+        """Decode a package through a read-only file mapping instead of a Python bytes copy."""
+
+        decoder = getattr(self, "_decode_project_file_frontend", None) or self._decode_project_file
+        with path.open("rb", buffering=0) as stream:
+            length = os.fstat(stream.fileno()).st_size
+            if length == 0:
+                return self._decode_project_manifest(b"", decoder)
+            with mmap.mmap(stream.fileno(), length, access=mmap.ACCESS_COPY) as mapped:
+                buffer = (ctypes.c_uint8 * length).from_buffer(mapped)
+                # Casting the ctypes array itself makes the derived pointer retain the
+                # exported-buffer owner through ctypes' private `_objects` graph. Construct
+                # the pointer from the numeric address instead; `buffer` remains in this scope
+                # for the complete synchronous ABI call and can then release the mmap export.
+                address = ctypes.addressof(buffer)
+                pointer = ctypes.cast(
+                    ctypes.c_void_p(address), ctypes.POINTER(ctypes.c_uint8)
+                )
+                borrowed = EraByteSlice(pointer, length)
+                try:
+                    return self._decode_project_manifest(borrowed, decoder)
+                finally:
+                    del borrowed
+                    del pointer
+                    del address
+                    del buffer
+
     def full_project_file_manifest(self, data: bytes) -> dict[int, object]:
         """Decode every embedded payload from a validated project file."""
 
         return self._decode_project_manifest(data, self._decode_project_file)
 
     def _decode_project_manifest(
-        self, data: bytes, decoder: SessionDecodeProjectFile | None
+        self, data: bytes | EraByteSlice, decoder: SessionDecodeProjectFile | None
     ) -> dict[int, object]:
         return decode_project_manifest(
             self,

@@ -12,6 +12,59 @@ from services_test_support import (
     variant,
 )
 from rustyera_tui.log_model import LogLevel, LogMessage
+from rustyera_tui.runtime_debug import (
+    MAX_PENDING_DEBUG_ACTIONS,
+    MAX_PENDING_DEBUG_CONSOLE_BYTES,
+    MAX_PENDING_DEBUG_CONSOLE_REQUESTS,
+)
+
+
+def test_pending_debug_actions_coalesce_refreshes_and_bound_console_requests() -> None:
+    client, _captured = debug_client_with_capture()
+    client.debug_grant = None
+    client.debug_requested = True
+
+    for value in range(MAX_PENDING_DEBUG_ACTIONS + 10):
+        client.request_debug_action("variables", value)
+    assert client.pending_debug_actions == [("variables", MAX_PENDING_DEBUG_ACTIONS + 9)]
+
+    for value in range(MAX_PENDING_DEBUG_ACTIONS + 10):
+        client.request_debug_action("console_evaluate", value)
+    assert len(client.pending_debug_actions) == MAX_PENDING_DEBUG_CONSOLE_REQUESTS + 1
+    assert client.pending_debug_actions[-1] == (
+        "console_evaluate",
+        MAX_PENDING_DEBUG_CONSOLE_REQUESTS - 1,
+    )
+
+
+def test_debug_backpressure_keeps_lifecycle_commands_and_latest_refresh() -> None:
+    client, captured = debug_client_with_capture()
+    client.stop_token = {0: 1, 1: 2, 2: 3}
+    client.selected_fiber = 7
+    client.debug_pending_by_message = {
+        message_id: "variables" for message_id in range(1, MAX_PENDING_DEBUG_ACTIONS + 1)
+    }
+
+    client.request_debug_action("variables")
+    client.debug_step()
+
+    assert "variables" in client.deferred_debug_refresh
+    assert captured[-1][2] == "step"
+
+
+def test_debug_console_byte_budget_emits_an_observable_warning() -> None:
+    client, _captured = debug_client_with_capture()
+    client.debug_grant = None
+    client.debug_requested = True
+
+    client.request_debug_action(
+        "console_evaluate", "x" * (MAX_PENDING_DEBUG_CONSOLE_BYTES + 1)
+    )
+
+    assert client.pending_debug_actions == []
+    event = client.events.get_nowait()
+    assert event.kind == "log"
+    assert "预算" in event.value.message
 
 
 def test_debug_variable_read_uses_requested_indices() -> None:

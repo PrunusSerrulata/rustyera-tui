@@ -99,6 +99,7 @@ class _MenuAndExportMixin:
             self.input_replay_exporting
             or self.snapshot_exporting
             or self.project_file_exporting
+            or self.diagnosis_exporting
         ) and item_id != "file-exit":
             self.notify("文件导出完成前不能执行此操作", severity="warning")
             return

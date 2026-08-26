@@ -11,6 +11,14 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Label, RichLog, Static
 
+from .text_budget import bounded_repr, truncate_utf8
+
+MAX_DEBUG_CONSOLE_LINES = 4_096
+MAX_DEBUG_FIBERS = 8_192
+MAX_DEBUG_VARIABLES = 8_192
+MAX_DEBUG_FRAMES = 8_192
+MAX_DEBUG_VALUE_BYTES = 1024 * 1024
+
 
 class DebugConsoleDialog(ModalScreen[None]):
     class Submitted(Message):
@@ -22,7 +30,12 @@ class DebugConsoleDialog(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide-dialog"):
             yield Label("EraBasic 调试控制台", classes="dialog-title")
-            yield RichLog(id="console-output", wrap=True, highlight=True)
+            yield RichLog(
+                id="console-output",
+                wrap=True,
+                highlight=True,
+                max_lines=MAX_DEBUG_CONSOLE_LINES,
+            )
             yield Input(placeholder="输入表达式或安全语句", id="console-input")
             with Horizontal(classes="dialog-buttons"):
                 yield Button("求值", id="console-evaluate", variant="primary")
@@ -38,7 +51,12 @@ class DebugConsoleDialog(ModalScreen[None]):
             self.post_message(self.Submitted(source, event.button.id == "console-execute"))
 
     def write(self, value: Any) -> None:
-        self.query_one("#console-output", RichLog).write(value)
+        rendered = (
+            truncate_utf8(value, MAX_DEBUG_VALUE_BYTES)
+            if isinstance(value, str)
+            else bounded_repr(value, MAX_DEBUG_VALUE_BYTES)
+        )
+        self.query_one("#console-output", RichLog).write(rendered)
 
 
 class VariableDialog(ModalScreen[None]):
@@ -71,7 +89,7 @@ class VariableDialog(ModalScreen[None]):
         self.pending_value_row = None
         storage_names = ["全局", "函数静态", "角色", "局部"]
         type_names = ["整数", "字符串", "布尔", "字节"]
-        self.descriptors = list(page.get(1, []))
+        self.descriptors = list(page.get(1, [])[:MAX_DEBUG_VARIABLES])
         for index, descriptor in enumerate(self.descriptors):
             table.add_row(
                 descriptor.get(1, ""),
@@ -82,7 +100,11 @@ class VariableDialog(ModalScreen[None]):
                 "选择查看",
                 key=str(index),
             )
-        self.query_one("#variable-status", Static).update(f"共 {len(page.get(1, []))} 个变量")
+        total = len(page.get(1, []))
+        suffix = "（已截断）" if total > len(self.descriptors) else ""
+        self.query_one("#variable-status", Static).update(
+            f"共载入 {len(self.descriptors)} 个变量{suffix}"
+        )
 
     def set_value(self, value: dict[int, Any]) -> None:
         rendered = _debug_value_text(value.get(1))
@@ -125,18 +147,22 @@ def _debug_value_text(value: Any) -> str:
         tag, fields = value
         field = fields[0]
     except (TypeError, ValueError, IndexError):
-        return repr(value)
+        return bounded_repr(value, MAX_DEBUG_VALUE_BYTES)
     if tag == 0:
-        return str(field)
+        return bounded_repr(field, MAX_DEBUG_VALUE_BYTES)
     if tag == 1:
-        return repr(field)
+        return bounded_repr(field, MAX_DEBUG_VALUE_BYTES)
     if tag == 2:
         return "true" if field else "false"
     if tag == 3:
-        return field.hex() if isinstance(field, bytes) else repr(field)
+        if isinstance(field, bytes):
+            maximum_source_bytes = (MAX_DEBUG_VALUE_BYTES - 3) // 2
+            suffix = "…" if len(field) > maximum_source_bytes else ""
+            return field[:maximum_source_bytes].hex() + suffix
+        return bounded_repr(field, MAX_DEBUG_VALUE_BYTES)
     if tag == 4:
         return "<place>"
-    return repr(value)
+    return bounded_repr(value, MAX_DEBUG_VALUE_BYTES)
 
 
 class StackDialog(ModalScreen[None]):
@@ -163,7 +189,8 @@ class StackDialog(ModalScreen[None]):
     def set_fibers(self, page: dict[int, Any]) -> tuple[int | None, int | None]:
         table = self.query_one("#fiber-table", DataTable)
         state_names = ["可运行", "等待 Host", "等待恢复", "完成", "故障", "取消", "调试暂停"]
-        fibers = page.get(1, [])
+        remaining = max(0, MAX_DEBUG_FIBERS - len(self.fibers))
+        fibers = page.get(1, [])[:remaining]
         self.fibers.extend(fibers)
         for fiber in fibers:
             table.add_row(
@@ -172,7 +199,7 @@ class StackDialog(ModalScreen[None]):
                 "是" if fiber.get(2) else "否",
                 str(fiber.get(3, 0)),
             )
-        next_cursor = page.get(2)
+        next_cursor = page.get(2) if len(self.fibers) < MAX_DEBUG_FIBERS else None
         status = (
             "当前无活动纤程"
             if not self.fibers and next_cursor is None
@@ -193,7 +220,7 @@ class StackDialog(ModalScreen[None]):
     def set_frames(self, stack: dict[int, Any]) -> None:
         table = self.query_one("#frame-table", DataTable)
         table.clear()
-        frames = stack.get(2, [])
+        frames = stack.get(2, [])[:MAX_DEBUG_FRAMES]
         for frame in frames:
             source = frame.get(5)
             location = f"{source.get(0)}:{source.get(4)}" if source else ""

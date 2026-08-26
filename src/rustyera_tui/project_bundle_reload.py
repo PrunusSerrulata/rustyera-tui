@@ -55,8 +55,10 @@ class _ProjectBundleReloadMixin:
                 if not 0 <= truncate_to <= len(project_bytes):
                     raise RuntimeError("Runtime 返回了无效的项目配置更新位置")
                 stream.seek(0)
-                current_bytes = stream.read()
-                if blake3.blake3(current_bytes).digest() != project_digest:
+                current_hasher = blake3.blake3()
+                while chunk := stream.read(4 * 1024 * 1024):
+                    current_hasher.update(chunk)
+                if current_hasher.digest() != project_digest:
                     raise RuntimeError("项目文件已被其他程序修改，请重新打开偏好选项")
                 stream.truncate(truncate_to)
                 stream.seek(truncate_to)

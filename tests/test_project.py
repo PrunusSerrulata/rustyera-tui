@@ -1174,6 +1174,47 @@ def test_project_scanner_includes_audio_resources_for_full_exports(tmp_path: Pat
         temporary.unlink(missing_ok=True)
 
 
+def test_resource_scan_hashes_from_a_stream_without_path_read_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resource = tmp_path / "large.png"
+    payload = png_header(8, 9) + b"x" * 1024
+    resource.write_bytes(payload)
+
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda _path: pytest.fail("resource scan must stream the file"),
+    )
+    loaded = project_module.read_project_file(tmp_path, resource, FILE_RESOURCE)
+
+    assert loaded.content_size == len(payload)
+    assert loaded.content_hash == blake3.blake3(payload).digest()
+
+
+def test_storage_stat_hashes_from_a_stream_without_materializing_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = StorageBackend(tmp_path)
+    save = tmp_path / "sav" / "large.sav"
+    save.parent.mkdir()
+    save.write_bytes(b"state")
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda _path: pytest.fail("storage stat must stream the file"),
+    )
+
+    result = backend.handle(
+        {0: 1, 1: 1, 2: "large.sav", 3: variant(4), 4: ""}
+    )
+
+    tag, fields = unwrap_variant(result[1])
+    assert tag == 5
+    assert fields[0][0] == 5
+    assert fields[0][1] == blake3.blake3(b"state").hexdigest()
+
+
 def test_configuration_write_is_atomic_and_detects_external_changes(tmp_path: Path) -> None:
     config = tmp_path / "reraconfig.toml"
     config.write_text("[display]\nfont_size = 18\n", encoding="utf-8")

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from .runtime_dependencies import (
     Any,
-    AtomicExportStream,
     CORE_STARTUP_PHASES,
     ConfigurationSnapshot,
     DiagnosisExport,
@@ -33,6 +32,7 @@ from .runtime_dependencies import (
     runtime_log_level,
     time,
     variant,
+    _PendingExport,
 )
 
 from .runtime_debug import _RuntimeDebugMixin
@@ -85,20 +85,16 @@ class RuntimeClient(
         self.storage: StorageBackend | None = None
         self.presentation = ServicePresentationModel()
         self.active_wait: dict[int, Any] | None = None
-        self.pending_restore: tuple[Path, bytes, str] | None = None
-        self.pending_export: tuple[Path, bytearray, dict[int, Any] | None] | None = None
-        self.pending_export_message: int | None = None
+        self.pending_restore: tuple[Path, bytes | None, str] | None = None
+        self.pending_export: _PendingExport | None = None
         self.pending_diagnosis: DiagnosisExport | None = None
         self.pending_import: PendingStateImport | None = None
-        self.pending_export_kind: int | None = None
         self.pending_cache_after: str | None = None
-        self.pending_cache_export_message: int | None = None
         self.cache_refresh_pending = False
         self.cache_ready = False
         self.cache_refresh_after_ns = 0
         self.cache_preparation_started = False
         self.cache_refresh_after = "background"
-        self.pending_cache_stream: AtomicExportStream | None = None
         self.allow_compiled_cache_load = True
         self.pending_project_file_bytes: bytes | None = None
         self.full_project_export: FullProjectExport | None = None
@@ -125,6 +121,10 @@ class RuntimeClient(
         self.selected_fiber: int | None = None
         self.pending_debug_actions: list[tuple[str, Any]] = []
         self.debug_pending_by_message: dict[int, str] = {}
+        self.debug_pending_cost_by_message: dict[int, int] = {}
+        self.deferred_debug_refresh: dict[str, tuple[list[Any], int]] = {}
+        self.deferred_debug_console: list[tuple[list[Any], int]] = []
+        self.debug_backpressure_warnings: set[str] = set()
         self.single_step_enabled = False
         self.debug_step_in_flight = False
         self.debug_disable_pending = False
@@ -186,7 +186,8 @@ class RuntimeClient(
                 )
         if (
             self.pending_diagnosis is not None
-            and self.pending_export_kind == ExportStage.DIAGNOSIS_PROJECT
+            and self.pending_export is not None
+            and self.pending_export.stage == ExportStage.DIAGNOSIS_PROJECT
         ):
             self._report_diagnosis_progress(
                 "project_packaging" if stage == 9 else "project_preparing",
@@ -215,6 +216,10 @@ class RuntimeClient(
         self.selected_fiber = None
         self.pending_debug_actions.clear()
         self.debug_pending_by_message.clear()
+        self.debug_pending_cost_by_message.clear()
+        self.deferred_debug_refresh.clear()
+        self.deferred_debug_console.clear()
+        self.debug_backpressure_warnings.clear()
         self.single_step_enabled = False
         self.debug_step_in_flight = False
         self.debug_disable_pending = False
@@ -228,20 +233,18 @@ class RuntimeClient(
         self._input_messages.clear()
         self.reload_candidate = None
         self.reload_message_id = None
-        self.pending_export = None
-        self.pending_export_kind = None
-        self.pending_export_message = None
-        self.pending_diagnosis = None
+        if self.pending_export is not None:
+            self.pending_export.cancel()
+            self.pending_export = None
+        if self.pending_diagnosis is not None:
+            self.pending_diagnosis.cleanup()
+            self.pending_diagnosis = None
         self.pending_cache_after = None
-        self.pending_cache_export_message = None
         self.cache_refresh_pending = False
         self.cache_ready = False
         self.cache_refresh_after_ns = 0
         self.cache_preparation_started = False
         self.cache_refresh_after = "background"
-        if self.pending_cache_stream is not None:
-            self.pending_cache_stream.cancel()
-            self.pending_cache_stream = None
         if self.full_project_export is not None:
             self.full_project_export.stream.cancel()
             self.full_project_export = None
@@ -258,6 +261,34 @@ class RuntimeClient(
         self.storage = None
         self.pending_restore = None
         self.pending_project_file_bytes = None
+
+    def begin_game_state_transition(
+        self, message_id: int, *, shutting_down: bool = False
+    ) -> None:
+        """Retire VM-owned frontend state after a replacement command is submitted."""
+
+        revision = self.presentation.begin_replacement(message_id)
+        self._pending_presentation.clear()
+        self.active_wait = None
+        self._wait_event_dirty = False
+        self._presentation_boundary_dirty = False
+        self._projection_messages.clear()
+        self._input_messages.clear()
+        self.stop_token = None
+        self.selected_fiber = None
+        self.pending_debug_actions.clear()
+        self.debug_pending_by_message.clear()
+        self.debug_pending_cost_by_message.clear()
+        self.deferred_debug_refresh.clear()
+        self.deferred_debug_console.clear()
+        self.debug_backpressure_warnings.clear()
+        self.debug_step_in_flight = False
+        self.transient_pause_owner = None
+        self.transient_close_pending = None
+        self._retire_transfers_for_game_transition(
+            reschedule_cache=not shutting_down
+        )
+        self.events.put(FrontendEvent("game_state_reset", revision))
 
     def begin_session_reset(self) -> None:
         """Release the active session and all session-owned frontend projections once."""
@@ -330,7 +361,7 @@ class RuntimeClient(
     def recreate(
         self,
         bundle: ProjectBundle,
-        restore: tuple[Path, bytes, str] | None = None,
+        restore: tuple[Path, bytes | None, str] | None = None,
         *,
         allow_compiled_cache: bool = True,
         project_file_bytes: bytes | None = None,
@@ -506,13 +537,13 @@ class RuntimeClient(
             self._wait_event_dirty = self._wait_event_dirty or wait_changed
         elif tag == 41:
             try:
-                self.presentation.apply_delta(value)
+                projected_delta = self.presentation.apply_delta(value)
             except ValueError as error:
                 self.events.put(log_event(str(error), LogLevel.WARNING))
                 self.send_runtime(94, {0: self.expected_runtime_output - 1})
             else:
                 wait_changed = self._set_active_wait(self.presentation.input_wait)
-                self._pending_presentation.add_delta(value)
+                self._pending_presentation.add_delta(projected_delta)
                 self._wait_event_dirty = self._wait_event_dirty or wait_changed
         elif tag == 42:  # Effects are intentionally unsupported but must be acknowledged.
             self._acknowledge_effects(value)
@@ -622,4 +653,5 @@ class RuntimeClient(
             if self.pending_import is not None:
                 self._cancel_pending_import()
             self.shutting_down = True
-            self.send_runtime(90, {0: True})
+            message_id = self.send_runtime(90, {0: True})
+            self.begin_game_state_transition(message_id, shutting_down=True)

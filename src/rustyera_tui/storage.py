@@ -13,7 +13,18 @@ import blake3
 
 from .frontend_io import IO_CONFLICT, IO_INVALID_DATA, frontend_error
 from .storage_state import _change_token, _precondition_conflict
+from .text_budget import utf8_length
 from .wire import encode, variant
+
+MAXIMUM_STORAGE_RESPONSE_BYTES = 64 * 1024 * 1024
+
+
+def _file_digest(path: Path) -> str:
+    hasher = blake3.blake3()
+    with path.open("rb") as stream:
+        while chunk := stream.read(4 * 1024 * 1024):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 class StorageBackend:
@@ -124,7 +135,7 @@ class StorageBackend:
         except OSError as error:
             result = variant(4, frontend_error(error))
         if idempotency_key and operation_tag in (1, 3):
-            retained_bytes = len(idempotency_key.encode("utf-8")) + len(encode(result))
+            retained_bytes = utf8_length(idempotency_key) + len(encode(result))
             if retained_bytes <= self.maximum_idempotent_bytes:
                 previous_size = self._idempotent_result_sizes.get(idempotency_key, 0)
                 self.idempotent_result_bytes -= previous_size
@@ -149,7 +160,10 @@ class StorageBackend:
             read_root = self._namespace_root(namespace).resolve()
             path = self._resolve(namespace, relative)
         if operation_tag == 0:  # Read
-            data = path.read_bytes()
+            with path.open("rb") as stream:
+                data = stream.read(MAXIMUM_STORAGE_RESPONSE_BYTES + 1)
+            if len(data) > MAXIMUM_STORAGE_RESPONSE_BYTES:
+                raise ValueError("storage file exceeds the frontend response limit; use ReadRange")
             return variant(0, data, blake3.blake3(data).hexdigest())
         if operation_tag == 1:  # Write
             data, atomic_replace, precondition = fields
@@ -197,10 +211,21 @@ class StorageBackend:
             path.unlink()
             return variant(3)
         if operation_tag == 4:  # Stat
-            data = path.read_bytes()
-            return variant(5, {0: len(data), 1: blake3.blake3(data).hexdigest()})
+            before = path.stat()
+            digest = _file_digest(path)
+            after = path.stat()
+            if _change_token(before) != _change_token(after):
+                return variant(4, {0: IO_CONFLICT, 1: "storage file changed during stat"})
+            return variant(5, {0: after.st_size, 1: digest})
         if operation_tag == 5:  # ReadRange
             offset, maximum_bytes, expected_token = fields
+            if (
+                not isinstance(offset, int)
+                or offset < 0
+                or not isinstance(maximum_bytes, int)
+                or not 0 <= maximum_bytes <= MAXIMUM_STORAGE_RESPONSE_BYTES
+            ):
+                raise ValueError("storage range exceeds the frontend response limit")
             before = path.stat()
             token = _change_token(before)
             if expected_token is not None and expected_token != token:

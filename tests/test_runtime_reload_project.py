@@ -47,8 +47,12 @@ def test_title_and_snapshot_restore_do_not_scan_project(
             self.commands: list[tuple[int, object]] = []
             self.restored: Path | None = None
 
-        def send_runtime(self, tag: int, value: object) -> None:
+        def send_runtime(self, tag: int, value: object) -> int:
             self.commands.append((tag, value))
+            return 41
+
+        def begin_game_state_transition(self, message_id: int) -> None:
+            self.commands.append((-1, message_id))
 
         def restore_snapshot(self, path: Path) -> None:
             self.restored = path
@@ -66,7 +70,7 @@ def test_title_and_snapshot_restore_do_not_scan_project(
     worker._process_command(FrontendCommand("return_title"))
     worker._process_command(FrontendCommand("restore_snapshot", snapshot))
 
-    assert client.commands == [(23, {})]
+    assert client.commands == [(23, {}), (-1, 41)]
     assert client.restored == snapshot.resolve()
 
 

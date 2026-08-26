@@ -120,8 +120,12 @@ def wait_for_path(worker: RuntimeWorker, path: Path, timeout: float = 15) -> Non
             "pending": client.cache_refresh_pending,
             "ready": client.cache_ready,
             "after": client.pending_cache_after,
-            "export_kind": client.pending_export_kind,
-            "export_message": client.pending_cache_export_message,
+            "export_kind": (
+                client.pending_export.stage if client.pending_export is not None else None
+            ),
+            "export_message": (
+                client.pending_export.message_id if client.pending_export is not None else None
+            ),
         }
     )
     raise AssertionError(f"timed out waiting for {path}; state={state}; events={observed[-20:]}")

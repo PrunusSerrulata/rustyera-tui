@@ -17,8 +17,10 @@ from .dialogs import (
     VariableDialog,
     VariableRefresh,
 )
+from .dialogs_debug import MAX_DEBUG_VALUE_BYTES
 from .input_policy import is_message_skip_wait, is_message_wait
 from .app_viewport import _ViewportProjectionMixin
+from .text_budget import bounded_repr, truncate_utf8
 from .widgets import GameLine, GameViewport
 
 
@@ -99,9 +101,16 @@ class _InteractionMixin(_ViewportProjectionMixin):
             for line in outcome.get(2, []):
                 self.console_dialog.write(line)
             if outcome.get(1) is not None:
-                self.console_dialog.write(f"=> {outcome[1]!r}")
+                self.console_dialog.write(
+                    f"=> {bounded_repr(outcome[1], MAX_DEBUG_VALUE_BYTES - 3)}"
+                )
             for diagnostic in outcome.get(5, []):
-                self.console_dialog.write(f"{diagnostic.get(0)}: {diagnostic.get(1)}")
+                category = diagnostic.get(0)
+                message = diagnostic.get(1)
+                self.console_dialog.write(
+                    f"{truncate_utf8(category, MAX_DEBUG_VALUE_BYTES // 4) if isinstance(category, str) else bounded_repr(category, MAX_DEBUG_VALUE_BYTES // 4)}: "
+                    f"{truncate_utf8(message, MAX_DEBUG_VALUE_BYTES * 3 // 4) if isinstance(message, str) else bounded_repr(message, MAX_DEBUG_VALUE_BYTES * 3 // 4)}"
+                )
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "prompt" or self._game_interactions_blocked():

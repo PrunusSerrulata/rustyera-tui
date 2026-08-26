@@ -7,6 +7,7 @@ from .runtime_dependencies import (
     CHANNEL_DEBUG,
     CHANNEL_RUNTIME,
     DEBUG_VERSION,
+    DEBUG_LIFECYCLE_PENDING,
     FrontendEvent,
     ProjectBundle,
     RUNTIME_VERSION,
@@ -109,6 +110,16 @@ class _RuntimeTransportMixin:
     def send_debug(self, tag: int, value: Any | None = None, *, pending: str = "") -> int:
         if self.session is None or self.epoch is None:
             raise RuntimeError("debug protocol requires an active runtime session")
+        if (
+            pending
+            and pending not in DEBUG_LIFECYCLE_PENDING
+            and sum(
+                name not in DEBUG_LIFECYCLE_PENDING
+                for name in self.debug_pending_by_message.values()
+            )
+            >= 256
+        ):
+            raise RuntimeError("debug request correlation budget is exhausted")
         message_id = self.next_message_id
         self.next_message_id += 1
         data = encode_envelope(

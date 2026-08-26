@@ -50,45 +50,47 @@ class _ProjectBundleScanMixin:
         root = root.expanduser().resolve(strict=True)
         if not root.is_dir():
             raise NotADirectoryError(root)
-        if progress is not None:
-            progress(0, 0)
-        if cancelled is not None and cancelled():
-            raise InterruptedError("project file operation cancelled")
-        started = time.perf_counter()
-        paths = _project_paths(root)
-        canonical_roots = _canonical_source_roots(root)
-        candidates = [
-            (path, category)
-            for path in paths
-            if (category := _classify_project_path(root, path, canonical_roots)) is not None
-        ]
-        if cancelled is not None and cancelled():
-            raise InterruptedError("project file operation cancelled")
-        enumerate_ms = (time.perf_counter() - started) * 1000
-        if progress is not None:
-            progress(0, len(candidates))
-        started = time.perf_counter()
-        files = {
-            item.relative_path: item
-            for item in _parallel_project_reads(root, candidates, progress, cancelled)
-        }
-        try:
-            _verify_stable_files(list(files.values()))
-        except _ProjectChangedDuringScan:
-            if _attempt + 1 >= STABLE_READ_ATTEMPTS:
-                raise
-            return cls.scan(root, revision, progress, cancelled, _attempt + 1)
-        source_ms = (time.perf_counter() - started) * 1000
-        return cls(
-            root=root,
-            revision=revision,
-            files=files,
-            scan_metrics=ProjectScanMetrics(
-                enumerate_ms=enumerate_ms,
-                source_read_decode_hash_ms=source_ms,
-                source_files_hashed=len(files),
-            ),
-        )
+        for attempt in range(_attempt, STABLE_READ_ATTEMPTS):
+            if progress is not None:
+                progress(0, 0)
+            if cancelled is not None and cancelled():
+                raise InterruptedError("project file operation cancelled")
+            started = time.perf_counter()
+            paths = _project_paths(root)
+            canonical_roots = _canonical_source_roots(root)
+            candidates = [
+                (path, category)
+                for path in paths
+                if (category := _classify_project_path(root, path, canonical_roots)) is not None
+            ]
+            if cancelled is not None and cancelled():
+                raise InterruptedError("project file operation cancelled")
+            enumerate_ms = (time.perf_counter() - started) * 1000
+            if progress is not None:
+                progress(0, len(candidates))
+            started = time.perf_counter()
+            files = {
+                item.relative_path: item
+                for item in _parallel_project_reads(root, candidates, progress, cancelled)
+            }
+            try:
+                _verify_stable_files(list(files.values()))
+            except _ProjectChangedDuringScan:
+                if attempt + 1 >= STABLE_READ_ATTEMPTS:
+                    raise
+                continue
+            source_ms = (time.perf_counter() - started) * 1000
+            return cls(
+                root=root,
+                revision=revision,
+                files=files,
+                scan_metrics=ProjectScanMetrics(
+                    enumerate_ms=enumerate_ms,
+                    source_read_decode_hash_ms=source_ms,
+                    source_files_hashed=len(files),
+                ),
+            )
+        raise AssertionError("project scan exhausted its stability attempts")
 
     @classmethod
     def scan_quick(
@@ -98,6 +100,22 @@ class _ProjectBundleScanMixin:
         progress: ProjectScanProgress | None = None,
         cancelled: Callable[[], bool] | None = None,
         _attempt: int = 0,
+    ) -> ProjectBundle:
+        for attempt in range(_attempt, STABLE_READ_ATTEMPTS):
+            try:
+                return cls._scan_quick_once(root, revision, progress, cancelled)
+            except _ProjectChangedDuringScan:
+                if attempt + 1 >= STABLE_READ_ATTEMPTS:
+                    raise
+        raise AssertionError("quick project scan exhausted its stability attempts")
+
+    @classmethod
+    def _scan_quick_once(
+        cls,
+        root: Path,
+        revision: int = 1,
+        progress: ProjectScanProgress | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> ProjectBundle:
         """Build a content identity using a persistent stat index without retaining source text."""
 
@@ -278,12 +296,7 @@ class _ProjectBundleScanMixin:
             )
             _report_scan_progress(progress, completed, len(inspected))
         files = {item.relative_path: item for item, _ in indexed}
-        try:
-            _verify_stable_files(list(files.values()))
-        except _ProjectChangedDuringScan:
-            if _attempt + 1 >= STABLE_READ_ATTEMPTS:
-                raise
-            return cls.scan_quick(root, revision, progress, cancelled, _attempt + 1)
+        _verify_stable_files(list(files.values()))
         next_index = {item.relative_path: entry for item, entry in indexed}
         if not index_portable or previous != next_index:
             started = time.perf_counter()

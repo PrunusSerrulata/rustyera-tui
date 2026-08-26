@@ -11,7 +11,10 @@ from .presentation_types import DEFAULT_VIEWPORT_COLUMNS
 from .wire import unwrap_variant
 
 
-def plain_line(line: dict[int, Any]) -> str:
+def plain_line(line: dict[int, Any] | Any) -> str:
+    compact_text = getattr(line, "text", None)
+    if isinstance(compact_text, str):
+        return compact_text
     return "".join(plain_run(run) for run in line.get(5, []))
 
 

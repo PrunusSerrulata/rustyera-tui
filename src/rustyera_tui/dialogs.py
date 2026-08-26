@@ -270,7 +270,13 @@ class LogDialog(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide-dialog"):
             yield Label("Runtime / 前端日志", classes="dialog-title")
-            yield RichLog(wrap=False, highlight=False, markup=False, id="log-view")
+            yield RichLog(
+                wrap=False,
+                highlight=False,
+                markup=False,
+                max_lines=4_096,
+                id="log-view",
+            )
             with Horizontal(id="log-actions-row", classes="dialog-buttons"):
                 yield Label("最低显示等级", id="log-filter-label")
                 yield Select(

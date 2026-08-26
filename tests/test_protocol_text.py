@@ -12,6 +12,7 @@ from rustyera_tui.protocol_text import (
     variant_enum_text,
 )
 from rustyera_tui.runtime import RuntimeClient, format_project_diagnostic
+from rustyera_tui.runtime_export import ExportStage, _PendingExport
 
 
 def test_known_wire_enums_use_textual_protocol_names() -> None:
@@ -67,12 +68,12 @@ def test_project_diagnostic_renders_path_category_and_utf8_source_span() -> None
     )
 
 
-def test_snapshot_rejection_event_uses_reason_names() -> None:
+def test_snapshot_rejection_event_uses_reason_names(tmp_path: Path) -> None:
     client = RuntimeClient.__new__(RuntimeClient)
     client.events = queue.Queue()
-    client.pending_export = (None, bytearray(), None)
-    client.pending_export_kind = 1
-    client.pending_export_message = None
+    client.pending_export = _PendingExport.open(
+        tmp_path / "rejected.snapshot", ExportStage.SNAPSHOT
+    )
 
     client._handle_export_ready({0: 1, 1: [1, [[3]]]})
 
@@ -91,9 +92,8 @@ def test_snapshot_export_emits_a_dedicated_completion_event(tmp_path: Path) -> N
     data = b"snapshot"
     path = tmp_path / "runtime.snapshot"
     descriptor = {0: 7, 2: len(data), 3: blake3.blake3(data).digest()}
-    client.pending_export = (path, bytearray(), descriptor)
-    client.pending_export_kind = 1
-    client.pending_export_message = None
+    client.pending_export = _PendingExport.open(path, ExportStage.SNAPSHOT)
+    client.pending_export.descriptor = descriptor
 
     client._handle_export_chunk({0: 7, 1: 0, 2: data, 3: True})
 
