@@ -45,10 +45,16 @@ FILE_ERB = 2
 FILE_RESOURCE_MANIFEST = 3
 FILE_RESOURCE = 4
 FILE_CONFIGURATION = 5
+FILE_ALS = 6
+FILE_ERD = 7
 
 RESOURCE_IMAGE_SUFFIXES = frozenset({".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"})
 RESOURCE_AUDIO_SUFFIXES = frozenset({".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"})
 RESOURCE_FONT_SUFFIXES = frozenset({".otf", ".ttc", ".ttf", ".woff", ".woff2"})
+RESOURCE_DATA_SUFFIXES = frozenset({".xml", ".txt", ".db", ".sqlite"})
+RESOURCE_DATA_EXCLUDED_ROOTS = frozenset(
+    {".git", ".rustyera", "sav", "save", "saves", "data", "log", "logs"}
+)
 DEFAULT_MAXIMUM_ENVELOPE_BYTES = 128 * 1024 * 1024
 DEFAULT_MAXIMUM_PAYLOAD_BYTES = 127 * 1024 * 1024
 MAXIMUM_PROJECT_ENVELOPE_BYTES = 1024 * 1024 * 1024
@@ -141,6 +147,8 @@ from .project_scan import (  # noqa: E402
     _canonical_source_roots as _canonical_source_roots,
     _classify_project_path as _classify_project_path,
     _project_paths as _project_paths,
+    _validate_new_project_file as _validate_new_project_file,
+    _project_candidates as _project_candidates,
 )
 from .project_source_index import (  # noqa: E402
     SOURCE_INDEX_VERSION as SOURCE_INDEX_VERSION,

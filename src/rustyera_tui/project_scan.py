@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import errno
+
 from . import project as project_facade
 from .project import (
     Any,
     Callable,
+    FILE_ALS,
     FILE_CONFIGURATION,
     FILE_CSV,
     FILE_ERB,
+    FILE_ERD,
     FILE_ERH,
     FILE_RESOURCE,
     FILE_RESOURCE_MANIFEST,
@@ -22,6 +26,8 @@ from .project import (
     ProjectScanProgress,
     PurePosixPath,
     RESOURCE_AUDIO_SUFFIXES,
+    RESOURCE_DATA_EXCLUDED_ROOTS,
+    RESOURCE_DATA_SUFFIXES,
     RESOURCE_FONT_SUFFIXES,
     RESOURCE_IMAGE_SUFFIXES,
     STABLE_READ_ATTEMPTS,
@@ -55,6 +61,7 @@ def _stable_read_project_file(root: Path, path: Path, category: int) -> ProjectF
 
     for _attempt in range(STABLE_READ_ATTEMPTS):
         try:
+            _validate_new_project_file(root, path, category)
             before = project_facade._source_signature(path)
         except OSError as error:
             return _read_error_file(root, path, category, error)
@@ -203,6 +210,8 @@ def classify_path(path: Path | PurePosixPath) -> int | None:
         ".csv": FILE_CSV,
         ".erh": FILE_ERH,
         ".erb": FILE_ERB,
+        ".als": FILE_ALS,
+        ".erd": FILE_ERD,
         ".config": FILE_CONFIGURATION,
     }.get(suffix)
 
@@ -221,6 +230,7 @@ def _payload_size(payload: list[Any]) -> int:
 def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
     relative = _normalize_relative_path(path.relative_to(root).as_posix())
     try:
+        _validate_new_project_file(root, path, category)
         if category == FILE_RESOURCE:
             hasher = blake3.blake3()
             byte_length = 0
@@ -249,7 +259,11 @@ def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
                 path,
             )
         raw = path.read_bytes()
-        text = _decode_project_source(raw, strict_utf8=relative.lower() == "reraconfig.toml")
+        text = _decode_project_source(
+            raw,
+            strict_utf8=category in (FILE_ALS, FILE_ERD)
+            or relative.lower() == "reraconfig.toml",
+        )
         if category == FILE_RESOURCE_MANIFEST:
             text = _normalize_resource_manifest_paths(text)
         hasher = blake3.blake3()
@@ -285,6 +299,8 @@ def _classify_project_path(root: Path, path: Path, canonical_roots: frozenset[st
     first = parts[0].lower()
     if path.name.lower() in {"reraconfig.toml", "setting.json"}:
         return FILE_CONFIGURATION
+    if path.suffix.lower() in RESOURCE_DATA_SUFFIXES:
+        return None if first in RESOURCE_DATA_EXCLUDED_ROOTS else FILE_RESOURCE
     if first == "resources":
         if path.suffix.lower() == ".csv":
             return FILE_RESOURCE_MANIFEST
@@ -298,7 +314,9 @@ def _classify_project_path(root: Path, path: Path, canonical_roots: frozenset[st
     category = classify_path(path)
     if category is None:
         return None
-    if category in (FILE_ERH, FILE_ERB) and "erb" in canonical_roots and first != "erb":
+    if category in (FILE_ERH, FILE_ERB, FILE_ERD) and "erb" in canonical_roots and first != "erb":
+        return None
+    if category == FILE_ALS and canonical_roots and first not in {"csv", "erb"}:
         return None
     if category == FILE_CSV and "csv" in canonical_roots and first != "csv":
         return None
@@ -312,29 +330,100 @@ def _classify_project_path(root: Path, path: Path, canonical_roots: frozenset[st
     return category
 
 
+def _is_new_project_file(path: Path, category: int) -> bool:
+    return category in (FILE_ALS, FILE_ERD) or (
+        category == FILE_RESOURCE and path.suffix.lower() in RESOURCE_DATA_SUFFIXES
+    )
+
+
+def _validate_new_project_file(root: Path, path: Path, category: int) -> None:
+    """Constrain new input classes without changing legacy source-link support."""
+
+    if not _is_new_project_file(path, category):
+        return
+    try:
+        relative = path.resolve(strict=True).relative_to(root.resolve(strict=True))
+    except RuntimeError as error:
+        raise OSError(errno.ELOOP, "project input contains a symbolic-link loop") from error
+    except ValueError as error:
+        raise OSError(errno.EACCES, "project input escaped the authorized root") from error
+    if category == FILE_RESOURCE and relative.parts[0].lower() in RESOURCE_DATA_EXCLUDED_ROOTS:
+        raise OSError(errno.EACCES, "project resource points into writable or private storage")
+
+
+def _project_candidates(
+    root: Path, paths: Sequence[Path], canonical_roots: frozenset[str]
+) -> list[tuple[Path, int]]:
+    """Reject normalized collisions before dictionaries can silently discard new inputs."""
+
+    candidates: list[tuple[Path, int]] = []
+    seen: dict[str, tuple[Path, int]] = {}
+    for path in paths:
+        category = _classify_project_path(root, path, canonical_roots)
+        if category is None:
+            continue
+        relative = _normalize_relative_path(path.relative_to(root).as_posix()).lower()
+        previous = seen.get(relative)
+        if previous is not None and (
+            _is_new_project_file(path, category) or _is_new_project_file(*previous)
+        ):
+            raise ValueError(f"project inputs have duplicate normalized paths: {relative}")
+        seen[relative] = (path, category)
+        candidates.append((path, category))
+    return candidates
+
+
 def _project_paths(root: Path) -> list[Path]:
     """Enumerate project files while following resource-directory links once."""
 
     paths: list[Path] = []
+    directory_loops: list[Path] = []
+    repeated_directories: list[tuple[Path, Path]] = []
     root_stat = root.stat()
     visited = {(root_stat.st_dev, root_stat.st_ino)}
-    for directory, names, filenames in os.walk(root, followlinks=True):
+
+    def report_walk_error(error: OSError) -> None:
+        raise error
+
+    for directory, names, filenames in os.walk(
+        root, followlinks=True, onerror=report_walk_error
+    ):
         directory_path = Path(directory)
         retained: list[str] = []
         for name in sorted(names, key=str.casefold):
             if name.lower() == ".rustyera":
                 continue
-            try:
-                stat = (directory_path / name).stat()
-            except OSError:
-                continue
+            child = directory_path / name
+            stat = child.stat()
             identity = (stat.st_dev, stat.st_ino)
             if identity in visited:
+                target = child.resolve(strict=True)
+                parent = directory_path.resolve(strict=True)
+                if target == parent or target in parent.parents:
+                    directory_loops.append(child)
+                else:
+                    repeated_directories.append((child, target))
                 continue
             visited.add(identity)
             retained.append(name)
         names[:] = retained
         paths.extend(directory_path / name for name in filenames)
+    canonical_roots = _canonical_source_roots(root)
+    for repeated, target in repeated_directories:
+        for candidate in target.rglob("*"):
+            alias = repeated / candidate.relative_to(target)
+            category = _classify_project_path(root, alias, canonical_roots)
+            if category is not None and _is_new_project_file(alias, category):
+                relative = alias.relative_to(root).as_posix()
+                raise ValueError(f"project input is hidden by a repeated directory link: {relative}")
+    if directory_loops:
+        if any(
+            (category := _classify_project_path(root, path, canonical_roots)) is not None
+            and _is_new_project_file(path, category)
+            for path in paths
+        ):
+            relative = directory_loops[0].relative_to(root).as_posix()
+            raise OSError(errno.ELOOP, f"project input directory contains a loop: {relative}")
     return sorted(
         paths,
         key=lambda path: _path_sort_key(

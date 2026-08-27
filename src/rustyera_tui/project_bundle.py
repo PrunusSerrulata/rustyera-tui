@@ -23,6 +23,7 @@ from .project import (
     _path_sort_key,
     _payload_size,
     _source_signature,
+    _validate_new_project_file,
     blake3,
     dataclass,
     field,
@@ -211,6 +212,7 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
                         + _cbor_container_header(2, item.content_size),
                     )
                     source_path = item.source_path or self.root / PurePosixPath(item.relative_path)
+                    _validate_new_project_file(self.root, source_path, item.category)
                     before = _source_signature(source_path)
                     if item.source_signature is not None and before != item.source_signature:
                         raise ValueError(
@@ -271,6 +273,7 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
             if source_path is None:
                 pure = PurePosixPath(item.relative_path)
                 source_path = self.root.joinpath(*pure.parts)
+            _validate_new_project_file(self.root, source_path, item.category)
             data = source_path.read_bytes()
             if item.content_hash is None or blake3.blake3(data).digest() != item.content_hash:
                 raise ValueError(f"image resource {resource_id} changed after project scan")
@@ -284,6 +287,7 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
             if source_path is None:
                 pure = PurePosixPath(item.relative_path)
                 source_path = self.root.joinpath(*pure.parts)
+            _validate_new_project_file(self.root, source_path, item.category)
             data = source_path.read_bytes()
         digest = blake3.blake3(data).digest()
         if item.content_hash != digest or digest != content_digest:
@@ -300,6 +304,7 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
                 raise ValueError(f"image resource {resource_id} has no binary payload")
             return fields[0][:maximum_bytes]
         source_path = item.source_path or self.root / PurePosixPath(item.relative_path)
+        _validate_new_project_file(self.root, source_path, item.category)
         signature = _source_signature(source_path)
         if item.source_signature != signature:
             raise ValueError(f"image resource {resource_id} changed after project scan")

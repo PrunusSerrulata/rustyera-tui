@@ -7,9 +7,11 @@ from typing import TYPE_CHECKING
 from . import project as project_facade
 from .project import (
     Any,
+    FILE_ALS,
     FILE_CONFIGURATION,
     FILE_CSV,
     FILE_ERB,
+    FILE_ERD,
     FILE_ERH,
     Path,
     ProjectConfigurationUpdate,
@@ -25,6 +27,7 @@ from .project import (
     _parallel_project_reads,
     _path_sort_key,
     _project_paths,
+    _project_candidates,
     blake3,
     os,
     variant,
@@ -141,11 +144,7 @@ class _ProjectBundleReloadMixin:
             for relative in self.files
             if PurePosixPath(relative).parts[0].lower() in {"csv", "erb"}
         )
-        candidates = [
-            (path, category)
-            for path in _project_paths(directory)
-            if (category := _classify_project_path(self.root, path, canonical_roots)) is not None
-        ]
+        candidates = _project_candidates(self.root, _project_paths(directory), canonical_roots)
         if progress is not None:
             progress(0, len(candidates))
         return {
@@ -187,7 +186,7 @@ class _ProjectBundleReloadMixin:
         relative = self._project_relative_path(path, expected="file")
         lexical = self.root / PurePosixPath(relative)
         category = _classify_project_path(self.root, lexical, _canonical_source_roots(self.root))
-        if category not in (FILE_CSV, FILE_ERH, FILE_ERB, FILE_CONFIGURATION):
+        if category not in (FILE_CSV, FILE_ERH, FILE_ERB, FILE_CONFIGURATION, FILE_ALS, FILE_ERD):
             raise ValueError("only project source and configuration files can be reloaded")
         item = project_facade._stable_read_project_file(self.root, lexical, category)
         files = dict(self.files)

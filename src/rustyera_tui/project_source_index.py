@@ -97,6 +97,8 @@ def _source_index_category(value: object) -> int | None:
             "resource_manifest": 3,
             "resource": 4,
             "configuration": 5,
+            "als": 6,
+            "erd": 7,
         }.get(value)
     return None
 

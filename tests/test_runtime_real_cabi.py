@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from compatibility_test_support import reference_identity
+from rustyera_tui.presentation import PresentationModel
+from rustyera_tui.testing import apply_presentation_event, plain_output
 
 from runtime_cabi_test_support import (
     AbiError,
@@ -26,6 +28,38 @@ from runtime_cabi_test_support import (
     wait_for_path,
     zstandard,
 )
+
+
+@pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
+def test_real_c_abi_snake_ingestion_fixture_reaches_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "snake-ingestion"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "snake-ingestion-project", project)
+    model = PresentationModel()
+    logs: list[str] = []
+
+    def reached_input(event: FrontendEvent) -> bool:
+        if event.kind == "log":
+            logs.append(str(event.value))
+        return apply_presentation_event(model, event) is not None
+
+    worker = RuntimeWorker(RUNTIME_LIBRARY, project, new_game_seed=123456)
+    worker.start()
+    try:
+        try:
+            wait_for(worker, reached_input)
+        except AssertionError as error:
+            raise AssertionError("\n".join(logs)) from error
+        output = plain_output(model)
+        assert "INGEST_FLAG=10,11,300" in output
+        assert "INGEST_BUFF=50,60" in output
+        assert "INGEST_ERD=70,80,90" in output
+        assert "SNAKE_INGESTION_READY" in output
+    finally:
+        worker.stop()
+        worker.join(timeout=5)
 
 
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")

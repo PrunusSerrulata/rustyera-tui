@@ -9,7 +9,9 @@ import pytest
 import rustyera_tui.project as project_module
 
 from rustyera_tui.project import (
+    FILE_ALS,
     FILE_ERB,
+    FILE_ERD,
     FILE_RESOURCE,
     FILE_RESOURCE_MANIFEST,
     IO_CONFLICT,
@@ -166,7 +168,7 @@ def test_project_scanner_is_utf8_and_deterministic(tmp_path: Path) -> None:
     (tmp_path / "CSV").mkdir()
     (tmp_path / "ERB" / "main.erb").write_text("@EVENTFIRST\nPRINTL 你好", encoding="utf-8")
     (tmp_path / "CSV" / "Abl.csv").write_bytes(b"\xef\xbb\xbf0,test\n")
-    (tmp_path / "ignored.txt").write_text("ignored", encoding="utf-8")
+    (tmp_path / "ignored.dll").write_bytes(b"ignored")
 
     bundle = ProjectBundle.scan(tmp_path)
     bundle.compatibility = reference_identity()
@@ -176,6 +178,193 @@ def test_project_scanner_is_utf8_and_deterministic(tmp_path: Path) -> None:
     csv = manifest[1][0]
     assert csv[2] == variant(0, "0,test\n")
     assert csv[3] == blake3.blake3(b"0,test\n").digest()
+
+
+def test_alias_and_erd_inputs_survive_quick_scan_transfer_and_reload(tmp_path: Path) -> None:
+    contents = {
+        "CSV/FLAG.ALS": (FILE_ALS, "10,ten\n11,eleven\n300,large\n"),
+        "ERB/nested/MATRIX@2.ERD": (FILE_ERD, "0,first\n1,last\n"),
+        "ERB/nested/MATRIX@2.als": (FILE_ALS, "1,final\n"),
+    }
+    for relative, (_category, text) in contents.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xef\xbb\xbf" + text.encode())
+    (tmp_path / "ignored.als").write_text("0,outside\n", encoding="utf-8")
+    (tmp_path / "ignored.erd").write_text("0,outside\n", encoding="utf-8")
+    cold = ProjectBundle.scan(tmp_path)
+    cold.compatibility = snake_identity()
+    ProjectBundle.scan_quick(tmp_path)
+    index_path = tmp_path / ".rustyera/cache/source-index-v1.json"
+    source_index = json.loads(index_path.read_text(encoding="utf-8"))
+    for entry in source_index["files"].values():
+        entry["category"] = {FILE_ALS: "als", FILE_ERD: "erd"}[entry["category"]]
+    index_path.write_text(json.dumps(source_index), encoding="utf-8")
+    warm = ProjectBundle.scan_quick(tmp_path)
+    warm.compatibility = snake_identity()
+    assert warm.scan_metrics.source_files_reused == len(contents)
+    assert warm.materialize().manifest() == cold.manifest()
+    assert warm.identity() == cold.identity()
+    assert set(cold.files) == set(contents)
+    for relative, (category, text) in contents.items():
+        item = cold.files[relative]
+        assert (item.category, item.payload) == (category, variant(0, text))
+        assert item.content_hash == blake3.blake3(text.encode()).digest()
+    temporary, _ = warm.write_full_manifest_temp()
+    try:
+        assert decode(temporary.read_bytes()) == cold.manifest()
+    finally:
+        temporary.unlink()
+    alias = tmp_path / "CSV/FLAG.ALS"
+    alias.write_text("11,ten\n", encoding="utf-8")
+    changed, request = warm.reload_file(alias)
+    assert changed.identity()[1] != cold.identity()[1]
+    assert request[2][0] == variant(0, changed.files["CSV/FLAG.ALS"].submitted())
+    erd = tmp_path / "ERB/nested/MATRIX@2.ERD"
+    erd.unlink()
+    renamed = tmp_path / "ERB/nested/OTHER.erd"
+    renamed.write_text("0,replacement\n", encoding="utf-8")
+    rescanned, request = changed.reload_folder(erd.parent)
+    assert "ERB/nested/MATRIX@2.ERD" not in rescanned.files
+    assert rescanned.files["ERB/nested/OTHER.erd"].category == FILE_ERD
+    assert variant(1, FILE_ERD, "ERB/nested/MATRIX@2.ERD") in request[2]
+
+
+@pytest.mark.parametrize("suffix,category", [("als", FILE_ALS), ("erd", FILE_ERD)])
+def test_new_index_inputs_require_utf8_without_legacy_fallback(
+    tmp_path: Path, suffix: str, category: int
+) -> None:
+    path = tmp_path / f"INDEX.{suffix}"
+    path.write_bytes("0,名前\n".encode("cp932"))
+    for bundle in (ProjectBundle.scan(tmp_path), ProjectBundle.scan_quick(tmp_path)):
+        item = bundle.files[path.name]
+        assert item.category == category
+        assert item.content_hash is None
+        assert unwrap_variant(item.payload)[0] == 2
+
+
+@pytest.mark.parametrize("name", ["TABLE.als", "TABLE.erd", "seed.xml"])
+def test_new_project_inputs_reject_root_escape_and_symbolic_link_loops(
+    tmp_path: Path, name: str
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    outside = tmp_path / name
+    outside.write_text("0,outside\n", encoding="utf-8")
+    linked = root / name
+    linked.symlink_to(outside)
+    for bundle in (ProjectBundle.scan(root), ProjectBundle.scan_quick(root)):
+        item = bundle.files[name]
+        assert unwrap_variant(item.payload)[0] == 2
+        assert item.content_hash is None
+    linked.unlink()
+    linked.symlink_to(linked)
+    item = ProjectBundle.scan(root).files[name]
+    assert unwrap_variant(item.payload)[0] == 2
+
+
+def test_new_index_inputs_detect_normalized_path_collisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Supply both spellings explicitly so this also covers case-insensitive filesystems.
+    monkeypatch.setattr(
+        "rustyera_tui.project_bundle_scan._project_paths",
+        lambda root: [root / "LOOKUP.als", root / "lookup.ALS"],
+    )
+    with pytest.raises(ValueError, match="duplicate normalized"):
+        ProjectBundle.scan(tmp_path)
+
+
+def test_new_index_input_in_legacy_linked_source_directory_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    source = tmp_path / "source"
+    root.mkdir()
+    source.mkdir()
+    (source / "main.erb").write_text("@MAIN\nRETURN\n", encoding="utf-8")
+    (source / "INDEX.erd").write_text("0,index\n", encoding="utf-8")
+    (root / "ERB").symlink_to(source, target_is_directory=True)
+    bundle = ProjectBundle.scan(root)
+    assert unwrap_variant(bundle.files["ERB/main.erb"].payload)[0] == 0
+    assert unwrap_variant(bundle.files["ERB/INDEX.erd"].payload)[0] == 2
+
+
+def test_new_project_inputs_report_directory_cycles(tmp_path: Path) -> None:
+    (tmp_path / "INDEX.erd").write_text("0,index\n", encoding="utf-8")
+    (tmp_path / "cycle").symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(OSError, match="directory contains a loop"):
+        ProjectBundle.scan(tmp_path)
+
+
+def test_new_index_input_is_not_silently_skipped_by_directory_deduplication(
+    tmp_path: Path,
+) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+    (backing / "FLAG.als").write_text("10,ten\n", encoding="utf-8")
+    (tmp_path / "CSV").symlink_to(backing, target_is_directory=True)
+    with pytest.raises(ValueError, match="repeated directory link"):
+        ProjectBundle.scan(tmp_path)
+
+
+def test_readonly_data_resources_are_recursive_and_exclude_storage(tmp_path: Path) -> None:
+    payloads = {
+        "XML/nested/schema.xml": b"<schema/>\r\n",
+        "plugins/seed.db": b"SQLite format 3\x00\xff",
+        "plugins/sub/other.sqlite": b"sqlite seed",
+        "resources/story.txt": "场景\n".encode(),
+    }
+    for relative, contents in payloads.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(contents)
+    for directory in project_module.RESOURCE_DATA_EXCLUDED_ROOTS:
+        path = tmp_path / directory / "private.xml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"private")
+    (tmp_path / "plugins/unsafe.dll").write_bytes(b"not executable")
+    cold = ProjectBundle.scan(tmp_path)
+    cold.compatibility = reference_identity()
+    assert set(cold.files) == set(payloads)
+    ProjectBundle.scan_quick(tmp_path)
+    warm = ProjectBundle.scan_quick(tmp_path)
+    warm.compatibility = reference_identity()
+    assert warm.identity() == cold.identity()
+    assert warm.scan_metrics.source_files_reused == len(payloads)
+    for relative, contents in payloads.items():
+        item = warm.files[relative]
+        assert item.category == FILE_RESOURCE
+        assert item.payload == project_module.external_resource(len(contents))
+        assert item.content_hash == blake3.blake3(contents).digest()
+        assert warm.resource_bytes(relative, item.content_hash) == contents
+    temporary, _ = warm.write_full_manifest_temp()
+    try:
+        manifest = decode(temporary.read_bytes())
+        assert {item[0]: item[2] for item in manifest[1]} == {
+            relative: variant(1, contents) for relative, contents in payloads.items()
+        }
+    finally:
+        temporary.unlink()
+    seed = tmp_path / "plugins/seed.db"
+    seed.write_bytes(b"changed seed")
+    with pytest.raises(ValueError, match="digest"):
+        warm.resource_bytes("plugins/seed.db", warm.files["plugins/seed.db"].content_hash)
+    changed = ProjectBundle.scan_quick(tmp_path)
+    changed.compatibility = reference_identity()
+    assert changed.identity()[1] != warm.identity()[1]
+
+
+def test_data_resource_rechecks_authorized_root_after_scan(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    resource = root / "seed.xml"
+    resource.write_bytes(b"same content")
+    outside = tmp_path / "outside.xml"
+    outside.write_bytes(b"same content")
+    bundle = ProjectBundle.scan(root)
+    resource.unlink()
+    resource.symlink_to(outside)
+    with pytest.raises(OSError, match="authorized root"):
+        bundle.resource_bytes("seed.xml", bundle.files["seed.xml"].content_hash)
 
 
 def test_project_scanner_uses_lowercase_instead_of_casefold_for_path_order(
@@ -296,7 +485,7 @@ def test_project_scanners_include_supported_fonts_as_binary_resources(tmp_path: 
         "web2.woff2",
     ):
         (fonts / name).write_bytes(name.encode())
-    (fonts / "license.txt").write_text("not packaged", encoding="utf-8")
+    (fonts / "license.txt").write_text("font license", encoding="utf-8")
 
     scanned = ProjectBundle.scan(tmp_path)
     scanned.compatibility = reference_identity()
@@ -306,6 +495,7 @@ def test_project_scanners_include_supported_fonts_as_binary_resources(tmp_path: 
     assert list(scanned.files) == [
         "FoNt/collection.ttc",
         "FoNt/display.otf",
+        "FoNt/license.txt",
         "FoNt/regular.ttf",
         "FoNt/web.woff",
         "FoNt/web2.woff2",
@@ -524,7 +714,9 @@ def test_project_scanners_ignore_uninstalled_sources_outside_canonical_roots(
     quick = ProjectBundle.scan_quick(tmp_path)
     quick.compatibility = reference_identity()
 
-    expected = ["CSV/GAMEBASE.CSV", "emuera.config", "ERB/GUIDE/main.erb"]
+    expected = [
+        "CSV/GAMEBASE.CSV", "emuera.config", "ERB/GUIDE/main.erb", "resources/notes.txt"
+    ]
     assert list(scanned.files) == expected
     assert list(quick.files) == expected
     assert quick.materialize().identity() == scanned.identity()

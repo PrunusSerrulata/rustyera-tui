@@ -1,4 +1,4 @@
-"""Fixed protocol fixtures for identities returned by the batch-0 core resolver."""
+"""Fixed protocol fixtures for identities returned by the current core resolver."""
 
 from typing import Any
 
@@ -18,4 +18,4 @@ def reference_identity() -> dict[int, Any]:
 
 
 def snake_identity() -> dict[int, Any]:
-    return {**reference_identity(), 0: 1, 7: "rustyera_envelope_v1:emuera1808"}
+    return {**reference_identity(), 0: 1, 1: 2, 2: 2, 7: "rustyera_envelope_v1:emuera1808"}
