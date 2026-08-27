@@ -13,6 +13,9 @@ from services_test_support import (
     SimpleNamespace,
     blake3,
     client_with_capture,
+    encode,
+    pytest,
+    unwrap_variant,
     variant,
 )
 from rustyera_tui.client_preferences import LoadedPreferences, PreferenceValues
@@ -637,3 +640,37 @@ def test_snake_data_namespace_link_cannot_reauthorize_an_outside_directory(tmp_p
         assert result[0] == 4
         assert result[1][0][0] == 1
     assert (outside / "seed.txt").read_bytes() == b"safe"
+
+
+@pytest.mark.parametrize(
+    ("kind", "operation", "major"),
+    [
+        (10, "html_string_len", 2),
+        (10, "html_substring", 2),
+        (10, "html_string_lines", 2),
+        (7, "pointer_state", 1),
+        (2, "sample_canvas_pixel", 1),
+    ],
+)
+def test_tui_does_not_advertise_or_fake_missing_projection_services(
+    kind: int, operation: str, major: int
+) -> None:
+    client, captured = client_with_capture()
+    client.pending_bundle = None
+    client._send_hello()
+    tag, hello = captured.pop()
+    assert tag == 0
+    assert not any(
+        service[0] == kind and service[1] == operation for service in hello[4][10]
+    )
+
+    # An unsolicited request still cannot turn an unavailable service into a ready value.
+    client._handle_service(
+        {0: 741, 1: kind, 2: operation, 3: {0: major, 1: 0}, 4: encode({})}, None
+    )
+    tag, response = captured.pop()
+    assert tag == 53 and response[0] == 741
+    result, fields = unwrap_variant(response[1])
+    assert result == 1
+    assert fields[0][0] == "frontend.unsupported_service"
+    assert operation in fields[0][1]
