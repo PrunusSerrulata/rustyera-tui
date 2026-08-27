@@ -30,6 +30,26 @@ C ABI、协议版本和完整 TUI 测试。兄弟目录 `../eraTW`、core 构建
 - `pyproject.toml`、`uv.lock`：Python 版本、依赖、pytest 与 Ruff 的权威配置。
 - `rustyera-core.rev`：所绑定的 core 完整 Git revision。
 
+## 蛇版兼容开发
+
+- 使用 `codex/snake-compatibility` 分支及专用 worktree，`../rustyera-core` 必须是同组
+  core worktree；开工核对分支和工作树，不修改原 master 工作区。位置、共享输入和
+  构建/会话隔离要求遵循主工作区规范。
+- 开工或续做前必须读取同组 core 的[改造思路](../rustyera-core/docs/snake-compatibility/SNAKE_EMUERA_MIGRATION_PLAN.md)
+  和[分批次实施记录](../rustyera-core/docs/snake-compatibility/SNAKE_EMUERA_IMPLEMENTATION_LOG.md)，
+  核对当前及上游批次依赖；实施前细化 TUI 方案，收尾/暂停时把实际改动、验收证据、
+  commit、未完成项和恢复入口写回对应批次，范围或依赖变化同步更新改造思路。
+- 原版 profile 为 `emuera.em`，蛇版为 `emuera.skia.snake`。TUI 仅负责文件摄取、输入、
+  协议投影及能力协商，不复制 core 规则；图像、精确像素和音频能力须明确降级或拒绝，
+  不返回伪造成功值。原版 eraTW 与蛇版 TW、两种 oracle 的结果分别记录。
+- 本地 C ABI 必须由同组 core 构建，并通过显式 `--runtime-library` 或本 worktree
+  专属链接加载；记录实际库路径、core SHA 和协议版本，不复用原工作区的库或虚拟环境。
+  优先使用 `scripts/build_runtime_local.py` 保持 core 锁文件；共享同组 core 锁文件与
+  构建目录的操作须串行或隔离，不能用不同前端目录掩盖共享输入。
+- 本地联调不自动更新 `rustyera-core.rev`；确需绑定新的已提交 core SHA 时，按本仓库
+  既有规则同步依赖并验证 C ABI/协议及相关流程。静态门禁和上游 core 门禁通过后，才可
+  运行真实 `RuntimeWorker`/C ABI 的动态验证；不以 Textual mock 替代真实链路。
+
 ## 实现规范
 
 - 使用 `pyproject.toml` 指定的 Python 版本、依赖和工具配置；依赖通过 `uv` 管理，非必要
