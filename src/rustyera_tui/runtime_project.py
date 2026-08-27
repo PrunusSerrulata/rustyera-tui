@@ -31,6 +31,7 @@ from .runtime_dependencies import (
     time,
 )
 from .runtime_project_reload import _RuntimeProjectReloadMixin
+from .project import FILE_RESOURCE
 
 
 class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
@@ -473,6 +474,12 @@ class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
             candidate = ProjectBundle.scan_quick(bundle.root, 1, self._project_scan_progress)
             candidate.compatibility = bundle.compatibility
             candidate.configuration_digest = blake3.blake3(contents.encode()).digest()
+            # A configuration transaction commits no resource changes. Keep its scan from
+            # authorizing unrelated additions or replacements before a real project reload.
+            candidate.files = {
+                **{path: item for path, item in candidate.files.items() if item.category != FILE_RESOURCE},
+                **{path: item for path, item in bundle.files.items() if item.category == FILE_RESOURCE},
+            }
             return candidate
         bundle.write_configuration(
             expected_digest,

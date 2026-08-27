@@ -1573,22 +1573,413 @@ def test_packaged_project_configuration_appends_the_runtime_update(tmp_path: Pat
 @pytest.mark.parametrize("namespace", [0, 3])
 @pytest.mark.parametrize(
     "operation",
-    [variant(0), variant(4), variant(5, 0, 64, None), variant(2, "sentinel.bin", False)],
+    [variant(0), variant(4), variant(5, 0, 64, None), variant(2, "sentinel.xml", False)],
 )
 def test_snake_mutable_reads_never_fall_back_to_reference_root(
     tmp_path: Path, namespace: int, operation: list
 ) -> None:
     root = tmp_path / "game"
     (root / "shared").mkdir(parents=True)
-    sentinel = root / "shared/sentinel.bin"
+    sentinel = root / "shared/sentinel.xml"
     sentinel.write_bytes(b"reference sentinel")
     reference = StorageBackend(root)
-    snake = StorageBackend(root, compatibility_profile="emuera.skia.snake")
-    relative = "shared" if operation[0] == 2 else "shared/sentinel.bin"
+    snake = StorageBackend(root, compatibility_profile="emuera.skia.snake", resource_bundle=ProjectBundle.scan(root))
+    relative = "shared" if operation[0] == 2 else "shared/sentinel.xml"
     request = {0: 1, 1: namespace, 2: relative, 3: operation, 4: ""}
     assert unwrap_variant(reference.handle(request)[1])[0] != 4
     snake_result = unwrap_variant(snake.handle(request)[1])
     assert snake_result[0] == 4 or (snake_result[0] == 2 and snake_result[1][0] == [])
-    resource = snake.handle({0: 2, 1: 5, 2: "shared/sentinel.bin", 3: variant(0), 4: ""})
+    resource = snake.handle({0: 2, 1: 5, 2: "shared/sentinel.xml", 3: variant(0), 4: ""})
     assert unwrap_variant(resource[1])[1][0] == b"reference sentinel"
     assert sentinel.read_bytes() == b"reference sentinel"
+
+
+def test_resource_storage_uses_manifest_and_keeps_data_overlay_separate(tmp_path: Path) -> None:
+    plugins = tmp_path / "plugins"
+    (plugins / "nested").mkdir(parents=True)
+    (plugins / "a.xml").write_bytes(b"source")
+    (plugins / "nested/b.txt").write_bytes(b"nested")
+    (tmp_path / "main.erb").write_text("@MAIN\nRETURN\n", encoding="utf-8")
+    bundle = ProjectBundle.scan(tmp_path)
+    bundle.compatibility = snake_identity()
+    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake", resource_bundle=bundle)
+    overlay = backend._namespace_root(3) / "plugins/a.xml"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_bytes(b"overlay")
+
+    def request(path: str, operation: list, namespace: int = 5) -> tuple:
+        return unwrap_variant(backend.handle({0: 1, 1: namespace, 2: path, 3: operation})[1])
+
+    assert request("plugins/a.xml", variant(0))[1][0] == b"source"
+    assert request("plugins/a.xml", variant(0), 3)[1][0] == b"overlay"
+    listed = request("plugins", variant(2, "*", True))[1][0]
+    assert [item[0] for item in listed] == ["plugins/a.xml", "plugins/nested/b.txt"]
+    assert [item[0] for item in request("plugins", variant(2, "*.xml", False))[1][0]] == ["plugins/a.xml"]
+    assert request("PLUGINS/a.xml", variant(4))[1][0] == {0: 6, 1: blake3.blake3(b"source").hexdigest()}
+    assert request("plugins/a.xml", variant(5, 2, 3, listed[0][3]))[1][:3] == [b"urc", 2, False]
+    assert request("plugins/a.xml", variant(5, 0, 3, "stale"))[1][0][0] == IO_CONFLICT
+    assert request("main.erb", variant(0))[1][0][0] == 1
+    assert request("../outside.xml", variant(0))[1][0][0] == 2
+
+
+def test_resource_mutations_never_replay_writable_namespace_results(tmp_path: Path) -> None:
+    (tmp_path / "seed.xml").write_bytes(b"seed")
+    backend = StorageBackend(tmp_path, resource_bundle=ProjectBundle.scan(tmp_path))
+    write = variant(1, b"changed", True, variant(0))
+    assert backend.handle({0: 1, 1: 3, 2: "seed.xml", 3: write, 4: "same"})[1][0] == 1
+    for path, operation in [("missing/sub/seed.xml", write), ("seed.xml", variant(3, variant(0)))]:
+        result = backend.handle({0: 2, 1: 5, 2: path, 3: operation, 4: "same"})[1]
+        assert unwrap_variant(result)[1][0][0] == 4
+    assert not (tmp_path / "missing").exists()
+    assert (tmp_path / "seed.xml").read_bytes() == b"seed"
+
+
+@pytest.mark.parametrize("operation", [variant(0), variant(4), variant(5, 0, 1, None), variant(2, "*.xml", True)])
+def test_resource_storage_reports_changed_contents_without_not_found(tmp_path: Path, operation: list) -> None:
+    from dataclasses import replace
+
+    source = tmp_path / "seed.xml"
+    source.write_bytes(b"one")
+    bundle = ProjectBundle.scan(tmp_path)
+    bundle.files["seed.xml"] = replace(bundle.files["seed.xml"], source_signature=None)
+    bundle.compatibility = reference_identity()
+    backend = StorageBackend(tmp_path, resource_bundle=bundle)
+    source.write_bytes(b"two")
+    result = backend.handle({0: 1, 1: 5, 2: "" if operation[0] == 2 else "seed.xml", 3: operation})[1]
+    assert unwrap_variant(result)[1][0][0] == IO_CONFLICT
+
+
+def test_resource_storage_bounds_reads_and_lists_without_materializing_stat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import rustyera_tui.resource_storage as resources
+
+    (tmp_path / "a.xml").write_bytes(b"seed")
+    (tmp_path / "b.xml").write_bytes(b"seed")
+    bundle = ProjectBundle.scan(tmp_path)
+    bundle.compatibility = reference_identity()
+    backend = StorageBackend(tmp_path, resource_bundle=bundle)
+    monkeypatch.setattr(Path, "read_bytes", lambda _path: pytest.fail("resource stat must stream"))
+    monkeypatch.setattr(resources, "MAXIMUM_FULL_READ_BYTES", 2)
+    assert backend.handle({0: 1, 1: 5, 2: "a.xml", 3: variant(4)})[1][0] == 5
+    for operation in [variant(0), variant(5, -1, 1, None), variant(5, 0, 4 * 1024 * 1024 + 1, None)]:
+        assert backend.handle({0: 1, 1: 5, 2: "a.xml", 3: operation})[1][0] == 4
+    monkeypatch.setattr(resources, "MAXIMUM_LIST_ENTRIES", 1)
+    assert backend.handle({0: 1, 1: 5, 2: "", 3: variant(2, "*", True)})[1][0] == 4
+
+
+def test_resource_storage_rejects_retargeted_symlinks_and_lists_no_external_files(tmp_path: Path) -> None:
+    root = tmp_path / "game"
+    root.mkdir()
+    source = root / "seed.xml"
+    source.write_bytes(b"seed")
+    bundle = ProjectBundle.scan(root)
+    bundle.compatibility = reference_identity()
+    backend = StorageBackend(root, resource_bundle=bundle)
+    outside = tmp_path / "outside.xml"
+    outside.write_bytes(b"outside")
+    source.unlink()
+    source.symlink_to(outside)
+    for path, operation in [("seed.xml", variant(0)), ("", variant(2, "*", True))]:
+        assert unwrap_variant(backend.handle({0: 1, 1: 5, 2: path, 3: operation})[1])[1][0][0] == 1
+    data = root / "data"
+    data.mkdir()
+    (data / "loop").symlink_to(data, target_is_directory=True)
+    assert backend.handle({0: 1, 1: 3, 2: "", 3: variant(2, "*", True)})[1][0] == 4
+
+
+def test_packaged_resource_storage_is_manifest_only_and_rejects_normalized_collisions(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    item = ProjectFile("é.xml", FILE_RESOURCE, variant(1, b"embedded"), blake3.blake3(b"embedded").digest(), 8)
+    bundle = ProjectBundle(tmp_path, 1, {item.relative_path: item}, tmp_path / "game.reraproj")
+    bundle.compatibility = reference_identity()
+    backend = StorageBackend(tmp_path, resource_bundle=bundle)
+    assert unwrap_variant(backend.handle({0: 1, 1: 5, 2: "e\u0301.xml", 3: variant(0)})[1])[1][0] == b"embedded"
+    (tmp_path / "external.xml").write_bytes(b"external")
+    bundle.files["external.xml"] = ProjectFile("external.xml", FILE_RESOURCE, variant(3, {0: 8, 1: None}), blake3.blake3(b"external").digest(), 8)
+    assert unwrap_variant(backend.handle({0: 1, 1: 5, 2: "external.xml", 3: variant(0)})[1])[1][0][0] == 2
+    bundle.files["e\u0301.xml"] = replace(item, relative_path="e\u0301.xml")
+    result = backend.handle({0: 1, 1: 5, 2: "", 3: variant(2, "*", True)})[1]
+    assert unwrap_variant(result)[1][0][0] == 2
+
+
+def test_data_list_distinguishes_missing_directory_from_dangling_entry(tmp_path: Path) -> None:
+    (tmp_path / "seed.xml").write_bytes(b"resource")
+    bundle = ProjectBundle.scan(tmp_path)
+    bundle.compatibility = snake_identity()
+    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake", resource_bundle=bundle)
+    request = {0: 1, 1: 3, 2: "", 3: variant(2, "*", True)}
+    assert backend.handle(request)[1] == variant(2, [])
+    assert backend.handle({**request, 1: 5})[1][1][0][0][0] == "seed.xml"
+
+    root = backend._namespace_root(3)
+    root.mkdir(parents=True)
+    (root / "good.txt").write_bytes(b"good")
+    (root / "dangling.txt").symlink_to(root / "missing.txt")
+    result = backend.handle(request)[1]
+    assert result[0] == 4
+    assert result[1][0][0] == 2
+    assert "dangling" in result[1][0][1]
+
+
+def test_data_list_rejects_a_file_deleted_after_discovery_without_partial_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rustyera_tui import storage_listing
+
+    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake")
+    root = backend._namespace_root(3)
+    root.mkdir(parents=True)
+    good, doomed = root / "good.txt", root / "doomed.txt"
+    good.write_bytes(b"good")
+    doomed.write_bytes(b"doomed")
+
+    def disappearing_entries(_path: Path):
+        yield good
+        doomed.unlink()
+        yield doomed
+
+    monkeypatch.setattr(storage_listing, "directory_entries", disappearing_entries)
+    result = backend.handle({0: 1, 1: 3, 2: "", 3: variant(2, "*", True)})[1]
+    assert result[0] == 4
+    assert result[1][0][0] == 2
+    assert good.read_bytes() == b"good"
+
+
+@pytest.mark.parametrize(
+    ("failure", "kind"),
+    [(FileNotFoundError(2, "gone"), 2), (PermissionError(13, "denied"), 1), (OSError(5, "I/O"), 6)],
+)
+def test_data_list_preserves_traversal_error_classes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: OSError, kind: int,
+) -> None:
+    from rustyera_tui import storage_listing
+
+    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake")
+    root = backend._namespace_root(3)
+    child = root / "child"
+    child.mkdir(parents=True)
+    (root / "good.txt").write_bytes(b"good")
+    original = storage_listing.directory_entries
+
+    def interrupted_entries(path: Path):
+        if path == child:
+            raise failure
+        yield from original(path)
+
+    monkeypatch.setattr(storage_listing, "directory_entries", interrupted_entries)
+    result = backend.handle({0: 1, 1: 3, 2: "", 3: variant(2, "*", True)})[1]
+    assert result[0] == 4
+    assert result[1][0][0] == kind
+    if kind in (1, 6):
+        assert result[1][0][2] == failure.errno
+
+
+def test_data_list_rejects_target_removed_after_normalized_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rustyera_tui import storage
+
+    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake")
+    child = backend._namespace_root(3) / "child"
+    child.mkdir(parents=True)
+    original = storage.resolve_data_path
+
+    def remove_selected(root: Path, relative: str):
+        selected = original(root, relative)
+        child.rmdir()
+        return selected
+
+    monkeypatch.setattr(storage, "resolve_data_path", remove_selected)
+    result = backend.handle({0: 1, 1: 3, 2: "child", 3: variant(2, "*", True)})[1]
+    assert result[0] == 4
+    assert result[1][0][0] == 2
+
+
+@pytest.mark.parametrize("name", ["bad\\name.txt", "C:seed.txt"])
+@pytest.mark.parametrize("prefix", ["", "nested"])
+@pytest.mark.parametrize("profile", ["emuera.em", "emuera.skia.snake"])
+def test_data_list_and_lookup_reject_invalid_actual_basename(
+    tmp_path: Path, name: str, prefix: str, profile: str,
+) -> None:
+    backend = StorageBackend(tmp_path, compatibility_profile=profile)
+    root = backend._namespace_root(3)
+    directory = root / prefix
+    directory.mkdir(parents=True)
+    (directory / name).write_bytes(b"invalid name")
+    good = directory / "good.txt"
+    good.write_bytes(b"unchanged")
+    operations = [
+        ("", variant(2, "*.txt", True)),
+        (prefix, variant(2, "*.txt", False)),
+    ]
+    if profile == "emuera.skia.snake":
+        operations.append((f"{prefix}/good.txt".lstrip("/"), variant(0)))
+    for relative, operation in operations:
+        result = backend.handle({0: 1, 1: 3, 2: relative, 3: operation})[1]
+        assert result[0] == 4
+        assert result[1][0][0] == 2
+    assert good.read_bytes() == b"unchanged"
+
+
+def test_snake_data_safe_directory_alias_retains_logical_prefix(tmp_path: Path) -> None:
+    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake")
+    root = backend._namespace_root(3)
+    real = root / "real"
+    real.mkdir(parents=True)
+    (real / "Seed.TXT").write_bytes(b"seed")
+    (root / "LiNk").symlink_to(real, target_is_directory=True)
+
+    def request(relative: str, operation: list) -> list:
+        return backend.handle({0: 1, 1: 3, 2: relative, 3: operation})[1]
+
+    assert request("link/seed.txt", variant(0))[1][0] == b"seed"
+    assert request("LINK/SEED.TXT", variant(4))[1][0][0] == 4
+    listed = request("link", variant(2, "*.txt", True))
+    assert listed[0] == 2
+    assert [entry[0] for entry in listed[1][0]] == ["LiNk/Seed.TXT"]
+    assert request(listed[1][0][0][0], variant(0))[1][0] == b"seed"
+
+
+def test_reference_recursive_listing_does_not_follow_safe_directory_alias(tmp_path: Path) -> None:
+    backend = StorageBackend(tmp_path)
+    root = backend._namespace_root(3)
+    real = root / "real"
+    real.mkdir(parents=True)
+    (real / "seed.txt").write_bytes(b"seed")
+    (root / "alias").symlink_to(real, target_is_directory=True)
+    (root / "file.txt").symlink_to(real / "seed.txt")
+    result = backend.handle({0: 1, 1: 3, 2: "", 3: variant(2, "*.txt", True)})[1]
+    assert result[0] == 2
+    assert [entry[0] for entry in result[1][0]] == ["file.txt", "real/seed.txt"]
+
+
+def test_reference_listing_fallback_depends_on_directory_existence(tmp_path: Path) -> None:
+    source = tmp_path / "plugins" / "nested"
+    source.mkdir(parents=True)
+    (source / "resource.txt").write_bytes(b"resource")
+    backend = StorageBackend(tmp_path)
+    request = {0: 1, 1: 3, 2: "plugins", 3: variant(2, "*.txt", True)}
+    assert [item[0] for item in backend.handle(request)[1][1][0]] == ["plugins/nested/resource.txt"]
+    overlay = backend._namespace_root(3) / "plugins" / "overlay.txt"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_bytes(b"overlay")
+    assert [item[0] for item in backend.handle(request)[1][1][0]] == ["plugins/overlay.txt"]
+    overlay.unlink()
+    assert backend.handle(request)[1] == variant(2, [])
+
+
+def test_resource_list_reports_removed_committed_file_as_conflict(tmp_path: Path) -> None:
+    source = tmp_path / "seed.xml"
+    source.write_bytes(b"resource")
+    bundle = ProjectBundle.scan(tmp_path)
+    bundle.compatibility = snake_identity()
+    backend = StorageBackend(tmp_path, resource_bundle=bundle)
+    source.unlink()
+    result = backend.handle({0: 1, 1: 5, 2: "", 3: variant(2, "*", True)})[1]
+    assert result[0] == 4
+    assert result[1][0][0] == IO_CONFLICT
+
+
+def test_snake_storage_shared_pattern_vectors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from rustyera_tui import storage_listing
+    from rustyera_tui.storage_pattern import SnakeStoragePattern
+
+    vectors = (
+        Path(__file__).resolve().parent / "fixtures/snake-storage-patterns.json"
+    )
+    cases = json.loads(vectors.read_text(encoding="utf-8"))["cases"]
+    for case in cases:
+        name, pattern = case["name"], case["pattern"]
+        if "error" in case:
+            with pytest.raises(ValueError):
+                SnakeStoragePattern(pattern).matches(name)
+        else:
+            assert SnakeStoragePattern(pattern).matches(name) is case["expected"], case["id"]
+        # Empty strings exercise the matcher but cannot represent a filesystem basename.
+        if not name:
+            continue
+        root = tmp_path / case["id"]
+        root.mkdir()
+        item = ProjectFile(name, FILE_RESOURCE, variant(1, b"seed"), blake3.blake3(b"seed").digest(), 4)
+        bundle = ProjectBundle(root, 1, {name: item}, compatibility=snake_identity())
+        backend = StorageBackend(root, compatibility_profile="emuera.skia.snake", resource_bundle=bundle)
+        data = backend._namespace_root(3)
+        data.mkdir(parents=True)
+        source = data / "backing-file"
+        source.write_bytes(b"seed")
+        # The shared length/work-limit vectors exceed physical basename limits. Project a
+        # discovered entry onto a real small file so the storage boundary still executes
+        # matching/validation, without relying on the host filesystem's NAME_MAX.
+        entry = SimpleNamespace(
+            name=name, lstat=source.lstat, resolve=source.resolve, stat=source.stat,
+        )
+        monkeypatch.setattr(storage_listing, "directory_entries", lambda _path, entry=entry: iter([entry]))
+        for namespace in (3, 5):
+            result = backend.handle({0: 1, 1: namespace, 2: "", 3: variant(2, pattern, False)})[1]
+            if "error" in case:
+                assert result[0] == 4, (case["id"], namespace, result)
+                assert result[1][0][0] == 2, (case["id"], namespace, result)
+            else:
+                assert result[0] == 2, (case["id"], namespace, result)
+                expected = [unicodedata.normalize("NFC", name)] if case["expected"] else []
+                assert [row[0] for row in result[1][0]] == expected, (case["id"], namespace)
+
+
+@pytest.mark.parametrize("pattern", [None, ""])
+@pytest.mark.parametrize("name", ["x" * 4097, "a\0b", "İ" * 2048])
+def test_snake_unfiltered_pattern_still_validates_name(pattern: str | None, name: str) -> None:
+    from rustyera_tui.storage_pattern import SnakeStoragePattern
+
+    with pytest.raises(ValueError):
+        SnakeStoragePattern(pattern).matches(name)
+
+
+@pytest.mark.parametrize(
+    ("data_profile", "identity", "data_expected", "resource_expected"),
+    [
+        ("emuera.skia.snake", reference_identity, "[ab].txt", "a.txt"),
+        ("emuera.em", snake_identity, "a.txt", "[ab].txt"),
+    ],
+)
+def test_resource_pattern_profile_comes_from_committed_bundle_not_data_flag(
+    tmp_path: Path, data_profile: str, identity, data_expected: str, resource_expected: str,
+) -> None:
+    items = {
+        name: ProjectFile(name, FILE_RESOURCE, variant(1, b"seed"), blake3.blake3(b"seed").digest(), 4)
+        for name in ("a.txt", "[ab].txt")
+    }
+    bundle = ProjectBundle(tmp_path, 1, items, compatibility=identity())
+    backend = StorageBackend(tmp_path, compatibility_profile=data_profile, resource_bundle=bundle)
+    data = backend._namespace_root(3)
+    data.mkdir(parents=True)
+    for name in items:
+        (data / name).write_bytes(b"seed")
+    for namespace, expected in ((3, data_expected), (5, resource_expected)):
+        result = backend.handle({0: 1, 1: namespace, 2: "", 3: variant(2, "[ab].txt", False)})[1]
+        assert result[0] == 2
+        assert [row[0] for row in result[1][0]] == [expected]
+
+
+def test_reference_data_listing_keeps_fnmatch_case_semantics(tmp_path: Path) -> None:
+    import fnmatch
+
+    backend = StorageBackend(tmp_path)
+    data = backend._namespace_root(3)
+    data.mkdir()
+    names = ["a.txt", "SEED.TXT"]
+    for name in names:
+        (data / name).write_bytes(b"seed")
+    result = backend.handle({0: 1, 1: 3, 2: "", 3: variant(2, "*.txt", False)})[1]
+    assert result[0] == 2
+    assert [row[0] for row in result[1][0]] == sorted(name for name in names if fnmatch.fnmatch(name, "*.txt"))
+
+
+def test_resource_list_requires_resolved_bundle_profile(tmp_path: Path) -> None:
+    bundle = ProjectBundle(tmp_path, 1, {})
+    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake", resource_bundle=bundle)
+    result = backend.handle({0: 1, 1: 5, 2: "", 3: variant(2, "*", False)})[1]
+    assert result[0] == 4
+    assert result[1][0][0] == 2
+    assert "compatibility identity" in result[1][0][1]

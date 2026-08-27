@@ -62,6 +62,8 @@ class _RuntimeInteractionMixin:
         if self.storage is None:
             result = {0: request[0], 1: variant(4, {0: 6, 1: "no active project storage"})}
         else:
+            if request[1] == 5 and self.bundle is not None:
+                self.storage.bind_resources(self.bundle)
             result = self.storage.handle(request)
         self.send_runtime(51, result, correlation_id=correlation_id)
 
