@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from compatibility_test_support import reference_identity
+
 from runtime_cabi_test_support import (
     FrontendCommand,
     FrontendEvent,
@@ -108,7 +110,9 @@ def test_no_change_reload_refreshes_the_frontend_baseline_without_runtime_work(
     tmp_path: Path,
 ) -> None:
     current = ProjectBundle(tmp_path, 7, {})
+    current.compatibility = reference_identity()
     candidate = ProjectBundle(tmp_path, 8, {})
+    candidate.compatibility = reference_identity()
     client = object.__new__(RuntimeClient)
     client.bundle = current
     client.reload_candidate = None
@@ -129,7 +133,9 @@ def test_no_change_reload_refreshes_the_frontend_baseline_without_runtime_work(
 
 def test_failed_reload_keeps_the_active_bundle_for_later_diagnosis(tmp_path: Path) -> None:
     active = ProjectBundle(tmp_path, 7, {})
+    active.compatibility = reference_identity()
     candidate = ProjectBundle(tmp_path, 8, {})
+    candidate.compatibility = reference_identity()
     client = object.__new__(RuntimeClient)
     client.bundle = active
     client.pending_bundle = None
@@ -148,7 +154,9 @@ def test_failed_reload_keeps_the_active_bundle_for_later_diagnosis(tmp_path: Pat
 
 def test_successful_reload_projects_game_information_from_the_protocol(tmp_path: Path) -> None:
     active = ProjectBundle(tmp_path, 7, {})
+    active.compatibility = reference_identity()
     candidate = ProjectBundle(tmp_path, 8, {})
+    candidate.compatibility = reference_identity()
     client = object.__new__(RuntimeClient)
     client.bundle = active
     client.pending_bundle = None

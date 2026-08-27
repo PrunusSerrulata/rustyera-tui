@@ -8,6 +8,7 @@ from .client_preferences import (
     project_preferences_path,
     save_preferences,
 )
+from .compatibility import compatibility_identity, configuration_digest
 from .runtime_dependencies import (
     APPLICATION_HOT,
     Any,
@@ -33,6 +34,56 @@ from .runtime_project_reload import _RuntimeProjectReloadMixin
 
 
 class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
+    def _resolve_project_compatibility(self) -> None:
+        bundle = self.pending_bundle
+        if bundle is None:
+            return
+        request_id = self.next_message_id
+        configuration = bundle.root_configuration()
+        self.pending_compatibility_request = request_id
+        self.send_runtime(72, {0: request_id, 1: configuration})
+
+    def _handle_project_compatibility(
+        self, report: dict[int, Any], correlation_id: int | None
+    ) -> None:
+        request_id = self.pending_compatibility_request
+        if (
+            request_id is None
+            or correlation_id != request_id
+            or report.get(0) != request_id
+            or self.pending_bundle is None
+        ):
+            return
+        self.pending_compatibility_request = None
+        for diagnostic in report.get(3, []):
+            self.events.put(
+                log_event(
+                    format_project_diagnostic(diagnostic),
+                    runtime_log_level(diagnostic.get(1)),
+                    authoritative=True,
+                )
+            )
+        try:
+            identity = compatibility_identity(report.get(1))
+            digest = configuration_digest(report.get(2))
+            bundle = self.pending_bundle
+            if bundle.project_file is not None and bundle.compatibility != identity:
+                raise ValueError("项目文件兼容身份与配置不一致")
+            bundle.compatibility = identity
+            bundle.configuration_digest = digest
+            self.storage = self._storage_for_bundle(bundle)
+        except ValueError as error:
+            self.fail_startup(str(error))
+            self.events.put(FrontendEvent("runtime_error", f"项目兼容配置无效：{error}"))
+            return
+        if self.pending_project_file_bytes is not None:
+            project_file = self.pending_project_file_bytes
+            self.pending_project_file_bytes = None
+            self.events.put(FrontendEvent("status", "正在载入项目文件…"))
+            self._stage_project_cache(project_file, "project_file")
+            return
+        self._stage_persistent_cache_or_source()
+
     def _preference_changes(self, values: PreferenceValues) -> list[dict[int, str]]:
         snapshot = self.configuration_snapshot
         if snapshot is None:
@@ -419,7 +470,10 @@ class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
     ) -> ProjectBundle:
         if bundle.project_file is None:
             bundle.write_configuration(expected_digest, contents)
-            return ProjectBundle.scan_quick(bundle.root, 1, self._project_scan_progress)
+            candidate = ProjectBundle.scan_quick(bundle.root, 1, self._project_scan_progress)
+            candidate.compatibility = bundle.compatibility
+            candidate.configuration_digest = blake3.blake3(contents.encode()).digest()
+            return candidate
         bundle.write_configuration(
             expected_digest,
             contents,

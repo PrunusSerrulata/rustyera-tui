@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from compatibility_test_support import reference_identity
+
 from services_test_support import (
     Any,
     ConfigurationChange,
@@ -170,7 +172,7 @@ def test_packaged_configuration_commits_through_the_append_update(tmp_path: Path
     client, captured = client_with_capture()
     project_file = tmp_path / "game.reraproj"
     project_file.write_bytes(b"base")
-    bundle = ProjectBundle(tmp_path, 7, {}, project_file)
+    bundle = ProjectBundle(tmp_path, 7, {}, project_file, compatibility=reference_identity())
     client.bundle = bundle
     client.pending_configuration = None
     digest = b"package-digest"
@@ -201,6 +203,7 @@ def test_packaged_configuration_commits_through_the_append_update(tmp_path: Path
     client.abi.prepare_project_configuration_update = lambda *_args: (4, b"journal")
     client.abi.project_file_manifest = lambda _bytes: {
         0: 7,
+        2: reference_identity(),
         1: [{0: "reraconfig.toml", 1: 5, 2: variant(0, contents), 3: prepared_digest}],
     }
     client._handle_configuration_prepared(
@@ -238,6 +241,7 @@ def test_packaged_configuration_restarts_with_the_updated_identity(tmp_path: Pat
         project_file,
         {
             0: 8,
+            2: reference_identity(),
             1: [{0: "reraconfig.toml", 1: 5, 2: variant(0, old_source), 3: old_digest}],
         },
     )
@@ -273,6 +277,7 @@ def test_packaged_configuration_restarts_with_the_updated_identity(tmp_path: Pat
     client.abi.prepare_project_configuration_update = lambda *_args: (4, b"journal")
     client.abi.project_file_manifest = lambda _bytes: {
         0: 8,
+        2: reference_identity(),
         1: [{0: "reraconfig.toml", 1: 5, 2: variant(0, contents), 3: prepared_digest}],
     }
     recreated: list[tuple[ProjectBundle, bytes | None]] = []

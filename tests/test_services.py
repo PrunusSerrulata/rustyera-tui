@@ -107,7 +107,7 @@ def test_session_reset_releases_old_client_state_before_recreate(tmp_path: Path)
     client.recreate(replacement)
     assert calls[-2:] == ["create", "submit"]
     assert client.pending_bundle is replacement
-    assert client.storage is not None
+    assert client.storage is None  # The negotiated core resolver binds storage later.
     assert not client._session_reset_active
 
 
@@ -272,9 +272,7 @@ def test_full_project_chunks_stream_to_an_atomic_target(tmp_path: Path) -> None:
     stream = AtomicExportStream.open(target)
     client.full_project_export = FullProjectExport(target, stream)
     descriptor = {0: 7, 1: 3, 2: 6, 3: blake3.blake3(b"abcdef").digest()}
-    client.pending_export = _PendingExport(
-        target, ExportStage.PROJECT_FILE, stream
-    )
+    client.pending_export = _PendingExport(target, ExportStage.PROJECT_FILE, stream)
 
     client._handle_export_ready({0: 3, 1: variant(0, descriptor)})
 

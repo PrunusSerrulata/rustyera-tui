@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from compatibility_test_support import reference_identity
+
 from runtime_cabi_test_support import (
     AbiError,
     DiagnosisProgress,
@@ -65,9 +67,9 @@ def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
 def test_real_abi_38_manifest_staging_reports_success_busy_and_invalid_cbor() -> None:
     with RuntimeAbi(RUNTIME_LIBRARY) as abi:
-        assert abi.stage_project_manifest({0: 1, 1: []})
+        assert abi.stage_project_manifest({0: 1, 1: [], 2: reference_identity()})
         with pytest.raises(AbiError, match="Busy"):
-            abi.stage_project_manifest({0: 1, 1: []})
+            abi.stage_project_manifest({0: 1, 1: [], 2: reference_identity()})
 
     malformed_values = (
         b"\xa2\x00\x01\x01\x81",  # truncated

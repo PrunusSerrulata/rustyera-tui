@@ -97,6 +97,8 @@ class _ProjectBundleReloadMixin:
         if self.project_file is not None:
             raise RuntimeError("a packaged project cannot reload source files")
         candidate = project_facade.ProjectBundle.scan(self.root, self.revision + 1, progress)
+        candidate.compatibility = self.compatibility
+        candidate.configuration_digest = self.configuration_digest
         changes: list[Any] = []
         for relative_path in sorted(set(self.files) | set(candidate.files), key=_path_sort_key):
             old = self.files.get(relative_path)
@@ -174,6 +176,8 @@ class _ProjectBundleReloadMixin:
             self.revision + 1,
             files,
             quick_scan_pending=any(item.payload is None for item in files.values()),
+            compatibility=self.compatibility,
+            configuration_digest=self.configuration_digest,
         )
         return candidate, {0: self.revision, 1: candidate.revision, 2: changes}
 
@@ -193,6 +197,8 @@ class _ProjectBundleReloadMixin:
             self.revision + 1,
             files,
             quick_scan_pending=any(value.payload is None for value in files.values()),
+            compatibility=self.compatibility,
+            configuration_digest=self.configuration_digest,
         )
         request = {
             0: self.revision,

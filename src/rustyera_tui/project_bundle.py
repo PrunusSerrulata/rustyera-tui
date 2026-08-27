@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 
+from .compatibility import compatibility_identity, compatibility_profile
 from .project import (
     Any,
     Callable,
@@ -41,6 +42,38 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
     quick_scan_pending: bool = False
     reload_baseline_pending: bool = False
     scan_metrics: ProjectScanMetrics = field(default_factory=ProjectScanMetrics)
+    compatibility: dict[int, Any] | None = None
+    configuration_digest: bytes | None = None
+
+    def require_compatibility(self) -> dict[int, Any]:
+        return compatibility_identity(self.compatibility)
+
+    @property
+    def compatibility_profile(self) -> str:
+        return compatibility_profile(self.require_compatibility())
+
+    def root_configuration(self) -> dict[int, Any] | None:
+        """Read the one configuration payload even when the source index is trusted."""
+
+        from . import project as project_facade
+
+        for relative, item in self.files.items():
+            if relative.replace("\\", "/").lower() != "reraconfig.toml":
+                continue
+            if self.project_file is None:
+                fresh = project_facade._stable_read_project_file(
+                    self.root, self.root / PurePosixPath(relative), item.category
+                )
+                if fresh.content_hash != item.content_hash:
+                    raise ValueError("项目根配置在扫描后发生变化，请重新打开项目")
+                item = fresh
+                self.files[relative] = item
+            return item.submitted()
+        if self.project_file is None and any(
+            path.name.casefold() == "reraconfig.toml" for path in self.root.iterdir()
+        ):
+            raise ValueError("项目根配置在扫描后新增，请重新打开项目")
+        return None
 
     @classmethod
     def from_project_file_manifest(
@@ -75,7 +108,21 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
                 content_hash=content_hash,
                 content_size=_payload_size(payload),
             )
-        return cls(resolved.parent, revision, files, resolved)
+        return cls(
+            resolved.parent,
+            revision,
+            files,
+            resolved,
+            compatibility=compatibility_identity(manifest.get(2)),
+            configuration_digest=next(
+                (
+                    item.content_hash
+                    for path, item in files.items()
+                    if path.casefold() == "reraconfig.toml"
+                ),
+                None,
+            ),
+        )
 
     @property
     def is_materialized(self) -> bool:
@@ -97,13 +144,22 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
             hasher.update(path)
             hasher.update(bytes([item.category]))
             hasher.update(digest)
-        return {0: self.revision, 1: hasher.digest()}
+        return {
+            0: self.revision,
+            1: hasher.digest(),
+            2: self.require_compatibility(),
+            3: self.configuration_digest,
+        }
 
     def manifest(self) -> dict[int, Any]:
         if not self.is_materialized:
             raise RuntimeError("project source payloads have not been materialized")
         ordered = sorted(self.files.values(), key=lambda item: _path_sort_key(item.relative_path))
-        return {0: self.revision, 1: [item.submitted() for item in ordered]}
+        return {
+            0: self.revision,
+            1: [item.submitted() for item in ordered],
+            2: self.require_compatibility(),
+        }
 
     def write_full_manifest_temp(
         self,
@@ -130,7 +186,7 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
 
         try:
             with os.fdopen(descriptor, "wb") as stream:
-                write(stream, b"\xa2\x00")
+                write(stream, b"\xa3\x00")
                 write(stream, encode(bundle.revision))
                 write(stream, b"\x01" + _cbor_container_header(4, len(ordered)))
                 for item in ordered:
@@ -179,6 +235,7 @@ class ProjectBundle(_ProjectBundleScanMixin, _ProjectBundleReloadMixin):
                         )
                     if item.content_hash is not None:
                         write(stream, b"\x03" + encode(item.content_hash))
+                write(stream, b"\x02" + encode(bundle.require_compatibility()))
                 stream.flush()
                 os.fsync(stream.fileno())
             return temporary, written

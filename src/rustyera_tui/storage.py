@@ -39,6 +39,7 @@ class StorageBackend:
         project_root: Path,
         data_root: Path | None = None,
         identity_path: Path | None = None,
+        compatibility_profile: str = "emuera.em",
     ):
         self.project_root = project_root.resolve()
         configured = os.environ.get("ERA_TUI_DATA_DIR")
@@ -50,6 +51,11 @@ class StorageBackend:
             self.data_root = base.resolve() / "games" / project_key
         else:
             self.data_root = self.project_root
+        if compatibility_profile == "emuera.skia.snake":
+            self.data_root = self.data_root / ".rustyera" / "profiles" / compatibility_profile
+        elif compatibility_profile != "emuera.em":
+            raise ValueError("unsupported project compatibility profile")
+        self.compatibility_profile = compatibility_profile
         self.idempotent_results: OrderedDict[str, list[Any]] = OrderedDict()
         self._idempotent_result_sizes: dict[str, int] = {}
         self.idempotent_result_bytes = 0
@@ -99,7 +105,11 @@ class StorageBackend:
     def _resolve_for_read(self, namespace: int, relative: str) -> tuple[Path, Path]:
         root = self._namespace_root(namespace).resolve()
         primary = self._resolve(namespace, relative)
-        if namespace in (0, 3) and not primary.exists():
+        if (
+            self.compatibility_profile == "emuera.em"
+            and namespace in (0, 3)
+            and not primary.exists()
+        ):
             pure = PurePosixPath(relative)
             fallback = self.project_root.joinpath(*pure.parts).resolve()
             if fallback == self.project_root or self.project_root in fallback.parents:

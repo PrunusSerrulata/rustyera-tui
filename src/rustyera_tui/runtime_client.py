@@ -1,6 +1,7 @@
 """Runtime client orchestration over private responsibility mixins."""
 
 from __future__ import annotations
+from .compatibility import compatibility_context
 
 from .runtime_dependencies import (
     Any,
@@ -80,6 +81,7 @@ class RuntimeClient(
         self.expected_debug_output = 0
         self.bundle: ProjectBundle | None = None
         self.pending_bundle: ProjectBundle | None = None
+        self.pending_compatibility_request: int | None = None
         self.reload_candidate: ProjectBundle | None = None
         self.reload_message_id: int | None = None
         self.storage: StorageBackend | None = None
@@ -258,13 +260,12 @@ class RuntimeClient(
         self.configuration_profile_supported = False
         self.bundle = None
         self.pending_bundle = None
+        self.pending_compatibility_request = None
         self.storage = None
         self.pending_restore = None
         self.pending_project_file_bytes = None
 
-    def begin_game_state_transition(
-        self, message_id: int, *, shutting_down: bool = False
-    ) -> None:
+    def begin_game_state_transition(self, message_id: int, *, shutting_down: bool = False) -> None:
         """Retire VM-owned frontend state after a replacement command is submitted."""
 
         revision = self.presentation.begin_replacement(message_id)
@@ -285,9 +286,7 @@ class RuntimeClient(
         self.debug_step_in_flight = False
         self.transient_pause_owner = None
         self.transient_close_pending = None
-        self._retire_transfers_for_game_transition(
-            reschedule_cache=not shutting_down
-        )
+        self._retire_transfers_for_game_transition(reschedule_cache=not shutting_down)
         self.events.put(FrontendEvent("game_state_reset", revision))
 
     def begin_session_reset(self) -> None:
@@ -379,7 +378,7 @@ class RuntimeClient(
             self.pending_restore = restore
             self.allow_compiled_cache_load = allow_compiled_cache
             self.pending_project_file_bytes = project_file_bytes
-            self.storage = self._storage_for_bundle(bundle)
+            self.storage = None
             self._send_hello()
         except BaseException as error:
             self.abort_session_replacement(error)
@@ -477,19 +476,15 @@ class RuntimeClient(
             self.configuration_profile_supported = value.get(7) == 1
             self.events.put(FrontendEvent("runtime_version", value.get(8, "unknown")))
             if self.pending_bundle is not None:
-                if self.pending_project_file_bytes is not None:
-                    project_file = self.pending_project_file_bytes
-                    self.pending_project_file_bytes = None
-                    self.events.put(FrontendEvent("status", "正在载入项目文件…"))
-                    self._stage_project_cache(project_file, "project_file")
-                    return
-                self._stage_persistent_cache_or_source()
+                self._resolve_project_compatibility()
             return
         if tag == 2:
             self.fail_startup(f"protocol version rejected: {value.get(1, '')}")
             self.events.put(FrontendEvent("runtime_error", f"协议版本被拒绝：{value.get(1, '')}"))
         elif tag == 11:  # ProjectLoadReport
             self._handle_project_report(value)
+        elif tag == 73:  # ProjectCompatibilityResolved
+            self._handle_project_compatibility(value, correlation_id)
         elif tag == 25:  # ConfigurationUpdatePrepared
             self._handle_configuration_prepared(value, correlation_id)
         elif tag == 27:  # ConfigurationUpdateCommitted
@@ -575,6 +570,7 @@ class RuntimeClient(
                 function=origin.get(1),
                 source_path=source.get(0),
                 source_line=source.get(3),
+                compatibility=compatibility_context(value.get(3)),
             )
             self.events.put(FrontendEvent("runtime_fault", failure))
         elif tag == 95:

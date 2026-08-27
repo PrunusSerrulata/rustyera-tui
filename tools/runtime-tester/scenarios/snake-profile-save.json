@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/snake-profile-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "inputs": [
+    1,
+    2
+  ],
+  "watches": [
+    "FLAG:0"
+  ],
+  "goal": {
+    "output_contains": [
+      "SNAKE_PROFILE_SAVE_RESTORED=37",
+      "SNAKE_PROFILE_SAVE_ROUNDTRIP_READY"
+    ],
+    "wait_kind": 2,
+    "watch_equals": {
+      "FLAG:0": 37
+    }
+  },
+  "limits": {
+    "max_steps": 8,
+    "timeout_seconds": 60
+  }
+}

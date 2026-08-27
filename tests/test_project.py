@@ -18,6 +18,8 @@ from rustyera_tui.project import (
     SOURCE_INDEX_VERSION,
     StorageBackend,
 )
+from compatibility_test_support import reference_identity, snake_identity
+
 from rustyera_tui.wire import decode, unwrap_variant, variant
 
 
@@ -27,6 +29,70 @@ def png_header(width: int, height: int) -> bytes:
         + width.to_bytes(4, "big")
         + height.to_bytes(4, "big")
     )
+
+
+def test_unresolved_bundle_cannot_be_serialized(tmp_path: Path) -> None:
+    bundle = ProjectBundle.scan(tmp_path)
+    with pytest.raises(ValueError, match="compatibility identity"):
+        bundle.manifest()
+    with pytest.raises(ValueError, match="compatibility identity"):
+        bundle.identity()
+
+
+def test_compatibility_survives_quick_materialization_and_full_export(tmp_path: Path) -> None:
+    (tmp_path / "main.erb").write_text("@MAIN\nRETURN\n", encoding="utf-8")
+    (tmp_path / "reraconfig.toml").write_text(
+        '[meta]\nschema_version = 4\n[compatibility]\nprofile = "emuera.skia.snake"\n',
+        encoding="utf-8",
+    )
+    ProjectBundle.scan_quick(tmp_path)
+    bundle = ProjectBundle.scan_quick(tmp_path)
+    configuration = bundle.root_configuration()
+    assert configuration is not None and "emuera.skia.snake" in configuration[2][1][0]
+    bundle.compatibility = snake_identity()
+    bundle.configuration_digest = configuration[3]
+    materialized = bundle.materialize()
+    assert materialized.identity()[2] == snake_identity()
+    assert materialized.identity()[3] == configuration[3]
+    temporary, _ = bundle.write_full_manifest_temp()
+    try:
+        assert decode(temporary.read_bytes())[2] == snake_identity()
+    finally:
+        temporary.unlink()
+
+
+@pytest.mark.parametrize("initial", [None, "[meta]\nschema_version = 4\n"])
+def test_root_configuration_detects_changes_after_scan(tmp_path: Path, initial: str | None) -> None:
+    path = tmp_path / "reraconfig.toml"
+    if initial is not None:
+        path.write_text(initial, encoding="utf-8")
+    bundle = ProjectBundle.scan_quick(tmp_path)
+    path.write_text(
+        '[meta]\nschema_version = 4\n[compatibility]\nprofile = "emuera.skia.snake"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="扫描后"):
+        bundle.root_configuration()
+
+
+def test_snake_storage_does_not_overwrite_reference_slots(tmp_path: Path) -> None:
+    reference = StorageBackend(tmp_path)
+    snake = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake")
+    assert reference.compiled_cache_path() != snake.compiled_cache_path()
+    assert snake.data_root == tmp_path / ".rustyera" / "profiles" / "emuera.skia.snake"
+    for namespace in (1, 2):
+        original = reference._resolve(namespace, "save00.sav")
+        original.parent.mkdir(parents=True, exist_ok=True)
+        original.write_bytes(b"reference save")
+        assert not snake._resolve(namespace, "save00.sav").exists()
+        isolated = snake._resolve(namespace, "save00.sav")
+        isolated.parent.mkdir(parents=True, exist_ok=True)
+        isolated.write_bytes(b"snake envelope")
+        assert original.read_bytes() == b"reference save"
+        isolated.unlink()
+    assert snake._resolve(5, "main.erb") == reference._resolve(5, "main.erb")
+    with pytest.raises(ValueError, match="unsupported"):
+        StorageBackend(tmp_path, compatibility_profile="../../outside")
 
 
 def test_parallel_ordered_merges_out_of_order_results_and_reports_on_coordinator(
@@ -103,6 +169,7 @@ def test_project_scanner_is_utf8_and_deterministic(tmp_path: Path) -> None:
     (tmp_path / "ignored.txt").write_text("ignored", encoding="utf-8")
 
     bundle = ProjectBundle.scan(tmp_path)
+    bundle.compatibility = reference_identity()
     assert list(bundle.files) == ["CSV/Abl.csv", "ERB/main.erb"]
     manifest = bundle.manifest()
     assert manifest[0] == 1
@@ -118,6 +185,7 @@ def test_project_scanner_uses_lowercase_instead_of_casefold_for_path_order(
     (tmp_path / "st.erb").write_text("@ST\nRETURN\n", encoding="utf-8")
 
     bundle = ProjectBundle.scan(tmp_path)
+    bundle.compatibility = reference_identity()
 
     assert list(bundle.files) == ["st.erb", "ß.erb"]
 
@@ -128,6 +196,7 @@ def test_project_bundle_uses_embedded_project_file_resources(tmp_path: Path) -> 
     source = "@SYSTEM_TITLE\nRETURN\n"
     resource = b"image"
     manifest = {
+        2: reference_identity(),
         0: 7,
         1: [
             {
@@ -146,6 +215,7 @@ def test_project_bundle_uses_embedded_project_file_resources(tmp_path: Path) -> 
     }
 
     bundle = ProjectBundle.from_project_file_manifest(project_file, manifest)
+    bundle.compatibility = reference_identity()
 
     assert bundle.project_file == project_file
     assert bundle.identity()[0] == 7
@@ -180,7 +250,9 @@ def test_project_scanners_submit_nested_sprite_manifests_and_images(tmp_path: Pa
     (portraits / "Rorona-portraits.webp").write_bytes(image)
 
     scanned = ProjectBundle.scan(tmp_path)
+    scanned.compatibility = reference_identity()
     quick = ProjectBundle.scan_quick(tmp_path)
+    quick.compatibility = reference_identity()
 
     resource_manifest = scanned.files["resources/剧情肖像/Portraits.csv"]
     resource_image = scanned.files["resources/剧情肖像/Rorona-portraits.webp"]
@@ -204,7 +276,9 @@ def test_project_scanners_include_only_audio_from_the_sound_directory(tmp_path: 
     (sound / "ignored.config").write_text("IGNORED:YES", encoding="utf-8")
 
     scanned = ProjectBundle.scan(tmp_path)
+    scanned.compatibility = reference_identity()
     quick = ProjectBundle.scan_quick(tmp_path)
+    quick.compatibility = reference_identity()
 
     assert list(scanned.files) == ["sound/theme.mp3"]
     assert scanned.files["sound/theme.mp3"].category == FILE_RESOURCE
@@ -225,7 +299,9 @@ def test_project_scanners_include_supported_fonts_as_binary_resources(tmp_path: 
     (fonts / "license.txt").write_text("not packaged", encoding="utf-8")
 
     scanned = ProjectBundle.scan(tmp_path)
+    scanned.compatibility = reference_identity()
     quick = ProjectBundle.scan_quick(tmp_path)
+    quick.compatibility = reference_identity()
 
     assert list(scanned.files) == [
         "FoNt/collection.ttc",
@@ -265,7 +341,9 @@ def test_project_scanners_share_the_cross_frontend_cache_contract(tmp_path: Path
     (tmp_path / "z.erb").write_text("@ASCII\nRETURN\n", encoding="utf-8")
 
     scanned = ProjectBundle.scan(tmp_path)
+    scanned.compatibility = reference_identity()
     quick = ProjectBundle.scan_quick(tmp_path)
+    quick.compatibility = reference_identity()
 
     assert list(scanned.files) == [
         "font/Project.ttf",
@@ -299,7 +377,9 @@ def test_project_scanners_normalize_resource_paths_and_manifests_to_nfc(tmp_path
     (resources / decomposed_name).write_bytes(b"png")
 
     scanned = ProjectBundle.scan(tmp_path)
+    scanned.compatibility = reference_identity()
     quick = ProjectBundle.scan_quick(tmp_path)
+    quick.compatibility = reference_identity()
 
     image_path = f"RESOURCES/{image_name}"
     assert image_path in scanned.files
@@ -321,6 +401,7 @@ def test_project_wire_limits_expand_from_scanned_content_size(tmp_path: Path) ->
             )
         },
     )
+    bundle.compatibility = reference_identity()
 
     maximum_envelope, maximum_payload = bundle.requested_wire_limits()
 
@@ -342,6 +423,7 @@ def test_project_wire_limits_exclude_lazy_resource_bodies(tmp_path: Path) -> Non
             )
         },
     )
+    bundle.compatibility = reference_identity()
 
     maximum_envelope, maximum_payload = bundle.requested_wire_limits()
 
@@ -355,7 +437,9 @@ def test_project_scanners_normalize_cp932_sources_to_utf8(tmp_path: Path) -> Non
     path.write_bytes(source.encode("cp932"))
 
     scanned = ProjectBundle.scan(tmp_path)
+    scanned.compatibility = reference_identity()
     quick = ProjectBundle.scan_quick(tmp_path)
+    quick.compatibility = reference_identity()
 
     expected_hash = blake3.blake3(source.encode("utf-8")).digest()
     assert scanned.files["_fixed.config"].payload == variant(0, source)
@@ -370,7 +454,9 @@ def test_project_scanners_normalize_gbk_sources_to_utf8(tmp_path: Path) -> None:
     path.write_bytes(source.encode("gbk"))
 
     scanned = ProjectBundle.scan(tmp_path)
+    scanned.compatibility = reference_identity()
     quick = ProjectBundle.scan_quick(tmp_path)
+    quick.compatibility = reference_identity()
 
     expected_hash = blake3.blake3(source.encode("utf-8")).digest()
     assert scanned.files["main.erh"].payload == variant(0, source)
@@ -386,6 +472,7 @@ def test_project_scanner_reports_text_invalid_in_supported_encodings(
     path.write_bytes(b"\x81")
 
     bundle = ProjectBundle.scan_quick(tmp_path)
+    bundle.compatibility = reference_identity()
 
     assert bundle.is_materialized
     payload = bundle.files["main.erb"].payload
@@ -408,7 +495,9 @@ def test_project_scanners_follow_resource_directory_links(tmp_path: Path) -> Non
         pytest.skip(f"directory symlinks are unavailable: {error}")
 
     scanned = ProjectBundle.scan(resources)
+    scanned.compatibility = reference_identity()
     quick = ProjectBundle.scan_quick(resources)
+    quick.compatibility = reference_identity()
 
     assert list(scanned.files) == ["CSV/GAMEBASE.CSV", "ERB/main.erb"]
     assert list(quick.files) == ["CSV/GAMEBASE.CSV", "ERB/main.erb"]
@@ -431,7 +520,9 @@ def test_project_scanners_ignore_uninstalled_sources_outside_canonical_roots(
     (tmp_path / "emuera.config").write_text("描画インターフェース:TEXTRENDERER", encoding="utf-8")
 
     scanned = ProjectBundle.scan(tmp_path)
+    scanned.compatibility = reference_identity()
     quick = ProjectBundle.scan_quick(tmp_path)
+    quick.compatibility = reference_identity()
 
     expected = ["CSV/GAMEBASE.CSV", "emuera.config", "ERB/GUIDE/main.erb"]
     assert list(scanned.files) == expected
@@ -451,6 +542,7 @@ def test_reload_accepts_a_file_below_a_resource_directory_link(tmp_path: Path) -
     except OSError as error:
         pytest.skip(f"directory symlinks are unavailable: {error}")
     bundle = ProjectBundle.scan(resources)
+    bundle.compatibility = reference_identity()
     source.write_text("@B", encoding="utf-8")
 
     candidate, request = bundle.reload_file(resources / "ERB" / "main.erb")
@@ -467,6 +559,7 @@ def test_quick_scan_reloads_only_the_selected_file(tmp_path: Path) -> None:
     unselected.write_text("@UNSELECTED\nPRINTL v1\nRETURN\n", encoding="utf-8")
     ProjectBundle.scan_quick(tmp_path)
     bundle = ProjectBundle.scan_quick(tmp_path)
+    bundle.compatibility = reference_identity()
     unselected_hash = bundle.files["ERB/unselected.erb"].content_hash
     selected.write_text("@SELECTED\nPRINTL v2\nRETURN\n", encoding="utf-8")
     unselected.write_text("@UNSELECTED\nPRINTL v2\nRETURN\n", encoding="utf-8")
@@ -487,6 +580,7 @@ def test_quick_scan_reloads_only_the_selected_file(tmp_path: Path) -> None:
         f"{selected.stat().st_size}:{selected.stat().st_mtime_ns // 1_000_000}"
     )
     repeated = ProjectBundle.scan_quick(tmp_path)
+    repeated.compatibility = reference_identity()
     assert repeated.scan_metrics.source_files_reused == 2
     assert repeated.scan_metrics.source_files_hashed == 0
 
@@ -504,6 +598,7 @@ def test_folder_reload_preserves_unselected_source_generation(tmp_path: Path) ->
     removed.write_text("@REMOVED\nRETURN\n", encoding="utf-8")
     ProjectBundle.scan_quick(tmp_path)
     bundle = ProjectBundle.scan_quick(tmp_path)
+    bundle.compatibility = reference_identity()
     unselected_hash = bundle.files["ERB/single/command.erb"].content_hash
     selected.write_text("@SELECTED\nPRINTL v2\nRETURN\n", encoding="utf-8")
     unselected.write_text("@UNSELECTED\nPRINTL v2\nRETURN\n", encoding="utf-8")
@@ -540,6 +635,7 @@ def test_quick_scan_all_reload_submits_only_changed_sources(tmp_path: Path) -> N
     unchanged.write_text("@UNCHANGED\nRETURN\n", encoding="utf-8")
     ProjectBundle.scan_quick(tmp_path)
     bundle = ProjectBundle.scan_quick(tmp_path)
+    bundle.compatibility = reference_identity()
     changed.write_text("@CHANGED\nPRINTL v2\nRETURN\n", encoding="utf-8")
 
     candidate, request = bundle.rescan()
@@ -562,6 +658,7 @@ def test_cache_hit_baseline_hydrates_the_first_scoped_reload_without_leaking_dis
     unselected.write_text("PRINTL SINGLE_VERSION=1\n", encoding="utf-8")
     ProjectBundle.scan_quick(tmp_path)
     baseline = ProjectBundle.scan_quick(tmp_path)
+    baseline.compatibility = reference_identity()
     baseline.reload_baseline_pending = True
     old_unselected_hash = baseline.files["ERB/single/command.erb"].content_hash
     selected.write_text("PRINTL FOLDER_VERSION=2\n", encoding="utf-8")
@@ -599,6 +696,7 @@ def test_cache_hit_first_scoped_reload_replaces_the_sparse_runtime_baseline(
     untouched.write_text("PRINTL UNTOUCHED_VERSION=1\n", encoding="utf-8")
     ProjectBundle.scan_quick(tmp_path)
     baseline = ProjectBundle.scan_quick(tmp_path)
+    baseline.compatibility = reference_identity()
     baseline.reload_baseline_pending = True
     selected.write_text("PRINTL SELECTED_VERSION=2\n", encoding="utf-8")
 
@@ -704,6 +802,7 @@ def test_parallel_scan_preserves_multiple_io_errors_in_path_order(
     monkeypatch.setattr(Path, "read_bytes", fail_sources)
 
     bundle = ProjectBundle.scan(tmp_path)
+    bundle.compatibility = reference_identity()
 
     assert list(bundle.files) == ["a.erb", "b.erb"]
     assert "first denied" in str(bundle.files["a.erb"].payload)
@@ -722,6 +821,7 @@ def test_project_read_failures_are_preserved_as_deterministic_payloads(
     if mode == "materialize":
         ProjectBundle.scan_quick(tmp_path)
         baseline = ProjectBundle.scan_quick(tmp_path)
+        baseline.compatibility = reference_identity()
     else:
         baseline = None
     original = Path.read_bytes
@@ -752,6 +852,7 @@ def test_quick_scan_reuses_stat_index_and_materializes_on_demand(
     source.write_text("@SYSTEM_TITLE\nRETURN\n", encoding="utf-8")
 
     quick = ProjectBundle.scan_quick(tmp_path)
+    quick.compatibility = reference_identity()
     assert not quick.is_materialized
     assert len(quick.identity()[1]) == 32
     assert (tmp_path / ".rustyera" / "cache" / "source-index-v1.json").is_file()
@@ -765,6 +866,7 @@ def test_quick_scan_reuses_stat_index_and_materializes_on_demand(
 
     monkeypatch.setattr(Path, "read_bytes", reject_source_read)
     repeated = ProjectBundle.scan_quick(tmp_path)
+    repeated.compatibility = reference_identity()
     assert not repeated.is_materialized
     assert repeated.identity() == quick.identity()
     assert repeated.scan_metrics.source_index_present
@@ -792,6 +894,7 @@ def test_quick_scan_migrates_browser_index_and_keeps_incremental_reuse(
     index_path.write_text(json.dumps(browser_index), encoding="utf-8")
 
     migrated = ProjectBundle.scan_quick(tmp_path)
+    migrated.compatibility = reference_identity()
 
     assert migrated.scan_metrics.source_files_reused == 1
     assert migrated.scan_metrics.source_files_hashed == 0
@@ -802,7 +905,9 @@ def test_quick_scan_migrates_browser_index_and_keeps_incremental_reuse(
 
     source.write_text("@SYSTEM_TITLE\nPRINTL CHANGED\nRETURN\n", encoding="utf-8")
     updated = ProjectBundle.scan_quick(tmp_path)
+    updated.compatibility = reference_identity()
     repeated = ProjectBundle.scan_quick(tmp_path)
+    repeated.compatibility = reference_identity()
 
     assert updated.scan_metrics.source_files_reused == 0
     assert updated.scan_metrics.source_files_hashed == 1
@@ -838,6 +943,7 @@ def test_quick_scan_migrates_missing_or_invalid_cached_image_metadata(
     index_path.write_text(json.dumps(index), encoding="utf-8")
 
     warm = ProjectBundle.scan_quick(tmp_path)
+    warm.compatibility = reference_identity()
 
     assert warm.scan_metrics.source_files_reused == 1
     assert warm.scan_metrics.source_files_hashed == 0
@@ -863,6 +969,7 @@ def test_sparse_cache_hit_baseline_materializes_only_for_the_first_reload(
     source.write_text("PRINTL VERSION=1\n", encoding="utf-8")
     ProjectBundle.scan_quick(tmp_path)
     baseline = ProjectBundle.scan_quick(tmp_path)
+    baseline.compatibility = reference_identity()
     baseline.reload_baseline_pending = True
 
     assert not baseline.is_materialized
@@ -878,6 +985,7 @@ def test_quick_scan_rechecks_a_new_source_before_reusing_its_payload(tmp_path: P
     source = tmp_path / "main.erb"
     source.write_bytes(b"@OLD\nRETURN\n")
     quick = ProjectBundle.scan_quick(tmp_path)
+    quick.compatibility = reference_identity()
     old_identity = quick.identity()
 
     source.write_bytes(b"@NEW\nRETURN\n")
@@ -893,8 +1001,13 @@ def test_compact_project_file_manifest_keeps_identity_from_content_hash(tmp_path
     digest = blake3.blake3(b"@SYSTEM_TITLE\nRETURN\n").digest()
     compact = ProjectBundle.from_project_file_manifest(
         project_file,
-        {0: 7, 1: [{0: "main.erb", 1: FILE_ERB, 2: variant(0, ""), 3: digest}]},
+        {
+            0: 7,
+            1: [{0: "main.erb", 1: FILE_ERB, 2: variant(0, ""), 3: digest}],
+            2: reference_identity(),
+        },
     )
+    compact.compatibility = reference_identity()
     full = ProjectBundle(
         tmp_path,
         7,
@@ -904,6 +1017,7 @@ def test_compact_project_file_manifest_keeps_identity_from_content_hash(tmp_path
             )
         },
     )
+    full.compatibility = reference_identity()
 
     assert compact.identity() == full.identity()
 
@@ -924,6 +1038,7 @@ def test_project_identity_matches_the_cross_host_fixed_vector(tmp_path: Path) ->
                 path: ProjectFile(path, category, variant(0, ""), digest)
                 for path, category, digest in items
             },
+            compatibility=reference_identity(),
         )
 
     left = bundle(entries)
@@ -941,11 +1056,13 @@ def test_project_identity_includes_io_error_message(tmp_path: Path) -> None:
         1,
         {"main.erb": ProjectFile("main.erb", 2, variant(2, {0: 1, 1: "denied"}), None)},
     )
+    denied.compatibility = reference_identity()
     missing = ProjectBundle(
         tmp_path,
         1,
         {"main.erb": ProjectFile("main.erb", 2, variant(2, {0: 0, 1: "missing"}), None)},
     )
+    missing.compatibility = reference_identity()
 
     assert len(denied.identity()[1]) == 32
     assert denied.identity() != missing.identity()
@@ -957,6 +1074,7 @@ def test_rescan_produces_upsert_and_remove_changes(tmp_path: Path) -> None:
     first.write_text("@A", encoding="utf-8")
     second.write_text("#DIM X", encoding="utf-8")
     bundle = ProjectBundle.scan(tmp_path)
+    bundle.compatibility = reference_identity()
     first.write_text("@B", encoding="utf-8")
     second.unlink()
 
@@ -1159,6 +1277,7 @@ def test_project_scanner_includes_audio_resources_for_full_exports(tmp_path: Pat
     (resources / "theme.ogg").write_bytes(audio)
 
     scanned = ProjectBundle.scan(tmp_path)
+    scanned.compatibility = reference_identity()
 
     assert scanned.files["resources/theme.ogg"].category == FILE_RESOURCE
     assert scanned.files["resources/theme.ogg"].payload == variant(3, {0: len(audio), 1: None})
@@ -1205,9 +1324,7 @@ def test_storage_stat_hashes_from_a_stream_without_materializing_the_file(
         lambda _path: pytest.fail("storage stat must stream the file"),
     )
 
-    result = backend.handle(
-        {0: 1, 1: 1, 2: "large.sav", 3: variant(4), 4: ""}
-    )
+    result = backend.handle({0: 1, 1: 1, 2: "large.sav", 3: variant(4), 4: ""})
 
     tag, fields = unwrap_variant(result[1])
     assert tag == 5
@@ -1219,6 +1336,7 @@ def test_configuration_write_is_atomic_and_detects_external_changes(tmp_path: Pa
     config = tmp_path / "reraconfig.toml"
     config.write_text("[display]\nfont_size = 18\n", encoding="utf-8")
     bundle = ProjectBundle.scan(tmp_path)
+    bundle.compatibility = reference_identity()
     digest = bundle.files["reraconfig.toml"].content_hash
     assert digest is not None
 
@@ -1231,6 +1349,7 @@ def test_configuration_write_is_atomic_and_detects_external_changes(tmp_path: Pa
 
 def test_configuration_creation_is_idempotent_and_requires_utf8(tmp_path: Path) -> None:
     bundle = ProjectBundle.scan(tmp_path)
+    bundle.compatibility = reference_identity()
     contents = "[meta]\nschema_version = 1\n"
     bundle.write_configuration(b"", contents)
     bundle.write_configuration(b"", contents.replace("\n", "\r\n"))
@@ -1246,6 +1365,7 @@ def test_packaged_project_configuration_appends_the_runtime_update(tmp_path: Pat
     project_file = tmp_path / "game.reraproj"
     project_file.write_bytes(b"base-incomplete")
     bundle = ProjectBundle(tmp_path, 1, {}, project_file)
+    bundle.compatibility = reference_identity()
     captured: list[tuple[bytes, bytes, str]] = []
 
     def prepare(project: bytes, expected: bytes, contents: str) -> tuple[int, bytes]:
@@ -1256,3 +1376,27 @@ def test_packaged_project_configuration_appends_the_runtime_update(tmp_path: Pat
 
     assert captured == [(b"base-incomplete", b"digest", "[display]\nfont_size = 20\n")]
     assert project_file.read_bytes() == b"basejournal"
+
+
+@pytest.mark.parametrize("namespace", [0, 3])
+@pytest.mark.parametrize(
+    "operation",
+    [variant(0), variant(4), variant(5, 0, 64, None), variant(2, "sentinel.bin", False)],
+)
+def test_snake_mutable_reads_never_fall_back_to_reference_root(
+    tmp_path: Path, namespace: int, operation: list
+) -> None:
+    root = tmp_path / "game"
+    (root / "shared").mkdir(parents=True)
+    sentinel = root / "shared/sentinel.bin"
+    sentinel.write_bytes(b"reference sentinel")
+    reference = StorageBackend(root)
+    snake = StorageBackend(root, compatibility_profile="emuera.skia.snake")
+    relative = "shared" if operation[0] == 2 else "shared/sentinel.bin"
+    request = {0: 1, 1: namespace, 2: relative, 3: operation, 4: ""}
+    assert unwrap_variant(reference.handle(request)[1])[0] != 4
+    snake_result = unwrap_variant(snake.handle(request)[1])
+    assert snake_result[0] == 4 or (snake_result[0] == 2 and snake_result[1][0] == [])
+    resource = snake.handle({0: 2, 1: 5, 2: "shared/sentinel.bin", 3: variant(0), 4: ""})
+    assert unwrap_variant(resource[1])[1][0] == b"reference sentinel"
+    assert sentinel.read_bytes() == b"reference sentinel"

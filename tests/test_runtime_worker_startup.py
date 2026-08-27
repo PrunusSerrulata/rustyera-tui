@@ -1,4 +1,5 @@
 from __future__ import annotations
+from compatibility_test_support import reference_identity, snake_identity
 
 from runtime_cabi_test_support import (
     FrontendCommand,
@@ -15,6 +16,50 @@ from rustyera_tui.presentation import PresentationEventAccumulator
 from rustyera_tui.runtime_export import ExportStage, _PendingExport
 from rustyera_tui.worker import MAX_WORKER_EVENTS
 from rustyera_tui.wire import variant
+
+
+def test_compatibility_resolution_precedes_storage_and_cache(tmp_path: Path) -> None:
+    bundle = ProjectBundle.scan_quick(tmp_path)
+    client = object.__new__(RuntimeClient)
+    client.pending_bundle = bundle
+    client.pending_compatibility_request = None
+    client.pending_project_file_bytes = None
+    client.storage = None
+    client.next_message_id = 41
+    client.events = queue.Queue()
+    submitted: list[tuple[int, object]] = []
+    continued: list[bool] = []
+    client.send_runtime = lambda tag, value: submitted.append((tag, value))  # type: ignore[method-assign]
+    client._stage_persistent_cache_or_source = lambda: continued.append(True)  # type: ignore[method-assign]
+
+    client._resolve_project_compatibility()
+
+    assert submitted == [(72, {0: 41, 1: None})]
+    assert client.storage is None and continued == []
+    report = {0: 41, 1: snake_identity(), 2: None, 3: []}
+    client._handle_project_compatibility(report, 40)
+    assert client.storage is None and continued == []
+    client._handle_project_compatibility(report, 41)
+    assert continued == [True]
+    assert client.storage is not None
+    assert client.storage.compatibility_profile == "emuera.skia.snake"
+    assert bundle.compatibility == snake_identity()
+    client._handle_project_compatibility(report, 41)
+    assert continued == [True]
+
+
+def test_invalid_compatibility_never_falls_back_to_reference(tmp_path: Path) -> None:
+    client = object.__new__(RuntimeClient)
+    client.pending_bundle = ProjectBundle.scan(tmp_path)
+    client.pending_compatibility_request = 41
+    client.storage = None
+    client.events = queue.Queue()
+    failures: list[str] = []
+    client.fail_startup = failures.append  # type: ignore[method-assign]
+    client._handle_project_compatibility({0: 41, 1: None, 2: None, 3: []}, 41)
+    assert failures
+    assert client.storage is None
+    assert client.pending_bundle.compatibility is None
 
 
 def test_worker_applies_backpressure_to_presentation_events() -> None:
@@ -315,7 +360,7 @@ def test_packaged_project_uses_one_replacement_session_for_decode_and_hello(
 
         def project_file_manifest(self, _payload: bytes) -> dict[int, object]:
             calls.append("decode")
-            return {0: 1, 1: []}
+            return {0: 1, 1: [], 2: reference_identity()}
 
     project_file = tmp_path / "game.reraproj"
     project_file.write_bytes(b"package")

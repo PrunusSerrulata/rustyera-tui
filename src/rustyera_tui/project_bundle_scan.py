@@ -349,7 +349,14 @@ class _ProjectBundleScanMixin:
             cancelled=cancelled,
         )
         files = {item.relative_path: item for item in materialized}
-        return project_facade.ProjectBundle(self.root, self.revision, files, self.project_file)
+        return project_facade.ProjectBundle(
+            self.root,
+            self.revision,
+            files,
+            self.project_file,
+            compatibility=self.compatibility,
+            configuration_digest=self.configuration_digest,
+        )
 
 
 def _indexed_image_metadata(value: object) -> dict[int, object] | None:

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/snake-profile-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "goal": {
+    "output_contains": [
+      "SNAKE_PROFILE_INFRASTRUCTURE_READY"
+    ],
+    "wait_kind": 2
+  },
+  "limits": {
+    "max_steps": 5,
+    "timeout_seconds": 60
+  }
+}

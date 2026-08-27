@@ -80,11 +80,12 @@ class _RuntimeTransportMixin:
     @staticmethod
     def _storage_for_bundle(bundle: ProjectBundle) -> StorageBackend:
         if bundle.project_file is None:
-            return StorageBackend(bundle.root)
+            return StorageBackend(bundle.root, compatibility_profile=bundle.compatibility_profile)
         return StorageBackend(
             bundle.root,
             data_root=bundle.root / ".rustyera" / "packaged-projects",
             identity_path=bundle.project_file,
+            compatibility_profile=bundle.compatibility_profile,
         )
 
     def send_runtime(
