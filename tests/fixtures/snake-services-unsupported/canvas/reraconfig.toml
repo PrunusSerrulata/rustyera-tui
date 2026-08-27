@@ -1,0 +1,8 @@
+[meta]
+schema_version = 4
+
+[compatibility]
+profile = "emuera.skia.snake"
+
+[save]
+binary_format = true
