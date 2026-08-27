@@ -8,7 +8,12 @@ description: Run deterministic fixed-sequence, agent-driven, save/snapshot resto
 Drive `rustyera-test`; do not recreate a Python input state machine or call Rust runtime internals.
 Read [test-cli.md](references/test-cli.md) before authoring or changing a scenario.
 
-## Enforce the task budget
+## Enforce the batch budget
+
+Use the batches defined by the root `AGENTS.md`: estimate each requested feature/change/fix first,
+combine small items for implementation, refactoring review, and testing, and handle large items
+independently with separate budgets. Keep a separate commit for each item regardless of batching.
+All review counts, suite counts, gates, and deadlines below apply to the current batch.
 
 Follow the root `AGENTS.md` parallel scheduling rules. Run independent checks concurrently when
 their inputs, outputs, and mutable resources are isolated; pipeline dependent checks as prerequisites
@@ -18,12 +23,12 @@ gates. Delegate test execution as required by the component's `AGENTS.md`.
 - Before starting any test command, confirm that any required refactoring subagent has completed
   its single permitted run and that every requirement it reported has been implemented. Refuse to
   start testing while any refactoring requirement remains. Once the first test starts, never spawn,
-  resume, follow up with, or rerun a refactoring subagent during that task.
-- Start one shared 60-minute wall-clock budget with the task's first test command. It includes all
+  resume, follow up with, or rerun a refactoring subagent during that batch.
+- Start one shared 60-minute wall-clock budget with the batch's first test command. It includes all
   later tests, targeted reruns, end-to-end waits, and test-failure investigation. Bound every
   command by the remaining time.
 - Start each distinct full test suite at most once. After a failure is fixed, rerun only the
-  directly affected node IDs, test files, or scenarios; never rerun the full suite in that task.
+  directly affected node IDs, test files, or scenarios; never rerun the full suite in that batch.
 - Run every command that may outlive its initial tool response in a persistent PTY. Start it with
   `exec_command` using `tty: true` and a short yield, retain the returned `session_id`, and poll only
   with `write_stdin` at intervals no longer than 30 seconds until an explicit exit code is observed.
@@ -31,7 +36,7 @@ gates. Delegate test execution as required by the component's `AGENTS.md`.
   result is collected. If a PTY session disappears without an exit code, report the command as
   unverified; never restart a full suite, and rerun a targeted command only when the suite rules
   permit it.
-- At 60 minutes, terminate every test process and report the active command, exact scenario/step,
+- At 60 minutes, terminate every test process for that batch and report the active command, exact scenario/step,
   last stable-wait observation, elapsed time, completed checks, and unverified checks.
 
 ## Prepare the run
@@ -74,7 +79,7 @@ Prefer visible, valid choices. Never invent hidden state or bypass input validat
 the machine-readable goal succeeds, the first differential failure occurs, or the hard step/time
 budget is exhausted. TUI runs observe complete state at stable input waits by default; use periodic
 snapshots only when the user explicitly requests them. A budget exhaustion is a failed test unless
-the scenario explicitly defines exploration-only acceptance; the task-wide 60-minute deadline is
+the scenario explicitly defines exploration-only acceptance; the batch-wide 60-minute deadline is
 always a failure.
 
 ## Interpret and report

@@ -66,8 +66,9 @@ hot-reloaded source tree without `.rustyera` for a following Browser/WASM run.
 
 By default, the TUI driver records its complete observable state when it reaches a stable input
 wait. It does not emit periodic snapshots or treat equal consecutive observations as a stall unless
-the user explicitly requests that policy. All test commands in a task share the 60-minute
-wall-clock budget defined by the repository rules.
+the user explicitly requests that policy. All test commands in the current batch share the 60-minute
+wall-clock budget defined by the repository rules; small items share a batch, large items have
+independent batches. See the skill for the review and full-suite limits.
 
 Exit codes are `0` for passed/stopped fixed work, `1` for semantic failure, `2` for input/budget
 exhaustion, and `3` for infrastructure, schema, or protocol failure.
