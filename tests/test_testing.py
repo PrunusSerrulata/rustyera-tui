@@ -459,6 +459,40 @@ def test_goal_combines_output_wait_watch_line_and_status_checks() -> None:
     assert goal_status(observation, goal)["satisfied"]
 
 
+def test_snake_data_scenario_requires_all_stages_and_preserves_ordinary_flag(
+    tmp_path: Path,
+) -> None:
+    scenario_path = (
+        Path(__file__).resolve().parents[1]
+        / "tools/runtime-tester/scenarios/snake-data.json"
+    )
+    scenario = Scenario.load(scenario_path, project_override=tmp_path)
+    assert scenario.inputs == (
+        {"value": "1", "when": {"output_contains": "SNAKE_DATA_START"}},
+    )
+    observation = {
+        "output": [
+            "SNAKE_DATA_INDEX=2/main/42",
+            "SNAKE_DATA_RESOURCE=1/1/0",
+            "SNAKE_DATA_OVERLAY=1/1/1/2",
+            "SNAKE_DATA_STRUCTURED=1/station/29/29/42/from-schema",
+            "SNAKE_DATA_GLOBAL_MISSING=0/66/55",
+            "SNAKE_DATA_GLOBAL=1/7/55/1/12/saved-map/saved-xml",
+            "SNAKE_DATA_READY",
+        ],
+        "wait": {"kind": 2},
+        "watches": {"GLOBAL:0": 7, "FLAG:0": 55, "C1_METHOD_VALUE:0": 42},
+    }
+
+    assert goal_status(observation, scenario.goal)["satisfied"]
+    assert not goal_status(
+        {**observation, "output": ["SNAKE_DATA_READY"]}, scenario.goal
+    )["satisfied"]
+    assert not goal_status(
+        {**observation, "watches": {**observation["watches"], "FLAG:0": 8}}, scenario.goal
+    )["satisfied"]
+
+
 def test_runtime_start_request_uses_configured_seed() -> None:
     client = object.__new__(RuntimeClient)
     client.new_game_seed = 42
