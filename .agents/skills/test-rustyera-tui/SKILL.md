@@ -10,6 +10,11 @@ Read [test-cli.md](references/test-cli.md) before authoring or changing a scenar
 
 ## Enforce the task budget
 
+Follow the root `AGENTS.md` parallel scheduling rules. Run independent checks concurrently when
+their inputs, outputs, and mutable resources are isolated; pipeline dependent checks as prerequisites
+pass. Parallelism never bypasses the required review, focused-before-full, or static-before-dynamic
+gates. Delegate test execution as required by the component's `AGENTS.md`.
+
 - Before starting any test command, confirm that any required refactoring subagent has completed
   its single permitted run and that every requirement it reported has been implemented. Refuse to
   start testing while any refactoring requirement remains. Once the first test starts, never spawn,
@@ -84,7 +89,8 @@ always a failure.
 
 ## Validate repository changes
 
-Run the smallest relevant pytest first, then run the complete TUI pytest once and the Ruff checks.
+Run the smallest relevant pytest before the complete TUI pytest, which may run once. Ruff may run
+alongside independent pytest checks. Complete all applicable static gates before dynamic scenarios.
 If the complete pytest fails, fix it and rerun only the directly affected node IDs or test files.
 Run real C ABI fixture or eraTW scenarios when runtime behavior changed. If the Emuera reference
 CLI changed, use the sibling core repository's `$test-rustyera-core` workflow for its required Rust
