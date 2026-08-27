@@ -69,6 +69,11 @@ wait. It does not emit periodic snapshots or treat equal consecutive observation
 the user explicitly requests that policy. All test commands in the current batch share the 60-minute
 wall-clock budget defined by the repository rules; small items share a batch, large items have
 independent batches. See the skill for the review and full-suite limits.
+For iterative work, these limits apply to the current batch in one iteration, not the whole task.
+A single iteration timeout does not end further iterations before the user's goal/deadline. Reserve
+wrap-up time and retain test procedures, scripts, fixtures, temporary projects, and restart evidence
+on pause; cleanup requires the user's explicit task-completed/aborted instruction. Follow the skill
+for continuation, deadline handling, and resumption budgets.
 
 Exit codes are `0` for passed/stopped fixed work, `1` for semantic failure, `2` for input/budget
 exhaustion, and `3` for infrastructure, schema, or protocol failure.
