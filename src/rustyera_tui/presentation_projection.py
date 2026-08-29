@@ -78,6 +78,7 @@ def parse_line(line: dict[int, Any]) -> DisplayLineModel:
         line_end=line.get(3, True),
         alignment=line.get(4, 0),
         segments=tuple(segments),
+        text_background_eligible=bool(line.get(6, False)),
         layout=tuple(layout),
     )
 

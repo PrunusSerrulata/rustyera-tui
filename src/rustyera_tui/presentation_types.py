@@ -85,6 +85,7 @@ class DisplayLineModel:
     alignment: int
     segments: tuple[DisplaySegment, ...]
     layout: tuple[ColumnCellLayout | SeparatorLayout, ...] = ()
+    text_background_eligible: bool = False
     _retained_utf8_bytes: int = field(init=False, repr=False, compare=False)
     _retained_segments: int = field(init=False, repr=False, compare=False)
 

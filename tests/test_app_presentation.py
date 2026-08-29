@@ -594,3 +594,35 @@ async def test_presentation_background_reaches_existing_and_new_game_lines(
         assert str(child.styles.background) == "Color(1, 24, 60)"
         viewport.set_presentation_background("#000000")
         assert str(child.styles.background) == "Color(0, 0, 0)"
+
+        eligible = DisplayLineModel(
+            2,
+            False,
+            True,
+            True,
+            0,
+            (DisplaySegment("highlighted"),),
+            text_background_eligible=True,
+        )
+        ineligible = DisplayLineModel(
+            3,
+            False,
+            True,
+            True,
+            0,
+            (DisplaySegment(""),),
+        )
+        await viewport.set_lines([eligible, ineligible], changed_from=0)
+        children = list(app.query(GameLine))
+        viewport.set_presentation_background("#01183c", ("#ff0000", 127))
+        assert str(children[0].styles.background) == "Color(128, 12, 30)"
+        assert str(children[1].styles.background) == "Color(1, 24, 60)"
+        viewport.set_presentation_background("#000000", ("#ff0000", 127))
+        assert str(children[0].styles.background) == "Color(127, 0, 0)"
+        assert str(children[1].styles.background) == "Color(0, 0, 0)"
+
+        await pilot.resize_terminal(80, 30)
+        await pilot.pause()
+        children = list(app.query(GameLine))
+        assert str(children[0].styles.background) == "Color(127, 0, 0)"
+        assert str(children[1].styles.background) == "Color(0, 0, 0)"

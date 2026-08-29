@@ -47,6 +47,7 @@ class PresentationModel:
     lines: list[DisplayLineModel] = field(default_factory=list)
     input_wait: dict[int, Any] | None = None
     background: str = "#000000"
+    text_line_background: tuple[str, int] | None = None
     button_focus: str = DEFAULT_BUTTON_FOCUS
     maximum_physical_lines: int = VIEWPORT_BUFFER_LINES
     changed_from: int | None = 0
@@ -237,6 +238,12 @@ class PresentationModel:
             return
         self.background = color_hex(settings[2])
         self.button_focus = color_hex(settings[3])
+        text_background = settings.get(8)
+        self.text_line_background = (
+            (color_hex(text_background), int(text_background.get(3, 255)))
+            if text_background is not None
+            else None
+        )
         self.maximum_physical_lines = min(
             MAXIMUM_VIEWPORT_BUFFER_LINES,
             max(500, int(settings.get(4, VIEWPORT_BUFFER_LINES))),

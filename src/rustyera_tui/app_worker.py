@@ -104,7 +104,9 @@ class _WorkerEventMixin:
             )
             self.query_one("#separator-line").display = not horizontal_overflow
             self.title = self.presentation.title or self.TITLE
-            viewport.set_presentation_background(self.presentation.background)
+            viewport.set_presentation_background(
+                self.presentation.background, self.presentation.text_line_background
+            )
         revision = self.presentation.revision
         self._presentation_dirty = False
         self._presentation_commit_ready = False

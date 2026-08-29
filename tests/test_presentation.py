@@ -80,6 +80,19 @@ def snapshot() -> dict[int, object]:
     }
 
 
+def test_whole_line_background_fields_are_preserved_from_protocol() -> None:
+    raw = line(1, "eligible")
+    raw[6] = True
+    parsed = parse_line(raw)
+    assert parsed.text_background_eligible is True
+
+    value = snapshot()
+    value[6][8] = {0: 17, 1: 34, 2: 51, 3: 127}
+    model = PresentationModel()
+    model.apply_snapshot(value)
+    assert model.text_line_background == ("#112233", 127)
+
+
 def test_snapshot_preserves_color_and_button_token() -> None:
     model = PresentationModel()
     model.apply_snapshot(snapshot())

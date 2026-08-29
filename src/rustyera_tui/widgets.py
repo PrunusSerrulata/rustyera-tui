@@ -25,6 +25,17 @@ from .game_line_layout import project_responsive_segments as _project_responsive
 from .game_line_layout import terminal_segment_text as _terminal_segment_text
 
 
+def _composite_terminal_color(foreground: str, background: str, alpha: int) -> str:
+    alpha = min(255, max(0, alpha))
+    foreground_channels = tuple(int(foreground[index : index + 2], 16) for index in (1, 3, 5))
+    background_channels = tuple(int(background[index : index + 2], 16) for index in (1, 3, 5))
+    channels = tuple(
+        (front * alpha + back * (255 - alpha) + 127) // 255
+        for front, back in zip(foreground_channels, background_channels, strict=True)
+    )
+    return f"#{channels[0]:02x}{channels[1]:02x}{channels[2]:02x}"
+
+
 @dataclass(frozen=True, slots=True)
 class ClickRegion:
     row: int
@@ -336,6 +347,7 @@ class GameViewport(ScrollableContainer):
         self.mouse_enabled = True
         self.replace_full_width_spaces = False
         self.presentation_background = "#000000"
+        self.text_line_background: tuple[str, int] | None = None
         self.button_focus = DEFAULT_BUTTON_FOCUS
         self._horizontal_overflow = False
         self._projected_width = 0
@@ -415,7 +427,7 @@ class GameViewport(ScrollableContainer):
         widget.button_focus = self.button_focus
         widget.button_generation = self._button_generation
         widget.retired_interaction_sequence = self._retired_interaction_sequence
-        widget.styles.background = self.presentation_background
+        widget.styles.background = self._line_background(line)
         self._register_interaction_child(widget)
         return widget
 
@@ -456,6 +468,7 @@ class GameViewport(ScrollableContainer):
         child.button_generation = self._button_generation
         child.retired_interaction_sequence = self._retired_interaction_sequence
         child.set_line(line)
+        child.styles.background = self._line_background(line)
         self._register_interaction_child(child)
 
     def _apply_interaction_policy(
@@ -504,14 +517,28 @@ class GameViewport(ScrollableContainer):
         self._projected_line_widths = [_projected_line_width(line, width) for line in self.models]
         self._overflowing_line_count = sum(value > width for value in self._projected_line_widths)
 
-    def set_presentation_background(self, color: str) -> None:
-        if color == self.presentation_background:
+    def set_presentation_background(
+        self, color: str, text_line_background: tuple[str, int] | None = None
+    ) -> None:
+        if (
+            color == self.presentation_background
+            and text_line_background == self.text_line_background
+        ):
             return
         self.presentation_background = color
+        self.text_line_background = text_line_background
         self.styles.background = color
         for child in self.children:
             if isinstance(child, GameLine):
-                child.styles.background = color
+                child.styles.background = self._line_background(child.line)
+
+    def _line_background(self, line: DisplayLineModel) -> str:
+        if not line.text_background_eligible or self.text_line_background is None:
+            return self.presentation_background
+        foreground, alpha = self.text_line_background
+        # Terminals cannot preserve alpha. Composite the line color over the opaque
+        # presentation background using deterministic 8-bit sRGB channel arithmetic.
+        return _composite_terminal_color(foreground, self.presentation_background, alpha)
 
     def set_button_focus(self, color: str) -> None:
         if color == self.button_focus:
