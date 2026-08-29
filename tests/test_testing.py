@@ -422,6 +422,32 @@ def test_presentation_adapter_applies_atomic_batch_before_returning_wait() -> No
     assert model.deltas == [{0: 2}]
 
 
+def test_headless_driver_acknowledges_device_pump_before_the_next_wait() -> None:
+    wait = {0: 7, 1: 2, 2: 0, 5: True, 11: {0: 1, 1: 2}}
+    events: queue.Queue[FrontendEvent] = queue.Queue()
+    events.put(FrontendEvent("device_pump", 17))
+    events.put(FrontendEvent("presentation_batch", PresentationBatch(None, None, wait, True)))
+    commands: list[tuple[str, Any]] = []
+    session = object.__new__(RustTestSession)
+    session.model = SimpleNamespace(lines=[])
+    session.previous_output = []
+    session.statuses = []
+    session.logs = []
+    session.metrics = []
+    session._last_wait = None
+    session.worker = SimpleNamespace(
+        events=events,
+        is_alive=lambda: True,
+        client=SimpleNamespace(phase=5, epoch=2, active_wait=wait),
+        send=lambda kind, value=None: commands.append((kind, value)),
+    )
+
+    observation = session.wait_observation(time.monotonic() + 1)
+
+    assert commands == [("device_pump_ack", 17)]
+    assert observation["wait"]["id"] == 7
+
+
 def test_comparison_uses_default_wait_map_and_reports_projection_difference() -> None:
     rust = {
         "wait": {"kind": 2},
@@ -463,13 +489,10 @@ def test_snake_data_scenario_requires_all_stages_and_preserves_ordinary_flag(
     tmp_path: Path,
 ) -> None:
     scenario_path = (
-        Path(__file__).resolve().parents[1]
-        / "tools/runtime-tester/scenarios/snake-data.json"
+        Path(__file__).resolve().parents[1] / "tools/runtime-tester/scenarios/snake-data.json"
     )
     scenario = Scenario.load(scenario_path, project_override=tmp_path)
-    assert scenario.inputs == (
-        {"value": "1", "when": {"output_contains": "SNAKE_DATA_START"}},
-    )
+    assert scenario.inputs == ({"value": "1", "when": {"output_contains": "SNAKE_DATA_START"}},)
     observation = {
         "output": [
             "SNAKE_DATA_INDEX=2/main/42",
@@ -487,9 +510,9 @@ def test_snake_data_scenario_requires_all_stages_and_preserves_ordinary_flag(
     }
 
     assert goal_status(observation, scenario.goal)["satisfied"]
-    assert not goal_status(
-        {**observation, "output": ["SNAKE_DATA_READY"]}, scenario.goal
-    )["satisfied"]
+    assert not goal_status({**observation, "output": ["SNAKE_DATA_READY"]}, scenario.goal)[
+        "satisfied"
+    ]
     assert not goal_status(
         {**observation, "watches": {**observation["watches"], "FLAG:0": 8}}, scenario.goal
     )["satisfied"]

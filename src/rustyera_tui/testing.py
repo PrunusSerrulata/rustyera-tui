@@ -153,11 +153,21 @@ class RustTestSession:
     def export_snapshot(self, path: Path) -> None:
         self.worker.send("export_snapshot", (path, "normal"))
 
+    def _acknowledge_frontend_boundary(self, event: FrontendEvent) -> bool:
+        if event.kind != "device_pump":
+            return False
+        # The CLI has no Textual event loop, so its next driver callback is the
+        # corresponding real frontend pump boundary.
+        self.worker.send("device_pump_ack", int(event.value))
+        return True
+
     def wait_snapshot(self, path: Path, deadline: float) -> bool:
         while time.monotonic() < deadline:
             try:
                 event = self.worker.events.get(timeout=0.25)
             except queue.Empty:
+                continue
+            if self._acknowledge_frontend_boundary(event):
                 continue
             apply_presentation_event(self.model, event)
             if event.kind == "snapshot_export_finished":
@@ -173,6 +183,8 @@ class RustTestSession:
             try:
                 event = self.worker.events.get(timeout=0.25)
             except queue.Empty:
+                continue
+            if self._acknowledge_frontend_boundary(event):
                 continue
             apply_presentation_event(self.model, event)
             if event.kind == "status":
@@ -203,6 +215,8 @@ class RustTestSession:
                     return self._observation(self.worker.client.active_wait)
                 continue
             observed.append(f"{event.kind}: {event.value}")
+            if self._acknowledge_frontend_boundary(event):
+                continue
             if event.kind == "status":
                 self.statuses.append(str(event.value))
                 completed = completed or (
@@ -294,6 +308,8 @@ class RustTestSession:
                     event = self.worker.events.get(timeout=0.25)
                 except queue.Empty:
                     continue
+                if self._acknowledge_frontend_boundary(event):
+                    continue
                 if event.kind in TERMINAL_EVENTS:
                     raise TestDriverError(f"{event.kind}: {event.value}")
                 if event.kind != "debug_response":
@@ -328,6 +344,8 @@ class RustTestSession:
                 try:
                     event = self.worker.events.get(timeout=0.25)
                 except queue.Empty:
+                    continue
+                if self._acknowledge_frontend_boundary(event):
                     continue
                 if event.kind in TERMINAL_EVENTS:
                     raise TestDriverError(f"{event.kind}: {event.value}")
