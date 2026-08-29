@@ -18,4 +18,11 @@ def reference_identity() -> dict[int, Any]:
 
 
 def snake_identity() -> dict[int, Any]:
-    return {**reference_identity(), 0: 1, 1: 2, 2: 2, 7: "rustyera_envelope_v1:emuera1808"}
+    return {
+        **reference_identity(),
+        0: 1,
+        1: 8,
+        2: 8,
+        3: "snake_saturating_i64_v1",
+        7: "rustyera_envelope_v1:emuera1808",
+    }
