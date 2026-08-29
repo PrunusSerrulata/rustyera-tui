@@ -19,6 +19,8 @@
       "SNAKE_DATA_STRUCTURED=1/station/29/29/42/from-schema",
       "SNAKE_DATA_GLOBAL_MISSING=0/66/55",
       "SNAKE_DATA_GLOBAL=1/7/55/1/12/saved-map/saved-xml",
+      "SNAKE_DISPLAY_TIMER=10/77",
+      "SNAKE_DISPLAY_BACKGROUND",
       "SNAKE_DATA_READY"
     ],
     "wait_kind": 2,
