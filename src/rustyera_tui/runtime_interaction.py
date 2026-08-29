@@ -69,6 +69,18 @@ class _RuntimeInteractionMixin:
 
     def _handle_service(self, request: dict[int, Any], correlation_id: int | None) -> None:
         request_id, kind, operation = request[0], request[1], request[2]
+        if kind == 7 and operation == "device_pump":
+            query = decode(request[4])
+            epoch, after_event_sequence = query[0], query[1]
+            self._pending_device_pumps[request_id] = (
+                epoch,
+                after_event_sequence,
+                correlation_id,
+            )
+            # Textual acknowledges this on a later UI-loop callback. This is a
+            # real frontend pump even though TUI advertises no device latch.
+            self.events.put(FrontendEvent("device_pump", request_id))
+            return
         try:
             if kind == 9 and operation == "random_seed":
                 response = {0: secrets.randbits(64)}
@@ -85,8 +97,6 @@ class _RuntimeInteractionMixin:
                     6: now.microsecond // 1000,
                     7: int(offset.total_seconds() // 60) if offset else 0,
                 }
-            elif kind == 7 and operation == "get_key_state":
-                response = {0: True, 1: False, 2: False}
             elif kind == 1 and operation == "image_metadata":
                 query = decode(request[4])
                 bundle = next(
@@ -105,25 +115,22 @@ class _RuntimeInteractionMixin:
             elif kind == 10 and operation == "get_display_line":
                 query = decode(request[4])
                 text = self.presentation.display_line(query[1])
-                if utf8_length(
-                    text, stop_after=MAXIMUM_FRONTEND_SERVICE_BYTES
-                ) > MAXIMUM_FRONTEND_SERVICE_BYTES:
+                if (
+                    utf8_length(text, stop_after=MAXIMUM_FRONTEND_SERVICE_BYTES)
+                    > MAXIMUM_FRONTEND_SERVICE_BYTES
+                ):
                     raise ValueError("display line exceeds the frontend service limit")
                 response = {0: query[0], 1: text}
             elif kind == 10 and operation == "html_get_printed_str":
                 query = decode(request[4])
                 response = {
                     0: query[0],
-                    1: self.presentation.html_printed_str(
-                        query[1], MAXIMUM_FRONTEND_SERVICE_BYTES
-                    ),
+                    1: self.presentation.html_printed_str(query[1], MAXIMUM_FRONTEND_SERVICE_BYTES),
                 }
             elif kind == 10 and operation == "serialize_physical_history":
                 query = decode(request[4])
                 retained_bytes = self.presentation.physical_history_utf8_bytes()
-                prefix_bytes = (
-                    0 if query[2] else utf8_length(str(query[1])) + 2
-                )
+                prefix_bytes = 0 if query[2] else utf8_length(str(query[1])) + 2
                 if retained_bytes + prefix_bytes > MAXIMUM_FRONTEND_SERVICE_BYTES:
                     raise ValueError("physical history exceeds the frontend service limit")
                 body = self.presentation.physical_history()
@@ -138,6 +145,20 @@ class _RuntimeInteractionMixin:
         except Exception as error:  # noqa: BLE001 - external-service boundary
             result = variant(1, {0: "frontend.unsupported_service", 1: str(error)})
         self.send_runtime(53, {0: request_id, 1: result}, correlation_id=correlation_id)
+
+    def complete_device_pump(self, request_id: int) -> None:
+        pending = self._pending_device_pumps.pop(request_id, None)
+        if pending is None:
+            return
+        epoch, through_event_sequence, correlation_id = pending
+        self.send_runtime(
+            53,
+            {
+                0: request_id,
+                1: variant(0, encode({0: epoch, 1: through_event_sequence})),
+            },
+            correlation_id=correlation_id,
+        )
 
     def _advance_deadline(self) -> None:
         if (

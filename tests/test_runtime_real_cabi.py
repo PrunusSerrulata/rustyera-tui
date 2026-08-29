@@ -299,6 +299,15 @@ def test_real_c_abi_diagnosis_contains_a_parseable_full_project(
     ]
     assert header["step_count"] == 1
     step = json.loads(replay.splitlines()[1])
+    source = step.pop("source")
+    assert source == {
+        "root": "External",
+        "admission": 2,
+        "fragment": 0,
+        "raw": "8",
+        "macro_enabled": True,
+        "message_skip": False,
+    }
     assert step == {
         "record": "step",
         "sequence": 1,
@@ -566,9 +575,27 @@ def test_real_c_abi_reports_a_terminal_runtime_fault(
 @pytest.mark.parametrize(
     ("fixture", "expression", "service", "major", "api"),
     [
-        ("html", 'RESULT = HTML_STRINGLEN("x",1)', "PresentationQuery.html_string_len", 2, "HTML_STRINGLEN"),
-        ("html", 'RESULTS \'= HTML_SUBSTRING("x",1)', "PresentationQuery.html_substring", 2, "HTML_SUBSTRING"),
-        ("html", 'RESULT = HTML_STRINGLINES("x",1)', "PresentationQuery.html_string_lines", 2, "HTML_STRINGLINES"),
+        (
+            "html",
+            'RESULT = HTML_STRINGLEN("x",1)',
+            "PresentationQuery.html_string_len",
+            2,
+            "HTML_STRINGLEN",
+        ),
+        (
+            "html",
+            'RESULTS \'= HTML_SUBSTRING("x",1)',
+            "PresentationQuery.html_substring",
+            2,
+            "HTML_SUBSTRING",
+        ),
+        (
+            "html",
+            'RESULT = HTML_STRINGLINES("x",1)',
+            "PresentationQuery.html_string_lines",
+            2,
+            "HTML_STRINGLINES",
+        ),
         ("pointer", None, "InputState.pointer_state", 1, "MOUSEB"),
         ("canvas", None, "Canvas.sample_canvas_pixel", 1, "GGETCOLOR"),
     ],
@@ -639,9 +666,9 @@ def test_real_c_abi_snake_projection_services_report_exact_missing_capability(
                 {
                     "seed": 123456,
                     "runtime_library": str(library),
-                    "requested_core_revision": (
-                        Path(__file__).parents[1] / "rustyera-core.rev"
-                    ).read_text(encoding="utf-8").strip(),
+                    "requested_core_revision": (Path(__file__).parents[1] / "rustyera-core.rev")
+                    .read_text(encoding="utf-8")
+                    .strip(),
                     "api": api,
                     "required_service": f"{service}@{major}.0",
                     "output": plain_output(model),
@@ -651,7 +678,8 @@ def test_real_c_abi_snake_projection_services_report_exact_missing_capability(
                 },
                 ensure_ascii=False,
                 indent=2,
-            ) + "\n",
+            )
+            + "\n",
             encoding="utf-8",
         )
     finally:

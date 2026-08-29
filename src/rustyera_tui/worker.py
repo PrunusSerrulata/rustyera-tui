@@ -60,9 +60,7 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
         self.metrics_threshold_ms = metrics_threshold_ms
         self.initial_state = initial_state
         self.initial_project_file = initial_project_file
-        self.commands: queue.Queue[FrontendCommand] = queue.Queue(
-            maxsize=MAX_WORKER_COMMANDS
-        )
+        self.commands: queue.Queue[FrontendCommand] = queue.Queue(maxsize=MAX_WORKER_COMMANDS)
         self._projection_command_lock = threading.Lock()
         self._pending_projection: Any = None
         self._projection_command_queued = False
@@ -277,6 +275,8 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
                     client.activate(command.value)
                 case "input_undo":
                     client.input_undo(command.value)
+                case "device_pump_ack":
+                    client.complete_device_pump(int(command.value))
                 case "projection":
                     with self._projection_command_lock:
                         projection = self._pending_projection

@@ -362,6 +362,8 @@ class GameViewport(ScrollableContainer):
         self._interactive_children: set[GameLine] = set()
         self._enabled_interaction_children: set[GameLine] = set()
         self._interaction_children_by_generation: dict[int | None, set[GameLine]] = {}
+        self._preserve_user_viewport = False
+        self._nf_user_scrolled = False
 
     @property
     def content_width(self) -> int:
@@ -548,6 +550,20 @@ class GameViewport(ScrollableContainer):
             if isinstance(child, GameLine):
                 child.set_button_focus(color)
 
+    def observe_input_viewport_policy(self, policy: int | None) -> None:
+        """Keep NF scroll intent until an ordinary wait restores output following."""
+
+        if policy is None:
+            return
+        if policy == 1:
+            if not self._preserve_user_viewport:
+                self._nf_user_scrolled = not self.is_vertical_scroll_end
+            self._preserve_user_viewport = True
+            return
+        self._preserve_user_viewport = False
+        self._nf_user_scrolled = False
+        self.anchor()
+
     async def set_lines(
         self,
         lines: list[DisplayLineModel],
@@ -557,6 +573,8 @@ class GameViewport(ScrollableContainer):
         retired_interaction_sequence: int = 0,
     ) -> bool:
         self._apply_interaction_policy(button_generation, retired_interaction_sequence)
+        if self._preserve_user_viewport:
+            self._nf_user_scrolled = not self.is_vertical_scroll_end
         changed_from = None if changed_from is None else max(0, changed_from)
         requested_trim = max(0, trimmed_prefix)
         source_trim = min(
@@ -665,7 +683,7 @@ class GameViewport(ScrollableContainer):
         # Reference Emuera leaves the scrollbar unchanged when CLEARLINE removes a dynamic
         # frame and the replacement restores the same line count. Follow genuinely appended
         # history, but let equal-length tail replacement update the existing rows in place.
-        if history_grew:
+        if history_grew and not (self._preserve_user_viewport and self._nf_user_scrolled):
             self.anchor()
         return self._horizontal_overflow
 

@@ -26,7 +26,13 @@ from services_test_support import (
     _PendingExport,
     ExportStage,
 )
-from rustyera_tui.wire import CHANNEL_RUNTIME, RUNTIME_VERSION, encode_envelope, runtime_message
+from rustyera_tui.wire import (
+    CHANNEL_RUNTIME,
+    RUNTIME_VERSION,
+    decode_envelope,
+    encode_envelope,
+    runtime_message,
+)
 
 
 def test_server_hello_reports_the_runtime_product_version() -> None:
@@ -41,6 +47,7 @@ def test_server_hello_reports_the_runtime_product_version() -> None:
 def test_first_envelope_of_new_epoch_resets_storage_before_dispatch(tmp_path: Path) -> None:
     client = object.__new__(RuntimeClient)
     client.epoch = 7
+    client._runtime_epoch_transition = None
     client.expected_runtime_output = 0
     client.storage = StorageBackend(tmp_path)
     client.storage.begin_epoch(7)
@@ -423,6 +430,82 @@ def test_client_hello_negotiates_the_pending_project_envelope_size(tmp_path: Pat
     assert limits[1] >= 200 * 1024 * 1024
     assert limits[0] > limits[1]
     assert limits[5] == 1024 * 1024 * 1024
+    capabilities = captured[0][1][4]
+    services = {(item[0], item[1]) for item in capabilities[10]}
+    assert (7, "device_pump") in services
+    assert (7, "get_key_state") not in services
+    assert {item[0] for item in capabilities[12]} == {
+        "input.timed_viewport",
+        "input.device_pump",
+    }
+
+
+def test_device_pump_waits_for_a_frontend_loop_acknowledgement() -> None:
+    client, captured = client_with_capture()
+
+    client._handle_service(
+        {
+            0: 17,
+            1: 7,
+            2: "device_pump",
+            4: encode({0: 4, 1: 12}),
+        },
+        99,
+    )
+
+    assert captured == []
+    assert client.events.get_nowait() == FrontendEvent("device_pump", 17)
+    client.complete_device_pump(17)
+    assert ready_payload(captured) == {0: 4, 1: 12}
+    assert 17 not in client._pending_device_pumps
+
+
+def test_runtime_output_responses_follow_the_batch_acknowledgement() -> None:
+    submissions: list[bytes] = []
+
+    class FakeAbi:
+        def submit(self, data: bytes) -> None:
+            submissions.append(data)
+
+    client = RuntimeClient(FakeAbi(), queue.Queue())  # type: ignore[arg-type]
+    submissions.clear()  # Ignore ClientHello.
+    client.session = {0: 1, 1: 2}
+    client.epoch = 4
+    client._runtime_output_batch_active = True
+    transition = client.send_runtime(20, {0: 0})
+    after_transition = client.send_runtime(60, {0: 2, 1: 0})
+    client._runtime_output_batch_active = False
+
+    acknowledgement = client.send_runtime(93, {0: 7})
+    client._flush_deferred_runtime_messages()
+
+    envelopes = [decode_envelope(data) for data in submissions]
+    assert [envelope.payload_tag for envelope in envelopes] == [93, 20]
+    assert [envelope.message_id for envelope in envelopes] == [acknowledgement, transition]
+    assert [envelope.epoch for envelope in envelopes] == [4, 4]
+    assert [envelope.sequence for envelope in envelopes] == [1, 2]
+
+    client._handle_runtime = lambda *_args: None  # type: ignore[method-assign]
+    client._handle_envelope(
+        encode_envelope(
+            channel=CHANNEL_RUNTIME,
+            channel_version=RUNTIME_VERSION,
+            session=client.session,
+            sequence=0,
+            message_id=8,
+            correlation_id=transition,
+            payload_tag=42,
+            payload=runtime_message(42, {}),
+            epoch=5,
+        )
+    )
+    client._flush_deferred_runtime_messages()
+
+    envelopes = [decode_envelope(data) for data in submissions]
+    assert [envelope.payload_tag for envelope in envelopes] == [93, 20, 60]
+    assert envelopes[-1].message_id == after_transition
+    assert envelopes[-1].epoch == 5
+    assert envelopes[-1].sequence == 3
 
 
 def test_projection_is_bound_to_the_revision_the_tui_rendered() -> None:

@@ -80,6 +80,10 @@ def client_with_capture() -> tuple[RuntimeClient, list[tuple[int, Any]]]:
     client.active_wait = None
     client._projection_messages = set()
     client._input_messages = {}
+    client._pending_device_pumps = {}
+    client._runtime_output_batch_active = False
+    client._deferred_runtime_messages = []
+    client._runtime_epoch_transition = None
     client.pending_export = None
     client.full_project_export = None
     client.pending_cache_after = None

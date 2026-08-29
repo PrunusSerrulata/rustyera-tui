@@ -148,6 +148,10 @@ class RuntimeClient(
         self._presentation_boundary_dirty = False
         self._projection_messages: set[int] = set()
         self._input_messages: dict[int, PendingGameInput] = {}
+        self._pending_device_pumps: dict[int, tuple[int, int, int | None]] = {}
+        self._runtime_output_batch_active = False
+        self._deferred_runtime_messages: list[tuple[int, int, Any, int | None]] = []
+        self._runtime_epoch_transition: tuple[int, int | None] | None = None
         self._session_reset_active = False
         self._session_destroy_pending = False
         self._replacement_session_prepared = False
@@ -233,6 +237,10 @@ class RuntimeClient(
         self._presentation_boundary_dirty = False
         self._projection_messages.clear()
         self._input_messages.clear()
+        self._pending_device_pumps.clear()
+        self._runtime_output_batch_active = False
+        self._deferred_runtime_messages.clear()
+        self._runtime_epoch_transition = None
         self.reload_candidate = None
         self.reload_message_id = None
         if self.pending_export is not None:

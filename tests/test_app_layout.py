@@ -767,6 +767,40 @@ async def test_viewport_follows_appended_history(tmp_path: Path) -> None:
         assert viewport.is_vertical_scroll_end
 
 
+async def test_nf_viewport_preserves_upscroll_until_an_ordinary_wait(tmp_path: Path) -> None:
+    app = RustyEraTui(tmp_path, None)
+    worker = FakeWorker()
+    app.worker = worker  # type: ignore[assignment]
+    lines = [
+        DisplayLineModel(index, False, True, True, 0, (DisplaySegment(f"line {index}"),))
+        for index in range(60)
+    ]
+    async with app.run_test(size=(100, 20)) as pilot:
+        viewport = app.query_one(GameViewport)
+        await viewport.set_lines(lines)
+        await pilot.pause()
+        viewport.scroll_home(animate=False, x_axis=False)
+        await pilot.pause()
+        viewport.observe_input_viewport_policy(1)
+
+        await viewport.set_lines([*lines, DisplayLineModel(60, False, True, True, 0, ())])
+        await pilot.pause()
+        assert not viewport.is_vertical_scroll_end
+
+        # A closed wait and a subsequent NF wait retain the same intent. A
+        # CLEARLINE-style prefix trim must not silently restore following.
+        viewport.observe_input_viewport_policy(None)
+        viewport.observe_input_viewport_policy(1)
+        retained = lines[10:]
+        await viewport.set_lines(retained, changed_from=0, trimmed_prefix=10)
+        await pilot.pause()
+        assert not viewport.is_vertical_scroll_end
+
+        viewport.observe_input_viewport_policy(0)
+        await pilot.pause()
+        assert viewport.is_vertical_scroll_end
+
+
 async def test_viewport_preserves_scroll_for_equal_length_dynamic_tail_refresh(
     tmp_path: Path,
 ) -> None:
