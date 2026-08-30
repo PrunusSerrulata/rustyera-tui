@@ -421,15 +421,20 @@ def test_missing_reader_and_row_limit_return_core_valid_error_state(
 
 
 @pytest.mark.parametrize(
-    "sql",
+    ("sql", "sqlite_code"),
     [
-        "ATTACH DATABASE '/tmp/rustyera-forbidden.db' AS external",
-        "VACUUM INTO '/tmp/rustyera-forbidden.db'",
-        "CREATE VIRTUAL TABLE forbidden USING fts5(value)",
-        "SELECT load_extension('/tmp/rustyera-forbidden')",
+        ("ATTACH DATABASE '' AS external", apsw.SQLITE_AUTH),
+        ("ATTACH DATABASE '/tmp/rustyera-forbidden.db' AS external", apsw.SQLITE_AUTH),
+        ("VACUUM INTO '/tmp/rustyera-forbidden.db'", apsw.SQLITE_AUTH),
+        ("VACUUM; ATTACH DATABASE '' AS external", apsw.SQLITE_AUTH),
+        ("VACUUM main", apsw.SQLITE_AUTH),
+        ("CREATE VIRTUAL TABLE forbidden USING fts5(value)", apsw.SQLITE_AUTH),
+        ("SELECT load_extension('/tmp/rustyera-forbidden')", apsw.SQLITE_ERROR),
     ],
 )
-def test_untrusted_sql_cannot_access_host_files_or_extensions(sql: str) -> None:
+def test_untrusted_sql_cannot_access_host_files_or_extensions(
+    sql: str, sqlite_code: int
+) -> None:
     provider = SqlProvider()
     storage = UnusedStorage()
     open_memory(provider, storage)
@@ -437,6 +442,77 @@ def test_untrusted_sql_cannot_access_host_files_or_extensions(sql: str) -> None:
     rejected = request(provider, variant(1, CONNECTION, 0, sql, []), storage)
 
     assert result(rejected)[0] == 10
+    assert result(rejected)[1][0][0] == SqlErrorCode.SQLITE
+    assert result(rejected)[1][0][3] == sqlite_code
+    assert result(
+        request(provider, variant(1, CONNECTION, 1, "SELECT 42", []), storage)
+    ) == (2, [variant(1, 42)])
+
+
+@pytest.mark.parametrize("sql", ["VACUUM", " vacuum;\n"])
+def test_bare_vacuum_is_allowed_without_leaking_attach_authorization(sql: str) -> None:
+    provider = SqlProvider()
+    storage = UnusedStorage()
+    open_memory(provider, storage)
+
+    vacuumed = request(provider, variant(1, CONNECTION, 0, sql, []), storage)
+
+    assert result(vacuumed) == (1, [0])
+    rejected = request(
+        provider,
+        variant(1, CONNECTION, 0, "ATTACH DATABASE '' AS external", []),
+        storage,
+    )
+    assert result(rejected)[0] == 10
+    assert result(rejected)[1][0][0] == SqlErrorCode.SQLITE
+    assert result(rejected)[1][0][3] == apsw.SQLITE_AUTH
+
+
+def test_resource_vacuum_publishes_compaction_and_reopens_it(tmp_path: Path) -> None:
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    seed_path = plugins / "seed.db"
+    database = apsw.Connection(str(seed_path))
+    database.execute("CREATE TABLE retained(value INTEGER)")
+    database.execute("CREATE TABLE discarded(value BLOB)")
+    database.execute(
+        "WITH RECURSIVE sequence(value) AS ("
+        "SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 64"
+        ") INSERT INTO discarded SELECT zeroblob(2048) FROM sequence"
+    )
+    database.execute("DELETE FROM discarded")
+    database.execute("INSERT INTO retained VALUES(42)")
+    assert database.execute("PRAGMA freelist_count").fetchone()[0] > 0
+    database.close()
+    seed_sha = hashlib.sha256(seed_path.read_bytes()).digest()
+    storage = StorageBackend(tmp_path, resource_bundle=ProjectBundle.scan(tmp_path))
+    open_operation = variant(
+        0,
+        CONNECTION,
+        "persistent",
+        {0: variant(1, {0: "plugins/seed.db", 1: seed_sha}), 1: "3.53.0", 2: 1},
+        variant(0),
+        dict(LIMITS),
+    )
+    provider = SqlProvider()
+    opened = request(provider, open_operation, storage)
+
+    vacuumed = request(provider, variant(1, CONNECTION, 0, "VACUUM", []), storage)
+
+    assert result(vacuumed) == (1, [0])
+    assert vacuumed[1][3][0] != opened[1][3][0]
+    assert result(
+        request(provider, variant(1, CONNECTION, 1, "PRAGMA freelist_count", []), storage)
+    ) == (2, [variant(1, 0)])
+
+    restarted = SqlProvider()
+    request(restarted, open_operation, storage)
+    assert result(
+        request(restarted, variant(1, CONNECTION, 1, "PRAGMA freelist_count", []), storage)
+    ) == (2, [variant(1, 0)])
+    assert result(
+        request(restarted, variant(1, CONNECTION, 1, "SELECT value FROM retained", []), storage)
+    ) == (2, [variant(1, 42)])
 
 
 def test_memory_database_growth_is_bounded_by_sqlite(monkeypatch: pytest.MonkeyPatch) -> None:

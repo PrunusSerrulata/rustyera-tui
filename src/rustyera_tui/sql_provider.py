@@ -94,6 +94,7 @@ class SqlConnection:
     durable_bytes: bytes | None = None
     chain: SqlChain | None = None
     active_write_probe: list[bool] | None = None
+    allow_bare_vacuum: bool = False
 
 
 @dataclass(slots=True)
@@ -338,7 +339,11 @@ class SqlProvider:
         bindings = {str(index): value for index, value in enumerate(parameters)}
         probe = [False]
         try:
-            with self._write_probe(connection, probe), self._budget(connection.database, deadline):
+            with self._write_probe(
+                connection,
+                probe,
+                allow_bare_vacuum=mode == 0 and not parameters and _is_bare_vacuum(sql),
+            ), self._budget(connection.database, deadline):
                 cursor = (
                     connection.database.execute(sql, bindings)
                     if parameters
@@ -580,13 +585,22 @@ class SqlProvider:
         return _SqlBudget(database, deadline)
 
     @contextmanager
-    def _write_probe(self, connection: SqlConnection, probe: list[bool]) -> Iterator[None]:
-        previous = connection.active_write_probe
+    def _write_probe(
+        self,
+        connection: SqlConnection,
+        probe: list[bool],
+        *,
+        allow_bare_vacuum: bool = False,
+    ) -> Iterator[None]:
+        previous_probe = connection.active_write_probe
+        previous_vacuum = connection.allow_bare_vacuum
         connection.active_write_probe = probe
+        connection.allow_bare_vacuum = allow_bare_vacuum
         try:
             yield
         finally:
-            connection.active_write_probe = previous
+            connection.active_write_probe = previous_probe
+            connection.allow_bare_vacuum = previous_vacuum
 
     def _configure_database(self, connection: SqlConnection) -> None:
         database = connection.database
@@ -626,12 +640,13 @@ class SqlProvider:
         _database_name: str | None,
         _trigger_name: str | None,
     ) -> int:
-        denied = {
-            apsw.SQLITE_ATTACH,
-            apsw.SQLITE_DETACH,
-            apsw.SQLITE_CREATE_VTABLE,
-            apsw.SQLITE_DROP_VTABLE,
-        }
+        if action == apsw.SQLITE_ATTACH:
+            if argument_one == "" and connection.allow_bare_vacuum:
+                if connection.active_write_probe is not None:
+                    connection.active_write_probe[0] = True
+                return apsw.SQLITE_OK
+            return apsw.SQLITE_DENY
+        denied = {apsw.SQLITE_DETACH, apsw.SQLITE_CREATE_VTABLE, apsw.SQLITE_DROP_VTABLE}
         if action in denied:
             return apsw.SQLITE_DENY
         if action == apsw.SQLITE_FUNCTION and (argument_two or argument_one) == "load_extension":
@@ -884,6 +899,15 @@ def _map(value: Any, keys: set[int], name: str) -> dict[int, Any]:
     if not isinstance(value, dict) or set(value) != keys:
         raise ValueError(f"{name} has an invalid CBOR map shape")
     return value
+
+
+def _is_bare_vacuum(sql: str) -> bool:
+    whitespace = r"[\t\n\v\f\r ]*"
+    return re.fullmatch(
+        rf"{whitespace}vacuum{whitespace};?{whitespace}",
+        sql,
+        re.ASCII | re.IGNORECASE,
+    ) is not None
 
 
 def _length(value: list[Any], expected: int, name: str) -> None:
