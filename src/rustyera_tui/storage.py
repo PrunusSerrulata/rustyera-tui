@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import tempfile
 from collections import OrderedDict
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO, Iterator
 
 import blake3
 
@@ -135,20 +136,19 @@ class StorageBackend:
         primary = self._resolve(namespace, relative)
         pure = PurePosixPath(relative)
         exists = _read_path_exists(namespace_root.joinpath(*pure.parts), primary)
-        if (
-            self.compatibility_profile == "emuera.em"
-            and namespace in (0, 3)
-            and not exists
-        ):
+        if self.compatibility_profile == "emuera.em" and namespace in (0, 3) and not exists:
             requested = self.project_root.joinpath(*pure.parts)
             fallback = requested.resolve()
             if fallback == self.project_root or self.project_root in fallback.parents:
                 logical = (
                     fallback.relative_to(self.project_root).as_posix()
-                    if fallback != self.project_root else ""
+                    if fallback != self.project_root
+                    else ""
                 )
                 return self.project_root, ResolvedDataPath(
-                    fallback, logical, _read_path_exists(requested, fallback),
+                    fallback,
+                    logical,
+                    _read_path_exists(requested, fallback),
                 )
         logical = primary.relative_to(root).as_posix() if primary != root else ""
         return root, ResolvedDataPath(primary, logical, exists)
@@ -223,36 +223,43 @@ class StorageBackend:
             return variant(0, data, blake3.blake3(data).hexdigest())
         if operation_tag == 1:  # Write
             data, atomic_replace, precondition = fields
-            conflict = _precondition_conflict(path, precondition)
-            if conflict is not None:
-                return conflict
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if atomic_replace:
-                descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-                try:
-                    with os.fdopen(descriptor, "wb") as stream:
-                        stream.write(data)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    os.replace(temporary, path)
-                finally:
-                    Path(temporary).unlink(missing_ok=True)
-            else:
-                path.write_bytes(data)
-            return variant(1, blake3.blake3(data).hexdigest())
+            with self._mutation_lock(namespace):
+                conflict = _precondition_conflict(path, precondition)
+                if conflict is not None:
+                    return conflict
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if atomic_replace:
+                    descriptor, temporary = tempfile.mkstemp(
+                        prefix=f".{path.name}.", dir=path.parent
+                    )
+                    try:
+                        with os.fdopen(descriptor, "wb") as stream:
+                            stream.write(data)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        os.replace(temporary, path)
+                    finally:
+                        Path(temporary).unlink(missing_ok=True)
+                else:
+                    path.write_bytes(data)
+                return variant(1, blake3.blake3(data).hexdigest())
         if operation_tag == 2:  # List
             pattern, recursive = fields
             entries = list_storage(
-                read_root, selected, pattern, recursive,
+                read_root,
+                selected,
+                pattern,
+                recursive,
                 self.compatibility_profile == "emuera.skia.snake" and namespace == 3,
             )
             return variant(2, entries)
         if operation_tag == 3:  # Delete
-            conflict = _precondition_conflict(path, fields[0])
-            if conflict is not None:
-                return conflict
-            path.unlink()
-            return variant(3)
+            with self._mutation_lock(namespace):
+                conflict = _precondition_conflict(path, fields[0])
+                if conflict is not None:
+                    return conflict
+                path.unlink()
+                return variant(3)
         if operation_tag == 4:  # Stat
             before = path.stat()
             digest = _file_digest(path)
@@ -283,3 +290,47 @@ class StorageBackend:
             complete = offset + len(data) >= after.st_size
             return variant(6, data, offset, complete, token)
         raise ValueError(f"unknown storage operation {operation_tag}")
+
+    @contextmanager
+    def _mutation_lock(self, namespace: int) -> Iterator[None]:
+        """Serialize Data CAS precondition checks and replacements across frontend processes."""
+
+        if namespace != 3:
+            yield
+            return
+        lock_path = self.data_root / ".rustyera" / "locks" / "data-storage.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as stream:
+            _lock_stream(stream)
+            try:
+                yield
+            finally:
+                _unlock_stream(stream)
+
+
+def _lock_stream(stream: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        stream.seek(0)
+        if stream.read(1) == b"":
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_stream(stream: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        stream.seek(0)
+        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)

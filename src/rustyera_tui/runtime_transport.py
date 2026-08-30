@@ -37,6 +37,7 @@ class _RuntimeTransportMixin:
             {0: 10, 1: "html_get_printed_str", 2: version_range(1, 0)},
             {0: 10, 1: "serialize_physical_history", 2: version_range(1, 0)},
             {0: 0, 1: "gget_text_size", 2: version_range(1, 0)},
+            {0: 11, 1: "rustyera.sql", 2: version_range(1, 0)},
         ]
         capabilities = {
             0: [0, 1],
@@ -190,6 +191,9 @@ class _RuntimeTransportMixin:
         # StateChanged message is observed. The common envelope already carries that authority;
         # adopt it before acknowledging the message so the acknowledgement cannot be stale.
         if envelope.epoch is not None:
+            if self.epoch is not None and envelope.epoch != self.epoch:
+                self._pending_sql_requests.clear()
+                self.sql_provider.reset()
             self.epoch = envelope.epoch
             if self.storage is not None:
                 self.storage.begin_epoch(self.epoch)
@@ -239,7 +243,17 @@ class _RuntimeTransportMixin:
                     acknowledge_through = runtime_sequence
         except Exception:
             self._deferred_runtime_messages.clear()
+            self._pending_sql_requests.clear()
+            self.sql_provider.reset()
             raise
+        finally:
+            self._runtime_output_batch_active = False
+        # SQL requests are deliberately executed after the complete runtime batch has been
+        # observed, so a CancelExternalRequest emitted later in that same batch wins before
+        # APSW can create side effects. Queue their responses with the other batch replies.
+        self._runtime_output_batch_active = True
+        try:
+            self._flush_pending_sql_requests()
         finally:
             self._runtime_output_batch_active = False
         self._flush_presentation_events()

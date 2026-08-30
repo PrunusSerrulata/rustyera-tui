@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/snake-sql-project",
+  "mode": "autonomous",
+  "seed": 123456,
+  "goal": {
+    "output_contains": [
+      "SNAKE_SQL_SCALAR=1/alpha",
+      "SNAKE_SQL_READER=1/1",
+      "SNAKE_SQL_PERSIST=2",
+      "SNAKE_SQL_REOPEN=2",
+      "SNAKE_SQL_READY"
+    ],
+    "wait_kind": 2
+  },
+  "limits": {
+    "max_steps": 8,
+    "timeout_seconds": 120
+  }
+}

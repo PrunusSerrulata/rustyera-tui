@@ -3,10 +3,11 @@
 import platform
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 project_root = Path(SPEC).resolve().parent
 package_dir = project_root / "src" / "rustyera_tui"
+apsw_datas, apsw_binaries, apsw_hiddenimports = collect_all("apsw")
 
 system = platform.system()
 machine = platform.machine().lower()
@@ -29,9 +30,9 @@ if not library.exists():
 a = Analysis(
     ["entry.py"],
     pathex=["src"],
-    binaries=[(str(library), "rustyera_tui")],
-    datas=[("src/rustyera_tui/app.tcss", "rustyera_tui")],
-    hiddenimports = collect_submodules("textual.widgets") + [
+    binaries=[(str(library), "rustyera_tui"), *apsw_binaries],
+    datas=[("src/rustyera_tui/app.tcss", "rustyera_tui"), *apsw_datas],
+    hiddenimports=collect_submodules("textual.widgets") + apsw_hiddenimports + [
         "rich",
         "rich.console",
         "rich.panel",

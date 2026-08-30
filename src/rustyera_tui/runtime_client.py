@@ -42,6 +42,7 @@ from .runtime_project import _RuntimeProjectMixin
 from .runtime_rejections import _RuntimeRejectionMixin
 from .runtime_transport import _RuntimeTransportMixin
 from .runtime_transfer import _RuntimeTransferMixin
+from .sql_provider import SqlProvider
 from .client_preferences import (
     LoadedPreferences,
     global_preferences_path,
@@ -149,6 +150,8 @@ class RuntimeClient(
         self._projection_messages: set[int] = set()
         self._input_messages: dict[int, PendingGameInput] = {}
         self._pending_device_pumps: dict[int, tuple[int, int, int | None]] = {}
+        self.sql_provider = SqlProvider()
+        self._pending_sql_requests: dict[int, tuple[dict[int, Any], int | None]] = {}
         self._runtime_output_batch_active = False
         self._deferred_runtime_messages: list[tuple[int, int, Any, int | None]] = []
         self._runtime_epoch_transition: tuple[int, int | None] | None = None
@@ -238,6 +241,8 @@ class RuntimeClient(
         self._projection_messages.clear()
         self._input_messages.clear()
         self._pending_device_pumps.clear()
+        self._pending_sql_requests.clear()
+        self.sql_provider.reset()
         self._runtime_output_batch_active = False
         self._deferred_runtime_messages.clear()
         self._runtime_epoch_transition = None
@@ -554,6 +559,8 @@ class RuntimeClient(
             self._handle_storage(value, correlation_id)
         elif tag == 52:
             self._handle_service(value, correlation_id)
+        elif tag == 54:
+            self._cancel_external_request(value)
         elif tag == 61:
             self._handle_export_ready(value, correlation_id)
         elif tag == 63:

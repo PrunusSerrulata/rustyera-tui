@@ -69,6 +69,9 @@ class _RuntimeInteractionMixin:
 
     def _handle_service(self, request: dict[int, Any], correlation_id: int | None) -> None:
         request_id, kind, operation = request[0], request[1], request[2]
+        if kind == 11 and operation == "rustyera.sql":
+            self._pending_sql_requests[request_id] = (request, correlation_id)
+            return
         if kind == 7 and operation == "device_pump":
             query = decode(request[4])
             epoch, after_event_sequence = query[0], query[1]
@@ -145,6 +148,50 @@ class _RuntimeInteractionMixin:
         except Exception as error:  # noqa: BLE001 - external-service boundary
             result = variant(1, {0: "frontend.unsupported_service", 1: str(error)})
         self.send_runtime(53, {0: request_id, 1: result}, correlation_id=correlation_id)
+
+    def _flush_pending_sql_requests(self) -> None:
+        pending = self._pending_sql_requests
+        self._pending_sql_requests = {}
+        for request_id, (request, correlation_id) in pending.items():
+            try:
+                if request.get(3) != {0: 1, 1: 0}:
+                    raise ValueError("unsupported rustyera.sql operation version")
+                payload = request.get(4)
+                if not isinstance(payload, bytes):
+                    raise ValueError("rustyera.sql request payload is not bytes")
+                if self.storage is None:
+                    raise RuntimeError("rustyera.sql requested without active project storage")
+                if self.bundle is not None:
+                    self.storage.bind_resources(self.bundle)
+                response = self.sql_provider.handle(
+                    payload,
+                    self.storage,
+                    request.get(5),
+                )
+                result = variant(0, response)
+            except Exception as error:  # noqa: BLE001 - external-service boundary
+                result = variant(1, {0: "frontend.sql_failure", 1: str(error)})
+            self.send_runtime(
+                53,
+                {0: request_id, 1: result},
+                correlation_id=correlation_id,
+            )
+
+    def _cancel_external_request(self, request: dict[int, Any]) -> None:
+        request_id = request[0]
+        if request[1] != 1:
+            return
+        self._pending_sql_requests.pop(request_id, None)
+        self._pending_device_pumps.pop(request_id, None)
+        self._deferred_runtime_messages = [
+            message
+            for message in self._deferred_runtime_messages
+            if not (
+                message[1] == 53
+                and isinstance(message[2], dict)
+                and message[2].get(0) == request_id
+            )
+        ]
 
     def complete_device_pump(self, request_id: int) -> None:
         pending = self._pending_device_pumps.pop(request_id, None)
