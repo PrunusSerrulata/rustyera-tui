@@ -26,6 +26,7 @@ class _RuntimeTransportMixin:
     """Own the wire envelopes and the atomic poll/acknowledgement pump boundary."""
 
     _EPOCH_TRANSITION_TAGS = frozenset({20, 23})
+    _EPOCH_TRANSITION_REPLY_TAGS = frozenset({51, 53})
 
     def _send_hello(self) -> None:
         service_capabilities = [
@@ -137,15 +138,18 @@ class _RuntimeTransportMixin:
             self._runtime_epoch_transition = (message_id, self.epoch)
 
     def _flush_deferred_runtime_messages(self) -> None:
-        if self._runtime_epoch_transition is not None:
-            return
         messages = self._deferred_runtime_messages
         self._deferred_runtime_messages = []
-        for index, (message_id, tag, value, correlation_id) in enumerate(messages):
+        for message_id, tag, value, correlation_id in messages:
+            if (
+                self._runtime_epoch_transition is not None
+                and tag not in self._EPOCH_TRANSITION_REPLY_TAGS
+            ):
+                self._deferred_runtime_messages.append(
+                    (message_id, tag, value, correlation_id)
+                )
+                continue
             self._submit_runtime(message_id, tag, value, correlation_id)
-            if self._runtime_epoch_transition is not None:
-                self._deferred_runtime_messages.extend(messages[index + 1 :])
-                break
 
     def send_debug(self, tag: int, value: Any | None = None, *, pending: str = "") -> int:
         if self.session is None or self.epoch is None:

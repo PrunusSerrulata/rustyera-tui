@@ -603,16 +603,27 @@ def test_runtime_output_responses_follow_the_batch_acknowledgement() -> None:
     client._runtime_output_batch_active = True
     transition = client.send_runtime(20, {0: 0})
     after_transition = client.send_runtime(60, {0: 2, 1: 0})
+    transition_service_result = client.send_runtime(
+        53,
+        {0: 17, 1: variant(0, b"exact revision")},
+    )
     client._runtime_output_batch_active = False
 
     acknowledgement = client.send_runtime(93, {0: 7})
     client._flush_deferred_runtime_messages()
 
     envelopes = [decode_envelope(data) for data in submissions]
-    assert [envelope.payload_tag for envelope in envelopes] == [93, 20]
-    assert [envelope.message_id for envelope in envelopes] == [acknowledgement, transition]
-    assert [envelope.epoch for envelope in envelopes] == [4, 4]
-    assert [envelope.sequence for envelope in envelopes] == [1, 2]
+    assert [envelope.payload_tag for envelope in envelopes] == [93, 20, 53]
+    assert [envelope.message_id for envelope in envelopes] == [
+        acknowledgement,
+        transition,
+        transition_service_result,
+    ]
+    assert [envelope.epoch for envelope in envelopes] == [4, 4, 4]
+    assert [envelope.sequence for envelope in envelopes] == [1, 2, 3]
+    assert client._deferred_runtime_messages == [
+        (after_transition, 60, {0: 2, 1: 0}, None)
+    ]
 
     client._handle_runtime = lambda *_args: None  # type: ignore[method-assign]
     client._handle_envelope(
@@ -631,10 +642,10 @@ def test_runtime_output_responses_follow_the_batch_acknowledgement() -> None:
     client._flush_deferred_runtime_messages()
 
     envelopes = [decode_envelope(data) for data in submissions]
-    assert [envelope.payload_tag for envelope in envelopes] == [93, 20, 60]
+    assert [envelope.payload_tag for envelope in envelopes] == [93, 20, 53, 60]
     assert envelopes[-1].message_id == after_transition
     assert envelopes[-1].epoch == 5
-    assert envelopes[-1].sequence == 3
+    assert envelopes[-1].sequence == 4
 
 
 def test_projection_is_bound_to_the_revision_the_tui_rendered() -> None:
