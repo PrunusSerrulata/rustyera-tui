@@ -6,10 +6,10 @@ from enum import Enum, auto
 from typing import Any, cast
 
 from .presentation_helpers import packed_color_hex as _packed_color_hex
+from .presentation_types import TERMINAL_CELL_WIDTH_PX
 from .terminal_canvas import MAX_TERMINAL_COLUMNS, MAX_TERMINAL_ROWS
 from .wire import unwrap_variant
 
-TERMINAL_CELL_WIDTH_PX = 8
 TERMINAL_CELL_HEIGHT_PX = 16
 
 

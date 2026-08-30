@@ -139,7 +139,7 @@ class _WorkerEventMixin:
             if value.delta is not None:
                 try:
                     self.presentation.apply_delta(value.delta)
-                except ValueError as error:
+                except (TypeError, ValueError) as error:
                     self._log(str(error), LogLevel.WARNING)
                 else:
                     dirty = True

@@ -44,6 +44,8 @@ class _RuntimeTransportMixin:
             0: [0, 1],
             1: True,
             2: True,
+            # Mouse input activates projected terminal text buttons only. The TUI
+            # intentionally advertises neither pixel scene rendering nor hit testing.
             3: False,
             4: False,
             5: False,

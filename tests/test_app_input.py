@@ -179,7 +179,14 @@ async def test_inline_button_hover_and_click_submits_opaque_token(tmp_path: Path
         6: False,
     }
     wait = {0: 1, 1: 6, 11: {0: 1, 1: 2}}
-    snapshot = {0: 1, 1: "Game", 2: {0: [line], 1: []}, 5: wait, 6: settings}
+    snapshot = {
+        0: 1,
+        1: "Game",
+        2: {0: [line], 1: []},
+        3: {0: 0, 1: []},
+        5: wait,
+        6: settings,
+    }
     async with app.run_test(size=(100, 30)) as pilot:
         worker.events.put(
             FrontendEvent(
@@ -334,7 +341,13 @@ async def test_save_delete_button_requires_confirmation(tmp_path: Path) -> None:
     )
     line = {0: 1, 1: False, 2: True, 3: True, 4: 0, 5: [button]}
     wait = {0: 1, 1: 6, 11: {0: 1, 1: 2}}
-    snapshot = {0: 1, 1: "Game", 2: {0: [line], 1: []}, 5: wait}
+    snapshot = {
+        0: 1,
+        1: "Game",
+        2: {0: [line], 1: []},
+        3: {0: 0, 1: []},
+        5: wait,
+    }
 
     async with app.run_test(size=(100, 30)) as pilot:
         worker.events.put(

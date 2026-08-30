@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from .presentation_replacement import ReplacementBoundary
+from .presentation_scene import apply_scene_delta, empty_scene, normalize_scene
 from .presentation_text import plain_line
 from .text_budget import utf8_length
 from .wire import unwrap_variant
@@ -36,6 +37,7 @@ class ServicePresentationModel:
     revision: int = 0
     lines: list[ServiceLine] = field(default_factory=list)
     input_wait: dict[int, object] | None = None
+    scene: dict[int, object] = field(default_factory=empty_scene)
     _line_indices: dict[int, int] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
@@ -50,14 +52,20 @@ class ServicePresentationModel:
         }
 
     def apply_snapshot(self, snapshot: dict[int, object]) -> None:
-        self.revision = int(snapshot[0])
+        if 3 not in snapshot:
+            raise ValueError("protocol 45 presentation snapshot is missing scene state")
+        scene = normalize_scene(snapshot[3])
+        revision = int(snapshot[0])
         history = snapshot[2]
         if not isinstance(history, Mapping):
             raise TypeError("presentation snapshot history must be a map")
         raw_lines = history.get(0, [])
         if not isinstance(raw_lines, list):
             raise TypeError("presentation snapshot lines must be a list")
-        self.lines = [_service_line(line) for line in raw_lines]
+        lines = [_service_line(line) for line in raw_lines]
+        self.revision = revision
+        self.lines = lines
+        self.scene = scene
         self._line_index_offset = 0
         self._line_indices = {line.line_id: index for index, line in enumerate(self.lines)}
         input_wait = snapshot.get(5)
@@ -78,6 +86,15 @@ class ServicePresentationModel:
             if not self._replacement.accepts_operation(tag):
                 continue
             filtered_operations.append(operation)
+        candidate_scene = self.scene
+        for operation in filtered_operations:
+            tag, fields = unwrap_variant(operation)
+            if tag == 4:
+                if len(fields) != 1:
+                    raise ValueError("presentation scene operation must contain one delta")
+                candidate_scene = apply_scene_delta(candidate_scene, fields[0])
+        for operation in filtered_operations:
+            tag, fields = unwrap_variant(operation)
             if tag == 0:
                 line = _service_line(fields[0])
                 self._line_indices[line.line_id] = self._line_index_offset + len(self.lines)
@@ -111,6 +128,7 @@ class ServicePresentationModel:
                         self._line_indices.pop(line.line_id, None)
                     del self.lines[:count]
                     self._line_index_offset += count
+        self.scene = candidate_scene
         self.revision = delta[1]
         if len(filtered_operations) == len(operations):
             return delta

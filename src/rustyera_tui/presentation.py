@@ -17,6 +17,7 @@ from .presentation_projection import (
     plain_run as plain_run,
 )
 from .presentation_replacement import ReplacementBoundary
+from .presentation_scene import apply_scene_delta, empty_scene, normalize_scene
 from .presentation_service import ServicePresentationModel as ServicePresentationModel
 from .presentation_service import ServiceLine as ServiceLine
 from .presentation_types import (
@@ -24,6 +25,7 @@ from .presentation_types import (
     MAX_TABLE_COLUMN_WIDTH as MAX_TABLE_COLUMN_WIDTH,
     MIN_TABLE_COLUMN_WIDTH as MIN_TABLE_COLUMN_WIDTH,
     TARGET_TABLE_COLUMNS as TARGET_TABLE_COLUMNS,
+    CellWidthIntent as CellWidthIntent,
     ColumnCellLayout as ColumnCellLayout,
     DisplayLineModel as DisplayLineModel,
     DisplaySegment as DisplaySegment,
@@ -45,6 +47,7 @@ class PresentationModel:
     revision: int = 0
     title: str = DEFAULT_PRESENTATION_TITLE
     lines: list[DisplayLineModel] = field(default_factory=list)
+    scene: dict[int, Any] = field(default_factory=empty_scene)
     input_wait: dict[int, Any] | None = None
     background: str = "#000000"
     text_line_background: tuple[str, int] | None = None
@@ -69,6 +72,9 @@ class PresentationModel:
 
     def apply_snapshot(self, snapshot: dict[int, Any]) -> None:
         previous_sequences = self._collect_interaction_sequences(self.lines)
+        if 3 not in snapshot:
+            raise ValueError("protocol 45 presentation snapshot is missing scene state")
+        scene = normalize_scene(snapshot[3])
         self.revision = snapshot[0]
         self.title = snapshot[1]
         history = snapshot[2]
@@ -87,6 +93,7 @@ class PresentationModel:
             self._assign_interaction_sequences(line, previous_sequences)
             for line in retained_lines
         ]
+        self.scene = scene
         self._line_index_offset = 0
         self._rebuild_line_indices()
         self._recalculate_retained_cost()
@@ -135,6 +142,8 @@ class PresentationModel:
                 self._mark_changed(0)
             elif tag == 3:
                 self.title = fields[0]
+            elif tag == 4:
+                self.scene = apply_scene_delta(self.scene, fields[0])
             elif tag == 6:
                 # minicbor omits an enum tuple field when Option is None. Consequently,
                 # SetInputWait(None) is encoded as a zero-field variant, not `[None]`.
@@ -257,6 +266,7 @@ class PresentationModel:
             self.revision = revision
         self.title = DEFAULT_PRESENTATION_TITLE
         self.lines.clear()
+        self.scene = empty_scene()
         self.input_wait = None
         self.changed_from = 0
         self.trimmed_prefix = 0
@@ -436,7 +446,11 @@ class PresentationDeltaAccumulator:
             else:
                 self._replaced_lines[line_id] = len(self._operations)
                 self._operations.append(operation)
-        elif tag in (3, 4, 5, 6, 8, 9, 10, 11, 12):
+        elif tag == 4:
+            # Every scene delta is revision-bound. Preserve the chain while still
+            # reducing independent line replacements on either side of it.
+            self._operations.append(operation)
+        elif tag in (3, 5, 6, 8, 9, 10, 11, 12):
             previous = self._state_operations.get(tag)
             if previous is None:
                 self._state_operations[tag] = len(self._operations)

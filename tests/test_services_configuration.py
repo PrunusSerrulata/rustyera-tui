@@ -648,6 +648,7 @@ def test_snake_data_namespace_link_cannot_reauthorize_an_outside_directory(tmp_p
         (10, "html_string_len", 2),
         (10, "html_substring", 2),
         (10, "html_string_lines", 2),
+        (10, "get_line_geometry_v1", 1),
         (7, "pointer_state", 1),
         (2, "sample_canvas_pixel", 1),
     ],
@@ -660,6 +661,7 @@ def test_tui_does_not_advertise_or_fake_missing_projection_services(
     client._send_hello()
     tag, hello = captured.pop()
     assert tag == 0
+    assert hello[4][3] is False  # No pixel scene projection or scene hit testing.
     assert not any(
         service[0] == kind and service[1] == operation for service in hello[4][10]
     )

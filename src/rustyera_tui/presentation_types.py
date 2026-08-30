@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import IntEnum
 
 from .text_budget import utf8_length
 
@@ -10,6 +11,15 @@ DEFAULT_VIEWPORT_COLUMNS = 100
 MIN_TABLE_COLUMN_WIDTH = 16
 MAX_TABLE_COLUMN_WIDTH = 24
 TARGET_TABLE_COLUMNS = 5
+TERMINAL_CELL_WIDTH_PX = 8
+MAX_TERMINAL_PROJECTION_COLUMNS = 4_096
+
+
+class CellWidthIntent(IntEnum):
+    """The unit carried by one canonical PRINTC-family cell width."""
+
+    PROJECT_COLUMNS = 0
+    LOGICAL_PIXELS = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +75,21 @@ class ColumnCellLayout:
     start: int
     end: int
     alignment: int
-    preferred_columns: int
+    width: int
+    width_intent: CellWidthIntent = CellWidthIntent.PROJECT_COLUMNS
+
+    @property
+    def terminal_columns(self) -> int:
+        """Return the deterministic terminal approximation without claiming pixels."""
+
+        if self.width_intent is CellWidthIntent.PROJECT_COLUMNS:
+            projected = self.width
+        else:
+            projected = max(
+                1,
+                (self.width + TERMINAL_CELL_WIDTH_PX // 2) // TERMINAL_CELL_WIDTH_PX,
+            )
+        return min(projected, MAX_TERMINAL_PROJECTION_COLUMNS)
 
 
 @dataclass(frozen=True, slots=True)

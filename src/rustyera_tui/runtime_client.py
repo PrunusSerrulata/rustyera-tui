@@ -537,16 +537,21 @@ class RuntimeClient(
         elif tag == 38:
             self.events.put(FrontendEvent("input_undo", value))
         elif tag == 40:
-            self.presentation.apply_snapshot(value)
-            wait_changed = self._set_active_wait(self.presentation.input_wait)
-            # Decoded envelopes are immutable after dispatch. The accumulator reduces later
-            # deltas incrementally until a visible boundary crosses to Textual.
-            self._pending_presentation.replace_snapshot(value)
-            self._wait_event_dirty = self._wait_event_dirty or wait_changed
+            try:
+                self.presentation.apply_snapshot(value)
+            except (TypeError, ValueError) as error:
+                self.events.put(log_event(str(error), LogLevel.WARNING))
+                self.send_runtime(94, {0: self.expected_runtime_output - 1})
+            else:
+                wait_changed = self._set_active_wait(self.presentation.input_wait)
+                # Decoded envelopes are immutable after dispatch. The accumulator reduces later
+                # deltas incrementally until a visible boundary crosses to Textual.
+                self._pending_presentation.replace_snapshot(value)
+                self._wait_event_dirty = self._wait_event_dirty or wait_changed
         elif tag == 41:
             try:
                 projected_delta = self.presentation.apply_delta(value)
-            except ValueError as error:
+            except (TypeError, ValueError) as error:
                 self.events.put(log_event(str(error), LogLevel.WARNING))
                 self.send_runtime(94, {0: self.expected_runtime_output - 1})
             else:
