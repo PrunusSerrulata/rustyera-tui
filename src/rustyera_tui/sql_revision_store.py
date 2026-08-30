@@ -152,7 +152,7 @@ class SqlRevisionStore:
         return (
             contents,
             bytes.fromhex(selected),
-            SqlChain(identity, current_database, current_storage),
+            SqlChain(identity, selected, current_storage),
         )
 
     def publish(

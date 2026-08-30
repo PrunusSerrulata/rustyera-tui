@@ -197,7 +197,7 @@ class _RuntimeTransportMixin:
         if envelope.epoch is not None:
             if self.epoch is not None and envelope.epoch != self.epoch:
                 self._pending_sql_requests.clear()
-                self.sql_provider.reset()
+                self.sql_provider.begin_epoch(envelope.epoch)
             self.epoch = envelope.epoch
             if self.storage is not None:
                 self.storage.begin_epoch(self.epoch)

@@ -44,8 +44,16 @@ class UnusedStorage:
         raise AssertionError("memory SQL must not access project storage")
 
 
-def request(provider: SqlProvider, operation: list[Any], storage: Any) -> dict[int, Any]:
-    return decode(provider.handle(encode({0: PROVIDER, 1: operation}), storage, None))
+def request(
+    provider: SqlProvider,
+    operation: list[Any],
+    storage: Any,
+    *,
+    provider_handle: dict[int, int] = PROVIDER,
+) -> dict[int, Any]:
+    return decode(
+        provider.handle(encode({0: provider_handle, 1: operation}), storage, None)
+    )
 
 
 def result(response: dict[int, Any]) -> tuple[int, list[Any]]:
@@ -643,6 +651,77 @@ def test_committed_current_with_malformed_ack_is_verified_instead_of_rolled_back
             restarted, variant(1, CONNECTION, 1, "SELECT COUNT(*) FROM values_table", []), storage
         )
     ) == (2, [variant(1, 1)])
+
+
+def test_exact_restore_candidate_survives_epoch_commit_and_publishes_a_branch(
+    tmp_path: Path,
+) -> None:
+    storage, open_operation, _seed_sha = persistent_fixture(tmp_path)
+    provider = SqlProvider()
+    request(provider, open_operation, storage)
+    first = request(
+        provider,
+        variant(1, CONNECTION, 0, "INSERT INTO values_table VALUES('first')", []),
+        storage,
+    )
+    first_revision = first[1][3][0]
+    request(
+        provider,
+        variant(1, CONNECTION, 0, "INSERT INTO values_table VALUES('discarded')", []),
+        storage,
+    )
+
+    candidate_provider = {0: 8, 1: 1}
+    candidate_connection = {0: 8, 1: 2}
+    exact_open = list(open_operation)
+    exact_fields = list(exact_open[1])
+    exact_fields[0] = candidate_connection
+    exact_fields[3] = variant(1, {0: first_revision})
+    exact_open[1] = exact_fields
+    opened = request(
+        provider,
+        exact_open,
+        storage,
+        provider_handle=candidate_provider,
+    )
+    assert opened[1][3][0] == first_revision
+    assert set(provider.connections) == {(7, 2), (8, 2)}
+
+    provider.begin_epoch(8)
+
+    assert set(provider.connections) == {(8, 2)}
+    branched = request(
+        provider,
+        variant(
+            1,
+            candidate_connection,
+            0,
+            "INSERT INTO values_table VALUES('branch')",
+            [],
+        ),
+        storage,
+        provider_handle=candidate_provider,
+    )
+    assert result(branched)[0] == 1
+
+    restarted = SqlProvider()
+    request(restarted, open_operation, storage)
+    values = request(
+        restarted,
+        variant(1, CONNECTION, 3, "SELECT value FROM values_table ORDER BY rowid", []),
+        storage,
+    )
+    reader = result(values)[1][0]
+    assert result(request(restarted, variant(2, reader), storage)) == (4, [True])
+    assert result(request(restarted, variant(3, reader, 0, 1), storage)) == (
+        5,
+        [variant(2, "first")],
+    )
+    assert result(request(restarted, variant(2, reader), storage)) == (4, [True])
+    assert result(request(restarted, variant(3, reader, 0, 1), storage)) == (
+        5,
+        [variant(2, "branch")],
+    )
 
 
 def test_provider_reset_closes_connections_and_readers() -> None:

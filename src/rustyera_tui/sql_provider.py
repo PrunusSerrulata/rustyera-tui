@@ -144,6 +144,18 @@ class SqlProvider:
         self.provider = None
         self.next_reader_id = 1
 
+    def begin_epoch(self, epoch: int) -> None:
+        """Retire stale handles without dropping a pre-opened restore candidate."""
+
+        for connection in tuple(self.connections.values()):
+            if connection.handle[0] != epoch:
+                self._close_connection(connection)
+        for reader in tuple(self.readers.values()):
+            if reader.handle[0] != epoch:
+                self._close_reader(reader)
+        if self.provider is not None and self.provider[0] != epoch:
+            self.provider = None
+
     def handle(
         self,
         payload: bytes,
@@ -199,8 +211,8 @@ class SqlProvider:
     def _enter_provider(self, provider: tuple[int, int]) -> None:
         if self.provider == provider:
             return
-        self.reset()
-        self.provider = provider
+        if self.provider is None or provider[0] >= self.provider[0]:
+            self.provider = provider
 
     def _execute(
         self,
@@ -245,7 +257,7 @@ class SqlProvider:
             raise SqlProviderFault(
                 SqlErrorCode.CONNECTION_CONFLICT, "SQL connection already exists"
             )
-        if len(self.connections) >= MAXIMUM_CONNECTIONS:
+        if sum(handle[0] == provider[0] for handle in self.connections) >= MAXIMUM_CONNECTIONS:
             raise SqlProviderFault(SqlErrorCode.CONNECTION_LIMIT, "SQL connection limit exceeded")
         identity = _map(fields[2], {0, 1, 2}, "SQL identity")
         if identity[1] != SQLITE_VERSION or identity[2] != DATABASE_FORMAT_VERSION:
