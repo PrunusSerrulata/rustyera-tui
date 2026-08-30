@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import sys
 import time
 from io import StringIO
 from pathlib import Path
@@ -11,8 +12,13 @@ from typing import Any
 import pytest
 
 from rustyera_tui.runtime import FrontendEvent, PendingStateImport, PresentationBatch, RuntimeClient
-from rustyera_tui.test_cli import build_parser, dispatch_agent_request
+from rustyera_tui.test_cli import (
+    build_parser,
+    dispatch_agent_request,
+    scenario_checkpoint_target,
+)
 from rustyera_tui.testing import (
+    ReferenceProcess,
     RustTestSession,
     Scenario,
     TestDriverError,
@@ -115,6 +121,46 @@ def test_scenario_rejects_snapshot_without_path(tmp_path: Path) -> None:
         Scenario.load(path)
 
 
+def test_scenario_distinguishes_an_omitted_checkpoint_from_an_empty_object(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "game"
+    project.mkdir()
+    path = tmp_path / "scenario.json"
+    trace_path = tmp_path / "run" / "trace.ndjson"
+    write_scenario(path, project)
+
+    omitted = Scenario.load(path)
+
+    assert omitted.checkpoint is None
+    assert scenario_checkpoint_target(omitted, trace_path) is None
+
+    write_scenario(path, project, checkpoint={})
+    explicit = Scenario.load(path)
+
+    assert explicit.checkpoint == {}
+    assert scenario_checkpoint_target(explicit, trace_path) == (
+        trace_path.parent / "checkpoint.snapshot"
+    )
+
+
+def test_scenario_validates_and_resolves_a_configured_checkpoint(tmp_path: Path) -> None:
+    project = tmp_path / "game"
+    project.mkdir()
+    path = tmp_path / "scenario.json"
+    write_scenario(path, project, checkpoint={"path": "snapshots/state.bin"})
+
+    scenario = Scenario.load(path)
+
+    assert scenario_checkpoint_target(scenario, tmp_path / "trace.ndjson") == (
+        tmp_path / "snapshots" / "state.bin"
+    )
+
+    write_scenario(path, project, checkpoint=[])
+    with pytest.raises(TestDriverError, match="checkpoint must be an object"):
+        Scenario.load(path)
+
+
 def test_scenario_accepts_rust_only_message_skip_action(tmp_path: Path) -> None:
     project = tmp_path / "game"
     project.mkdir()
@@ -148,6 +194,29 @@ def test_reference_commands_are_accepted_as_quoted_command_lines() -> None:
 
     assert parsed.reference_command == "wine Reference.exe"
     assert parsed.reference_path_command == "winepath -w"
+
+
+def test_reference_process_uses_the_isolated_project_as_its_working_directory(
+    tmp_path: Path,
+) -> None:
+    script = """
+import json
+import os
+import sys
+request = json.loads(sys.stdin.readline())
+print(json.dumps({
+    "id": request["id"],
+    "ok": True,
+    "schemaVersion": 2,
+    "referenceCommit": "fixture",
+    "result": {"cwd": os.getcwd()},
+}), flush=True)
+"""
+    reference = ReferenceProcess([sys.executable, "-c", script], cwd=tmp_path)
+    try:
+        assert Path(reference.request("capabilities")["cwd"]) == tmp_path
+    finally:
+        reference.close()
 
 
 def test_output_delta_and_normalization_cover_append_replace_and_noise() -> None:
@@ -282,6 +351,7 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
             ("edit", (path, expected, replacement))
         ),
         export_snapshot=lambda path: calls.append(("snapshot", path)),
+        restore_snapshot=lambda path: calls.append(("restore_snapshot", path)),
         restart=lambda: calls.append(("restart", None)),
         reload=lambda scope, path: calls.append(("reload", (scope, path))),
         submit=lambda value: calls.append(("step", value)),
@@ -308,6 +378,9 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
     reload = dispatch_agent_request(
         {"op": "reload", "scope": "folder", "path": "ERB/folder"}, **common
     )
+    snapshot = tmp_path / "checkpoint.snapshot"
+    snapshot.write_bytes(b"snapshot")
+    restore = dispatch_agent_request({"op": "restore_snapshot", "path": str(snapshot)}, **common)
     restart = dispatch_agent_request({"op": "restart"}, **common)
     step = dispatch_agent_request({"op": "step", "input": "1"}, **common)
 
@@ -324,6 +397,14 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
         "action": "reload_folder",
         "path": "ERB/folder",
     }
+    assert restore.advances and not restore.drives_reference
+    assert restore.trace_event == {
+        "type": "runtime_action",
+        "step": 5,
+        "source": "agent",
+        "action": "restore_snapshot",
+        "path": str(snapshot),
+    }
     assert restart.advances and not restart.drives_reference
     assert step.advances and step.drives_reference and step.input_value == "1"
     assert calls == [
@@ -331,6 +412,7 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
         ("wait", ("项目缓存已保存。", 12.5)),
         ("edit", ("ERB/main.erb", "v1", "v2")),
         ("reload", ("folder", "ERB/folder")),
+        ("restore_snapshot", snapshot),
         ("restart", None),
         ("step", "1"),
     ]
@@ -338,6 +420,11 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
     with pytest.raises(TestDriverError, match="reference comparison"):
         dispatch_agent_request(
             {"op": "reload", "scope": "all"},
+            **{**common, "reference_enabled": True},
+        )
+    with pytest.raises(TestDriverError, match="reference comparison"):
+        dispatch_agent_request(
+            {"op": "restore_snapshot", "path": str(snapshot)},
             **{**common, "reference_enabled": True},
         )
 

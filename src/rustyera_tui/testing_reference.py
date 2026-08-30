@@ -20,6 +20,7 @@ class ReferenceProcess:
         command: list[str],
         path_converter: list[str] | None = None,
         timeout_seconds: float = 30,
+        cwd: Path | None = None,
     ):
         self.path_converter = path_converter
         self.timeout_seconds = timeout_seconds
@@ -31,6 +32,7 @@ class ReferenceProcess:
             text=True,
             encoding="utf-8",
             bufsize=1,
+            cwd=cwd,
         )
         self.next_id = 1
         self.schema_version: int | None = None

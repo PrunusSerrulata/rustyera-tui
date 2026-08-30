@@ -31,7 +31,7 @@ class Scenario:
     goal: dict[str, Any]
     limits: dict[str, int]
     comparison: dict[str, Any]
-    checkpoint: dict[str, Any]
+    checkpoint: dict[str, Any] | None
 
     @classmethod
     def load(cls, path: Path, project_override: Path | None = None) -> Scenario:
@@ -71,6 +71,12 @@ class Scenario:
         limits = {**DEFAULT_LIMITS, **raw.get("limits", {})}
         if limits["max_steps"] <= 0 or limits["timeout_seconds"] <= 0:
             raise TestDriverError("scenario limits must be positive")
+        checkpoint = None
+        if "checkpoint" in raw:
+            checkpoint_raw = raw["checkpoint"]
+            if not isinstance(checkpoint_raw, dict):
+                raise TestDriverError("scenario checkpoint must be an object")
+            checkpoint = dict(checkpoint_raw)
         return cls(
             resolved,
             project,
@@ -82,7 +88,7 @@ class Scenario:
             dict(raw.get("goal", {})),
             limits,
             dict(raw.get("comparison", {})),
-            dict(raw.get("checkpoint", {})),
+            checkpoint,
         )
 
     @classmethod

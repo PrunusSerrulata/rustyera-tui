@@ -34,7 +34,11 @@ from .testing import (
 build_parser.__module__ = __name__
 
 
-def _reference(args: argparse.Namespace, scenario: Scenario) -> ReferenceProcess | None:
+def _reference(
+    args: argparse.Namespace,
+    scenario: Scenario,
+    working_directory: Path,
+) -> ReferenceProcess | None:
     enabled = scenario.comparison.get("reference", False)
     if scenario.start.type == "vm_snapshot":
         enabled = False
@@ -62,6 +66,7 @@ def _reference(args: argparse.Namespace, scenario: Scenario) -> ReferenceProcess
         list(command),
         list(path_command) if path_command else None,
         float(scenario.comparison.get("timeout_seconds", 30)),
+        cwd=working_directory,
     )
 
 
@@ -144,6 +149,14 @@ def dispatch_agent_request(
         target = Path(request["path"]).expanduser().resolve()
         rust.export_snapshot(target)
         return AgentDispatch({"type": "checkpoint_requested", "path": str(target)})
+    if operation == "restore_snapshot":
+        _reject_reference_operation(reference_enabled, "snapshot restore")
+        target = Path(request["path"]).expanduser().resolve(strict=True)
+        rust.restore_snapshot(target)
+        return AgentDispatch(
+            _runtime_action_event(step, "restore_snapshot", str(target)),
+            advances=True,
+        )
     if operation == "restart":
         _reject_reference_operation(reference_enabled, "runtime restart")
         rust.restart()
@@ -199,6 +212,18 @@ def _runtime_action_event(step: int, action: str, relative_path: str | None) -> 
     }
 
 
+def scenario_checkpoint_target(scenario: Scenario, trace_path: Path) -> Path | None:
+    if scenario.checkpoint is None:
+        return None
+    configured = scenario.checkpoint.get("path")
+    if configured:
+        candidate = Path(configured).expanduser()
+        return (
+            candidate if candidate.is_absolute() else scenario.path.parent / candidate
+        ).resolve()
+    return trace_path.parent / "checkpoint.snapshot"
+
+
 def execute(args: argparse.Namespace) -> int:
     scenario = Scenario.load(args.scenario, args.project)
     library = discover_library(args.runtime_library, scenario.project)
@@ -214,7 +239,7 @@ def execute(args: argparse.Namespace) -> int:
     completed_successfully = False
     cache_saved = False
     try:
-        reference = _reference(args, scenario)
+        checkpoint_target = scenario_checkpoint_target(scenario, trace_path)
         isolated = tempfile.TemporaryDirectory(prefix="isolated-projects-", dir=trace_path.parent)
         isolated_root = Path(isolated.name)
         rust_project = isolated_project_copy(scenario.project, isolated_root, "rust")
@@ -229,8 +254,9 @@ def execute(args: argparse.Namespace) -> int:
             Path(source_index_input) if source_index_input else None,
         )
         reference_project = scenario.project
-        if reference is not None:
+        if scenario.comparison.get("reference", False) and scenario.start.type != "vm_snapshot":
             reference_project = isolated_project_copy(scenario.project, isolated_root, "reference")
+        reference = _reference(args, scenario, reference_project)
         rust = RustTestSession(
             scenario,
             library,
@@ -283,30 +309,20 @@ def execute(args: argparse.Namespace) -> int:
             if decorated.get("comparison", {}).get("equal") is False:
                 trace.emit({"type": "result", "status": "difference", "trace": str(trace_path)})
                 return 1
-            if scenario.checkpoint and not checkpoint_done:
+            if checkpoint_target is not None and not checkpoint_done:
                 wait = decorated["rust"]["wait"]
                 if wait["stability"] == 0 and wait["deadline_ns"] is None:
-                    configured = scenario.checkpoint.get("path")
-                    if configured:
-                        candidate = Path(configured).expanduser()
-                        target = (
-                            candidate
-                            if candidate.is_absolute()
-                            else scenario.path.parent / candidate
-                        ).resolve()
-                    else:
-                        target = trace_path.parent / "checkpoint.snapshot"
-                    rust.export_snapshot(target)
-                    if rust.wait_snapshot(target, deadline):
+                    rust.export_snapshot(checkpoint_target)
+                    if rust.wait_snapshot(checkpoint_target, deadline):
                         checkpoint_done = True
                         trace.emit(
                             {
                                 "type": "checkpoint",
-                                "path": str(target),
-                                "bytes": target.stat().st_size,
+                                "path": str(checkpoint_target),
+                                "bytes": checkpoint_target.stat().st_size,
                             }
                         )
-            if decorated["goal"]["satisfied"] and (not scenario.checkpoint or checkpoint_done):
+            if decorated["goal"]["satisfied"] and (checkpoint_target is None or checkpoint_done):
                 trace.emit({"type": "result", "status": "passed", "trace": str(trace_path)})
                 return 0
             wait_kind = decorated["rust"]["wait"]["kind"]
@@ -350,7 +366,7 @@ def execute(args: argparse.Namespace) -> int:
                     decorated["goal"] = goal_status(decorated["rust"], scenario.goal)
                 if scenario.mode != "fixed":
                     status = "input_exhausted"
-                elif scenario.checkpoint and not checkpoint_done:
+                elif checkpoint_target is not None and not checkpoint_done:
                     status = "checkpoint_not_created"
                 elif not scenario.goal or decorated["goal"]["satisfied"]:
                     status = "passed"

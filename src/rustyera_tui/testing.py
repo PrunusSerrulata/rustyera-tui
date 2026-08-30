@@ -153,6 +153,9 @@ class RustTestSession:
     def export_snapshot(self, path: Path) -> None:
         self.worker.send("export_snapshot", (path, "normal"))
 
+    def restore_snapshot(self, path: Path) -> None:
+        self.worker.send("restore_snapshot", path)
+
     def _acknowledge_frontend_boundary(self, event: FrontendEvent) -> bool:
         if event.kind != "device_pump":
             return False
