@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,24 @@ from rustyera_tui.wire import decode, encode, unwrap_variant, variant
 
 PROVIDER = {0: 7, 1: 1}
 CONNECTION = {0: 7, 1: 2}
+SNAKE_SQL_PROJECT = Path(__file__).parent / "fixtures" / "snake-sql-project"
+SNAKE_SQL_SCENARIOS = Path(__file__).parents[1] / "tools" / "runtime-tester" / "scenarios"
+
+
+def snake_sql_contract() -> dict[str, Any]:
+    return json.loads((SNAKE_SQL_PROJECT / "contract.json").read_text(encoding="utf-8"))
+
+
+def snake_sql_expected_output(contract: dict[str, Any], run_count: int) -> list[str]:
+    connect_result = 0 if run_count == 1 else 1
+    return [
+        line.replace("{runCount}", str(run_count)).replace("{connectResult}", str(connect_result))
+        for line in contract["outputTemplate"]
+    ]
+
+
+def snake_sql_expected_followup(contract: dict[str, Any], run_count: int) -> list[str]:
+    return [line.replace("{runCount}", str(run_count)) for line in contract["followupTemplate"]]
 
 
 class UnusedStorage:
@@ -39,16 +58,70 @@ def test_sql_identity_digest_matches_the_cross_client_fixed_vector() -> None:
     )
 
 
-def test_runtime_fixture_is_a_deterministic_sqlite_353_database() -> None:
-    fixture = Path(__file__).parent / "fixtures" / "snake-sql-project" / "plugins" / "qol_data.db"
-    contents = fixture.read_bytes()
-    assert hashlib.sha256(contents).hexdigest() == (
-        "9987e229ad61fe8febaafa595cb0c90c3b9c3c171a20078a5b349588627000cd"
-    )
+def test_three_client_sql_contract_pins_identity_limits_and_errors() -> None:
+    contract = snake_sql_contract()
+
+    assert contract["schemaVersion"] == 1
+    assert contract["sqliteVersion"] == apsw.sqlitelibversion()
+    assert contract["limits"] == {
+        "maximumConnections": LIMITS[0],
+        "maximumReaders": LIMITS[1],
+        "maximumSqlBytes": LIMITS[2],
+        "maximumParameters": LIMITS[3],
+        "maximumParameterBytes": LIMITS[4],
+        "maximumCellBytes": LIMITS[5],
+        "maximumDatabaseBytes": LIMITS[6],
+        "maximumMapRows": LIMITS[7],
+        "maximumMapBytes": LIMITS[8],
+        "maximumReaderRows": LIMITS[9],
+        "executionBudgetMs": LIMITS[10],
+    }
+    assert contract["errorCodes"] == {
+        "invalidSource": SqlErrorCode.INVALID_SOURCE,
+        "revisionConflict": SqlErrorCode.REVISION_CONFLICT,
+        "staleEpoch": SqlErrorCode.STALE_EPOCH,
+        "invalidTableName": SqlErrorCode.INVALID_TABLE_NAME,
+    }
+
+
+def test_three_client_sql_fixture_hashes_every_input_and_schema() -> None:
+    contract = snake_sql_contract()
+    for relative_path, expected_digest in contract["files"].items():
+        contents = (SNAKE_SQL_PROJECT / relative_path).read_bytes()
+        assert hashlib.sha256(contents).hexdigest() == expected_digest, relative_path
+
+    fixture = SNAKE_SQL_PROJECT / "plugins" / "qol_data.db"
+    assert contract["files"]["plugins/qol_data.db"] == contract["seedSha256"]
     database = apsw.Connection(str(fixture), flags=apsw.SQLITE_OPEN_READONLY)
-    assert database.execute("PRAGMA user_version").fetchone() == (1,)
-    assert database.execute("SELECT version FROM seed_marker").fetchone() == (1,)
-    database.close()
+    try:
+        assert database.execute("PRAGMA user_version").fetchone() == (1,)
+        assert database.execute("SELECT version FROM seed_marker").fetchone() == (1,)
+    finally:
+        database.close()
+
+
+def test_three_client_sql_scenarios_match_ordered_contract_phases() -> None:
+    contract = snake_sql_contract()
+    first = json.loads((SNAKE_SQL_SCENARIOS / "snake-sql.json").read_text(encoding="utf-8"))
+    restart = json.loads(
+        (SNAKE_SQL_SCENARIOS / "snake-sql-restart.json").read_text(encoding="utf-8")
+    )
+    restored = json.loads(
+        (SNAKE_SQL_SCENARIOS / "snake-sql-snapshot-restore.json").read_text(encoding="utf-8")
+    )
+
+    assert first["goal"]["output_contains"] == snake_sql_expected_output(contract, 1)
+    assert restart["goal"]["output_contains"] == snake_sql_expected_output(contract, 2)
+    assert first["comparison"] == {
+        "reference": True,
+        "ignore_output": ["^Now Loading", "^SNAKE_SQL_CONNECT="],
+    }
+    assert restored["checkpoint"] == {}
+    assert restored["goal"]["output_contains"] == snake_sql_expected_followup(contract, 1)
+    assert contract["referenceDifferences"] == {
+        "connectResult": {"rustFirst": 0, "rustCurrent": 1, "snake": 1},
+        "omittedVariadicParameter": {"rust": "NULL", "snake": "missing parameter error"},
+    }
 
 
 def test_memory_provider_preserves_reader_long_and_string_conversion() -> None:
