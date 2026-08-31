@@ -4,6 +4,7 @@ import queue
 
 import apsw
 import pytest
+from rustyera_tui.image_metadata import decode_image_metadata
 
 from services_test_support import (
     Any,
@@ -35,6 +36,18 @@ from rustyera_tui.wire import (
     runtime_message,
 )
 from rustyera_tui.sql_provider import LIMITS, SqlProvider
+
+
+def test_image_metadata_decodes_vp8l_from_a_bounded_prefix() -> None:
+    bits = (640 - 1) | ((480 - 1) << 14)
+    image_prefix = (
+        b"RIFF\x00\x00\x00\x00WEBPVP8L"
+        + (2 * 1024 * 1024).to_bytes(4, "little")
+        + b"\x2f"
+        + bits.to_bytes(4, "little")
+    )
+
+    assert decode_image_metadata(image_prefix) == {0: 640, 1: 480, 2: "webp", 3: False}
 
 
 def test_server_hello_reports_the_runtime_product_version() -> None:
