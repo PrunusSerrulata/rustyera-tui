@@ -477,8 +477,16 @@ class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
             # A configuration transaction commits no resource changes. Keep its scan from
             # authorizing unrelated additions or replacements before a real project reload.
             candidate.files = {
-                **{path: item for path, item in candidate.files.items() if item.category != FILE_RESOURCE},
-                **{path: item for path, item in bundle.files.items() if item.category == FILE_RESOURCE},
+                **{
+                    path: item
+                    for path, item in candidate.files.items()
+                    if item.category != FILE_RESOURCE
+                },
+                **{
+                    path: item
+                    for path, item in bundle.files.items()
+                    if item.category == FILE_RESOURCE
+                },
             }
             return candidate
         bundle.write_configuration(

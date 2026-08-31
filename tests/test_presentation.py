@@ -270,7 +270,11 @@ def test_absolute_division_ignores_unreliable_coordinates_but_keeps_source_order
                 1,
                 12,
                 [],
-                [html_text("前"), html_button([html_text("继续")], token, "继续游戏"), html_text("后")],
+                [
+                    html_text("前"),
+                    html_button([html_text("继续")], token, "继续游戏"),
+                    html_text("后"),
+                ],
                 None,
                 0,
                 0,
@@ -312,7 +316,9 @@ def test_positioned_division_rejects_legacy_bool_mode_and_invalid_height() -> No
                         None,
                         0,
                         0,
-                        variant(9, None, None, html_length(80, pixels=True), None, 0, None, True, {}),
+                        variant(
+                            9, None, None, html_length(80, pixels=True), None, 0, None, True, {}
+                        ),
                     )
                 ]
             },
@@ -335,7 +341,17 @@ def test_positioned_division_rejects_legacy_bool_mode_and_invalid_height() -> No
                         None,
                         0,
                         0,
-                        variant(9, None, None, html_length(80, pixels=True), html_length(0, pixels=True), 0, None, 0, {}),
+                        variant(
+                            9,
+                            None,
+                            None,
+                            html_length(80, pixels=True),
+                            html_length(0, pixels=True),
+                            0,
+                            None,
+                            0,
+                            {},
+                        ),
                     )
                 ]
             },
@@ -496,9 +512,7 @@ def test_service_scene_validation_precedes_delivery_and_rejects_malformed_scalar
     )
     before = service.scene
     with pytest.raises(TypeError, match="enabled must be a boolean"):
-        service.apply_delta(
-            {0: 1, 1: 2, 2: [variant(4, {0: 1, 1: 2, 2: [variant(0, malformed)]})]}
-        )
+        service.apply_delta({0: 1, 1: 2, 2: [variant(4, {0: 1, 1: 2, 2: [variant(0, malformed)]})]})
     assert service.scene is before
     assert service.revision == 1
 
@@ -1385,9 +1399,7 @@ def test_service_projection_compacts_lines_and_suppresses_retired_history_until_
         service.html_printed_str(0, 8)
 
     retired_revision = service.retire_history()
-    stale = service.apply_delta(
-        {0: retired_revision, 1: 2, 2: [variant(0, line(2, "stale"))]}
-    )
+    stale = service.apply_delta({0: retired_revision, 1: 2, 2: [variant(0, line(2, "stale"))]})
     assert stale[2] == []
     assert service.lines == []
 
@@ -1432,9 +1444,7 @@ def test_viewport_snapshot_enforces_line_byte_and_segment_hard_budgets(
 
 def test_display_line_cost_includes_button_titles_and_separator_patterns() -> None:
     button_line = parse_line(line(1, "x"))
-    separator_line = parse_line(
-        {0: 2, 1: False, 2: True, 3: True, 4: 0, 5: [variant(6, "～", 0)]}
-    )
+    separator_line = parse_line({0: 2, 1: False, 2: True, 3: True, 4: 0, 5: [variant(6, "～", 0)]})
 
     assert button_line._retained_utf8_bytes == len("x选择".encode())
     assert button_line._retained_segments == 1
@@ -1458,9 +1468,7 @@ def test_rejected_replacement_stays_retired_until_resync_snapshot() -> None:
     replacement[0] = revision + 1
     replacement[2] = {0: [line(3, "resynchronized")], 1: []}
     service.apply_snapshot(replacement)
-    service.apply_delta(
-        {0: revision + 1, 1: revision + 2, 2: [variant(0, line(4, "new"))]}
-    )
+    service.apply_delta({0: revision + 1, 1: revision + 2, 2: [variant(0, line(4, "new"))]})
     assert [item.text for item in service.lines] == ["resynchronized", "new"]
 
 

@@ -54,9 +54,7 @@ class DiagnosisExport:
     def create(cls, target: Path, project_name: str, logs: str) -> DiagnosisExport:
         resolved = target.expanduser().resolve()
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        directory = Path(
-            tempfile.mkdtemp(prefix=f".{resolved.name}.parts.", dir=resolved.parent)
-        )
+        directory = Path(tempfile.mkdtemp(prefix=f".{resolved.name}.parts.", dir=resolved.parent))
         return cls(resolved, project_name, logs, temporary_directory=directory)
 
     def part_path(self, name: str) -> Path:

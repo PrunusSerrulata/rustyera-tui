@@ -36,9 +36,7 @@ def normalize_scene(scene: Mapping[int, Any]) -> dict[int, Any]:
     return normalized
 
 
-def apply_scene_delta(
-    scene: Mapping[int, Any], delta: Mapping[int, Any]
-) -> dict[int, Any]:
+def apply_scene_delta(scene: Mapping[int, Any], delta: Mapping[int, Any]) -> dict[int, Any]:
     """Apply one revision-bound delta atomically and return the new scene."""
 
     current = normalize_scene(scene)
@@ -64,11 +62,7 @@ def apply_scene_delta(
                 raise ValueError("scene upsert must contain one layer")
             layer = _normalize_layer(fields[0], new_revision)
             existing_index = next(
-                (
-                    index
-                    for index, existing in enumerate(candidate[1])
-                    if existing[0] == layer[0]
-                ),
+                (index for index, existing in enumerate(candidate[1]) if existing[0] == layer[0]),
                 None,
             )
             if existing_index is None:

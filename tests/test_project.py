@@ -714,9 +714,7 @@ def test_project_scanners_ignore_uninstalled_sources_outside_canonical_roots(
     quick = ProjectBundle.scan_quick(tmp_path)
     quick.compatibility = reference_identity()
 
-    expected = [
-        "CSV/GAMEBASE.CSV", "emuera.config", "ERB/GUIDE/main.erb", "resources/notes.txt"
-    ]
+    expected = ["CSV/GAMEBASE.CSV", "emuera.config", "ERB/GUIDE/main.erb", "resources/notes.txt"]
     assert list(scanned.files) == expected
     assert list(quick.files) == expected
     assert quick.materialize().identity() == scanned.identity()
@@ -1583,7 +1581,9 @@ def test_snake_mutable_reads_never_fall_back_to_reference_root(
     sentinel = root / "shared/sentinel.xml"
     sentinel.write_bytes(b"reference sentinel")
     reference = StorageBackend(root)
-    snake = StorageBackend(root, compatibility_profile="emuera.skia.snake", resource_bundle=ProjectBundle.scan(root))
+    snake = StorageBackend(
+        root, compatibility_profile="emuera.skia.snake", resource_bundle=ProjectBundle.scan(root)
+    )
     relative = "shared" if operation[0] == 2 else "shared/sentinel.xml"
     request = {0: 1, 1: namespace, 2: relative, 3: operation, 4: ""}
     assert unwrap_variant(reference.handle(request)[1])[0] != 4
@@ -1602,7 +1602,9 @@ def test_resource_storage_uses_manifest_and_keeps_data_overlay_separate(tmp_path
     (tmp_path / "main.erb").write_text("@MAIN\nRETURN\n", encoding="utf-8")
     bundle = ProjectBundle.scan(tmp_path)
     bundle.compatibility = snake_identity()
-    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake", resource_bundle=bundle)
+    backend = StorageBackend(
+        tmp_path, compatibility_profile="emuera.skia.snake", resource_bundle=bundle
+    )
     overlay = backend._namespace_root(3) / "plugins/a.xml"
     overlay.parent.mkdir(parents=True)
     overlay.write_bytes(b"overlay")
@@ -1614,8 +1616,13 @@ def test_resource_storage_uses_manifest_and_keeps_data_overlay_separate(tmp_path
     assert request("plugins/a.xml", variant(0), 3)[1][0] == b"overlay"
     listed = request("plugins", variant(2, "*", True))[1][0]
     assert [item[0] for item in listed] == ["plugins/a.xml", "plugins/nested/b.txt"]
-    assert [item[0] for item in request("plugins", variant(2, "*.xml", False))[1][0]] == ["plugins/a.xml"]
-    assert request("PLUGINS/a.xml", variant(4))[1][0] == {0: 6, 1: blake3.blake3(b"source").hexdigest()}
+    assert [item[0] for item in request("plugins", variant(2, "*.xml", False))[1][0]] == [
+        "plugins/a.xml"
+    ]
+    assert request("PLUGINS/a.xml", variant(4))[1][0] == {
+        0: 6,
+        1: blake3.blake3(b"source").hexdigest(),
+    }
     assert request("plugins/a.xml", variant(5, 2, 3, listed[0][3]))[1][:3] == [b"urc", 2, False]
     assert request("plugins/a.xml", variant(5, 0, 3, "stale"))[1][0][0] == IO_CONFLICT
     assert request("main.erb", variant(0))[1][0][0] == 1
@@ -1634,8 +1641,12 @@ def test_resource_mutations_never_replay_writable_namespace_results(tmp_path: Pa
     assert (tmp_path / "seed.xml").read_bytes() == b"seed"
 
 
-@pytest.mark.parametrize("operation", [variant(0), variant(4), variant(5, 0, 1, None), variant(2, "*.xml", True)])
-def test_resource_storage_reports_changed_contents_without_not_found(tmp_path: Path, operation: list) -> None:
+@pytest.mark.parametrize(
+    "operation", [variant(0), variant(4), variant(5, 0, 1, None), variant(2, "*.xml", True)]
+)
+def test_resource_storage_reports_changed_contents_without_not_found(
+    tmp_path: Path, operation: list
+) -> None:
     from dataclasses import replace
 
     source = tmp_path / "seed.xml"
@@ -1645,11 +1656,15 @@ def test_resource_storage_reports_changed_contents_without_not_found(tmp_path: P
     bundle.compatibility = reference_identity()
     backend = StorageBackend(tmp_path, resource_bundle=bundle)
     source.write_bytes(b"two")
-    result = backend.handle({0: 1, 1: 5, 2: "" if operation[0] == 2 else "seed.xml", 3: operation})[1]
+    result = backend.handle({0: 1, 1: 5, 2: "" if operation[0] == 2 else "seed.xml", 3: operation})[
+        1
+    ]
     assert unwrap_variant(result)[1][0][0] == IO_CONFLICT
 
 
-def test_resource_storage_bounds_reads_and_lists_without_materializing_stat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resource_storage_bounds_reads_and_lists_without_materializing_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import rustyera_tui.resource_storage as resources
 
     (tmp_path / "a.xml").write_bytes(b"seed")
@@ -1660,13 +1675,19 @@ def test_resource_storage_bounds_reads_and_lists_without_materializing_stat(tmp_
     monkeypatch.setattr(Path, "read_bytes", lambda _path: pytest.fail("resource stat must stream"))
     monkeypatch.setattr(resources, "MAXIMUM_FULL_READ_BYTES", 2)
     assert backend.handle({0: 1, 1: 5, 2: "a.xml", 3: variant(4)})[1][0] == 5
-    for operation in [variant(0), variant(5, -1, 1, None), variant(5, 0, 4 * 1024 * 1024 + 1, None)]:
+    for operation in [
+        variant(0),
+        variant(5, -1, 1, None),
+        variant(5, 0, 4 * 1024 * 1024 + 1, None),
+    ]:
         assert backend.handle({0: 1, 1: 5, 2: "a.xml", 3: operation})[1][0] == 4
     monkeypatch.setattr(resources, "MAXIMUM_LIST_ENTRIES", 1)
     assert backend.handle({0: 1, 1: 5, 2: "", 3: variant(2, "*", True)})[1][0] == 4
 
 
-def test_resource_storage_rejects_retargeted_symlinks_and_lists_no_external_files(tmp_path: Path) -> None:
+def test_resource_storage_rejects_retargeted_symlinks_and_lists_no_external_files(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "game"
     root.mkdir()
     source = root / "seed.xml"
@@ -1686,17 +1707,33 @@ def test_resource_storage_rejects_retargeted_symlinks_and_lists_no_external_file
     assert backend.handle({0: 1, 1: 3, 2: "", 3: variant(2, "*", True)})[1][0] == 4
 
 
-def test_packaged_resource_storage_is_manifest_only_and_rejects_normalized_collisions(tmp_path: Path) -> None:
+def test_packaged_resource_storage_is_manifest_only_and_rejects_normalized_collisions(
+    tmp_path: Path,
+) -> None:
     from dataclasses import replace
 
-    item = ProjectFile("é.xml", FILE_RESOURCE, variant(1, b"embedded"), blake3.blake3(b"embedded").digest(), 8)
+    item = ProjectFile(
+        "é.xml", FILE_RESOURCE, variant(1, b"embedded"), blake3.blake3(b"embedded").digest(), 8
+    )
     bundle = ProjectBundle(tmp_path, 1, {item.relative_path: item}, tmp_path / "game.reraproj")
     bundle.compatibility = reference_identity()
     backend = StorageBackend(tmp_path, resource_bundle=bundle)
-    assert unwrap_variant(backend.handle({0: 1, 1: 5, 2: "e\u0301.xml", 3: variant(0)})[1])[1][0] == b"embedded"
+    assert (
+        unwrap_variant(backend.handle({0: 1, 1: 5, 2: "e\u0301.xml", 3: variant(0)})[1])[1][0]
+        == b"embedded"
+    )
     (tmp_path / "external.xml").write_bytes(b"external")
-    bundle.files["external.xml"] = ProjectFile("external.xml", FILE_RESOURCE, variant(3, {0: 8, 1: None}), blake3.blake3(b"external").digest(), 8)
-    assert unwrap_variant(backend.handle({0: 1, 1: 5, 2: "external.xml", 3: variant(0)})[1])[1][0][0] == 2
+    bundle.files["external.xml"] = ProjectFile(
+        "external.xml",
+        FILE_RESOURCE,
+        variant(3, {0: 8, 1: None}),
+        blake3.blake3(b"external").digest(),
+        8,
+    )
+    assert (
+        unwrap_variant(backend.handle({0: 1, 1: 5, 2: "external.xml", 3: variant(0)})[1])[1][0][0]
+        == 2
+    )
     bundle.files["e\u0301.xml"] = replace(item, relative_path="e\u0301.xml")
     result = backend.handle({0: 1, 1: 5, 2: "", 3: variant(2, "*", True)})[1]
     assert unwrap_variant(result)[1][0][0] == 2
@@ -1706,7 +1743,9 @@ def test_data_list_distinguishes_missing_directory_from_dangling_entry(tmp_path:
     (tmp_path / "seed.xml").write_bytes(b"resource")
     bundle = ProjectBundle.scan(tmp_path)
     bundle.compatibility = snake_identity()
-    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake", resource_bundle=bundle)
+    backend = StorageBackend(
+        tmp_path, compatibility_profile="emuera.skia.snake", resource_bundle=bundle
+    )
     request = {0: 1, 1: 3, 2: "", 3: variant(2, "*", True)}
     assert backend.handle(request)[1] == variant(2, [])
     assert backend.handle({**request, 1: 5})[1][1][0][0][0] == "seed.xml"
@@ -1722,7 +1761,8 @@ def test_data_list_distinguishes_missing_directory_from_dangling_entry(tmp_path:
 
 
 def test_data_list_rejects_a_file_deleted_after_discovery_without_partial_results(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from rustyera_tui import storage_listing
 
@@ -1750,7 +1790,10 @@ def test_data_list_rejects_a_file_deleted_after_discovery_without_partial_result
     [(FileNotFoundError(2, "gone"), 2), (PermissionError(13, "denied"), 1), (OSError(5, "I/O"), 6)],
 )
 def test_data_list_preserves_traversal_error_classes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: OSError, kind: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: OSError,
+    kind: int,
 ) -> None:
     from rustyera_tui import storage_listing
 
@@ -1775,7 +1818,8 @@ def test_data_list_preserves_traversal_error_classes(
 
 
 def test_data_list_rejects_target_removed_after_normalized_lookup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from rustyera_tui import storage
 
@@ -1799,7 +1843,10 @@ def test_data_list_rejects_target_removed_after_normalized_lookup(
 @pytest.mark.parametrize("prefix", ["", "nested"])
 @pytest.mark.parametrize("profile", ["emuera.em", "emuera.skia.snake"])
 def test_data_list_and_lookup_reject_invalid_actual_basename(
-    tmp_path: Path, name: str, prefix: str, profile: str,
+    tmp_path: Path,
+    name: str,
+    prefix: str,
+    profile: str,
 ) -> None:
     backend = StorageBackend(tmp_path, compatibility_profile=profile)
     root = backend._namespace_root(3)
@@ -1880,15 +1927,15 @@ def test_resource_list_reports_removed_committed_file_as_conflict(tmp_path: Path
     assert result[1][0][0] == IO_CONFLICT
 
 
-def test_snake_storage_shared_pattern_vectors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_snake_storage_shared_pattern_vectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from types import SimpleNamespace
 
     from rustyera_tui import storage_listing
     from rustyera_tui.storage_pattern import SnakeStoragePattern
 
-    vectors = (
-        Path(__file__).resolve().parent / "fixtures/snake-storage-patterns.json"
-    )
+    vectors = Path(__file__).resolve().parent / "fixtures/snake-storage-patterns.json"
     cases = json.loads(vectors.read_text(encoding="utf-8"))["cases"]
     for case in cases:
         name, pattern = case["name"], case["pattern"]
@@ -1902,9 +1949,13 @@ def test_snake_storage_shared_pattern_vectors(tmp_path: Path, monkeypatch: pytes
             continue
         root = tmp_path / case["id"]
         root.mkdir()
-        item = ProjectFile(name, FILE_RESOURCE, variant(1, b"seed"), blake3.blake3(b"seed").digest(), 4)
+        item = ProjectFile(
+            name, FILE_RESOURCE, variant(1, b"seed"), blake3.blake3(b"seed").digest(), 4
+        )
         bundle = ProjectBundle(root, 1, {name: item}, compatibility=snake_identity())
-        backend = StorageBackend(root, compatibility_profile="emuera.skia.snake", resource_bundle=bundle)
+        backend = StorageBackend(
+            root, compatibility_profile="emuera.skia.snake", resource_bundle=bundle
+        )
         data = backend._namespace_root(3)
         data.mkdir(parents=True)
         source = data / "backing-file"
@@ -1913,9 +1964,14 @@ def test_snake_storage_shared_pattern_vectors(tmp_path: Path, monkeypatch: pytes
         # discovered entry onto a real small file so the storage boundary still executes
         # matching/validation, without relying on the host filesystem's NAME_MAX.
         entry = SimpleNamespace(
-            name=name, lstat=source.lstat, resolve=source.resolve, stat=source.stat,
+            name=name,
+            lstat=source.lstat,
+            resolve=source.resolve,
+            stat=source.stat,
         )
-        monkeypatch.setattr(storage_listing, "directory_entries", lambda _path, entry=entry: iter([entry]))
+        monkeypatch.setattr(
+            storage_listing, "directory_entries", lambda _path, entry=entry: iter([entry])
+        )
         for namespace in (3, 5):
             result = backend.handle({0: 1, 1: namespace, 2: "", 3: variant(2, pattern, False)})[1]
             if "error" in case:
@@ -1944,10 +2000,16 @@ def test_snake_unfiltered_pattern_still_validates_name(pattern: str | None, name
     ],
 )
 def test_resource_pattern_profile_comes_from_committed_bundle_not_data_flag(
-    tmp_path: Path, data_profile: str, identity, data_expected: str, resource_expected: str,
+    tmp_path: Path,
+    data_profile: str,
+    identity,
+    data_expected: str,
+    resource_expected: str,
 ) -> None:
     items = {
-        name: ProjectFile(name, FILE_RESOURCE, variant(1, b"seed"), blake3.blake3(b"seed").digest(), 4)
+        name: ProjectFile(
+            name, FILE_RESOURCE, variant(1, b"seed"), blake3.blake3(b"seed").digest(), 4
+        )
         for name in ("a.txt", "[ab].txt")
     }
     bundle = ProjectBundle(tmp_path, 1, items, compatibility=identity())
@@ -1973,12 +2035,16 @@ def test_reference_data_listing_keeps_fnmatch_case_semantics(tmp_path: Path) -> 
         (data / name).write_bytes(b"seed")
     result = backend.handle({0: 1, 1: 3, 2: "", 3: variant(2, "*.txt", False)})[1]
     assert result[0] == 2
-    assert [row[0] for row in result[1][0]] == sorted(name for name in names if fnmatch.fnmatch(name, "*.txt"))
+    assert [row[0] for row in result[1][0]] == sorted(
+        name for name in names if fnmatch.fnmatch(name, "*.txt")
+    )
 
 
 def test_resource_list_requires_resolved_bundle_profile(tmp_path: Path) -> None:
     bundle = ProjectBundle(tmp_path, 1, {})
-    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake", resource_bundle=bundle)
+    backend = StorageBackend(
+        tmp_path, compatibility_profile="emuera.skia.snake", resource_bundle=bundle
+    )
     result = backend.handle({0: 1, 1: 5, 2: "", 3: variant(2, "*", False)})[1]
     assert result[0] == 4
     assert result[1][0][0] == 2

@@ -621,9 +621,7 @@ def test_runtime_output_responses_follow_the_batch_acknowledgement() -> None:
     ]
     assert [envelope.epoch for envelope in envelopes] == [4, 4, 4]
     assert [envelope.sequence for envelope in envelopes] == [1, 2, 3]
-    assert client._deferred_runtime_messages == [
-        (after_transition, 60, {0: 2, 1: 0}, None)
-    ]
+    assert client._deferred_runtime_messages == [(after_transition, 60, {0: 2, 1: 0}, None)]
 
     client._handle_runtime = lambda *_args: None  # type: ignore[method-assign]
     client._handle_envelope(

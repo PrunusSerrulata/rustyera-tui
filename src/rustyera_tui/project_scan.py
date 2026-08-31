@@ -261,8 +261,7 @@ def read_project_file(root: Path, path: Path, category: int) -> ProjectFile:
         raw = path.read_bytes()
         text = _decode_project_source(
             raw,
-            strict_utf8=category in (FILE_ALS, FILE_ERD)
-            or relative.lower() == "reraconfig.toml",
+            strict_utf8=category in (FILE_ALS, FILE_ERD) or relative.lower() == "reraconfig.toml",
         )
         if category == FILE_RESOURCE_MANIFEST:
             text = _normalize_resource_manifest_paths(text)
@@ -385,9 +384,7 @@ def _project_paths(root: Path) -> list[Path]:
     def report_walk_error(error: OSError) -> None:
         raise error
 
-    for directory, names, filenames in os.walk(
-        root, followlinks=True, onerror=report_walk_error
-    ):
+    for directory, names, filenames in os.walk(root, followlinks=True, onerror=report_walk_error):
         directory_path = Path(directory)
         retained: list[str] = []
         for name in sorted(names, key=str.casefold):
@@ -415,7 +412,9 @@ def _project_paths(root: Path) -> list[Path]:
             category = _classify_project_path(root, alias, canonical_roots)
             if category is not None and _is_new_project_file(alias, category):
                 relative = alias.relative_to(root).as_posix()
-                raise ValueError(f"project input is hidden by a repeated directory link: {relative}")
+                raise ValueError(
+                    f"project input is hidden by a repeated directory link: {relative}"
+                )
     if directory_loops:
         if any(
             (category := _classify_project_path(root, path, canonical_roots)) is not None

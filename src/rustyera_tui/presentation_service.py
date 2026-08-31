@@ -21,6 +21,7 @@ class ServiceLine:
     alignment: int
     text: str
 
+
 def _service_line(line: Mapping[int, object]) -> ServiceLine:
     return ServiceLine(
         line_id=int(line[0]),
@@ -47,9 +48,7 @@ class ServicePresentationModel:
     )
 
     def __post_init__(self) -> None:
-        self._line_indices = {
-            line.line_id: index for index, line in enumerate(self.lines)
-        }
+        self._line_indices = {line.line_id: index for index, line in enumerate(self.lines)}
 
     def apply_snapshot(self, snapshot: dict[int, object]) -> None:
         if 3 not in snapshot:
@@ -157,9 +156,7 @@ class ServicePresentationModel:
             return self.lines[index].text
         return ""
 
-    def html_printed_str(
-        self, line_number: int, maximum_utf8_bytes: int | None = None
-    ) -> str:
+    def html_printed_str(self, line_number: int, maximum_utf8_bytes: int | None = None) -> str:
         if line_number < 0:
             return ""
         count = 0
@@ -173,9 +170,7 @@ class ServicePresentationModel:
                 break
         if not selected:
             return ""
-        alignment = {0: "left", 1: "center", 2: "right"}.get(
-            selected[0].alignment, "left"
-        )
+        alignment = {0: "left", 1: "center", 2: "right"}.get(selected[0].alignment, "left")
         if maximum_utf8_bytes is not None:
             wrapper_bytes = len(f"<p align='{alignment}'><nobr></nobr></p>")
             escaped_bytes = sum(_escaped_html_utf8_bytes(line.text) for line in selected)
@@ -189,10 +184,7 @@ class ServicePresentationModel:
         return "\n".join(line.text for line in self.lines)
 
     def physical_history_utf8_bytes(self) -> int:
-        return sum(
-            utf8_length(line.text) + 1
-            for line in self.lines
-        )
+        return sum(utf8_length(line.text) + 1 for line in self.lines)
 
 
 def _escape_html(text: str) -> str:

@@ -43,9 +43,7 @@ class _InteractionMixin(_ViewportProjectionMixin):
             self.variable_dialog = dialog
             self.push_screen(
                 dialog,
-                lambda _result: self._finish_debug_surface(
-                    "variable_dialog", dialog, "variables"
-                ),
+                lambda _result: self._finish_debug_surface("variable_dialog", dialog, "variables"),
             )
             self.worker.send("debug_action", ("variables", None))
         elif item_id == "debug-stack" and self.debug_enabled:

@@ -21,7 +21,9 @@ from services_test_support import (
 from rustyera_tui.client_preferences import LoadedPreferences, PreferenceValues
 
 
-def test_configuration_write_does_not_authorize_uncommitted_resource_changes(tmp_path: Path) -> None:
+def test_configuration_write_does_not_authorize_uncommitted_resource_changes(
+    tmp_path: Path,
+) -> None:
     from rustyera_tui.project import StorageBackend
 
     (tmp_path / "seed.xml").write_bytes(b"old")
@@ -482,14 +484,20 @@ def test_invalid_committed_configuration_stops_the_success_path(tmp_path: Path) 
     assert not recreated
 
 
-def test_snake_data_names_share_resource_identity_and_preserve_existing_spelling(tmp_path: Path) -> None:
+def test_snake_data_names_share_resource_identity_and_preserve_existing_spelling(
+    tmp_path: Path,
+) -> None:
     from rustyera_tui.storage import StorageBackend
     from rustyera_tui.storage_path import normalized_data_path
 
     source = tmp_path / "plugins" / "café"
     source.mkdir(parents=True)
     (source / "seed.txt").write_bytes(b"source")
-    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake", resource_bundle=ProjectBundle.scan(tmp_path))
+    backend = StorageBackend(
+        tmp_path,
+        compatibility_profile="emuera.skia.snake",
+        resource_bundle=ProjectBundle.scan(tmp_path),
+    )
     data = backend.data_root / "data"
     actual = data / "PlUgIns" / "Cafe\u0301" / "SEED.TXT"
     actual.parent.mkdir(parents=True)
@@ -519,7 +527,9 @@ def test_snake_data_names_share_resource_identity_and_preserve_existing_spelling
     assert (source / "seed.txt").read_bytes() == b"source"
 
 
-def test_snake_data_collision_rejects_every_operation_before_mutation(tmp_path: Path, monkeypatch: Any) -> None:
+def test_snake_data_collision_rejects_every_operation_before_mutation(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
     from rustyera_tui.storage import StorageBackend
 
     backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake")
@@ -546,8 +556,11 @@ def test_snake_data_collision_rejects_every_operation_before_mutation(tmp_path: 
     monkeypatch.setattr(storage_listing, "directory_entries", entries)
     monkeypatch.setattr(Path, "resolve", resolve)
     for operation in (
-        variant(0), variant(4), variant(5, 0, 1, None),
-        variant(1, b"overwrite", True, variant(0)), variant(3, variant(0)),
+        variant(0),
+        variant(4),
+        variant(5, 0, 1, None),
+        variant(1, b"overwrite", True, variant(0)),
+        variant(3, variant(0)),
         variant(2, "*", True),
     ):
         relative = "" if operation[0] == 2 else "seed.txt"
@@ -555,7 +568,9 @@ def test_snake_data_collision_rejects_every_operation_before_mutation(tmp_path: 
         assert result[0] == 4
         assert result[1][0][0] == 2
         assert actual.read_bytes() == b"unchanged"
-    rejected = backend.handle({0: 2, 1: 3, 2: "new/different.txt", 3: variant(1, b"new", False, variant(0))})[1]
+    rejected = backend.handle(
+        {0: 2, 1: 3, 2: "new/different.txt", 3: variant(1, b"new", False, variant(0))}
+    )[1]
     assert rejected[0] == 4
     assert rejected[1][0][0] == 2
     assert not (root / "new").exists()
@@ -572,15 +587,27 @@ def test_snake_data_rejects_escaped_links_cycles_and_excessive_paths(tmp_path: P
     (outside / "seed.txt").write_bytes(b"private")
     (root / "Escape").symlink_to(outside, target_is_directory=True)
     (root / "Loop").symlink_to(root, target_is_directory=True)
-    for relative, kind in (("escape/seed.txt", 1), ("loop/seed.txt", 2), ("a" * 4097, 2), ("/".join(["a"] * 257), 2)):
-        for operation in (variant(0), variant(4), variant(1, b"bad", False, variant(0)), variant(3, variant(0))):
+    for relative, kind in (
+        ("escape/seed.txt", 1),
+        ("loop/seed.txt", 2),
+        ("a" * 4097, 2),
+        ("/".join(["a"] * 257), 2),
+    ):
+        for operation in (
+            variant(0),
+            variant(4),
+            variant(1, b"bad", False, variant(0)),
+            variant(3, variant(0)),
+        ):
             result = backend.handle({0: 1, 1: 3, 2: relative, 3: operation})[1]
             assert result[0] == 4
             assert result[1][0][0] == kind
     assert (outside / "seed.txt").read_bytes() == b"private"
 
 
-def test_snake_data_lookup_preserves_permission_error_and_scan_budget(tmp_path: Path, monkeypatch: Any) -> None:
+def test_snake_data_lookup_preserves_permission_error_and_scan_budget(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
     from rustyera_tui.storage import StorageBackend
     from rustyera_tui import storage_path
 
@@ -605,7 +632,9 @@ def test_snake_data_lookup_preserves_permission_error_and_scan_budget(tmp_path: 
     assert not (root / "new.txt").exists()
 
 
-def test_reference_data_uses_literal_lookup_without_snake_directory_scans(tmp_path: Path, monkeypatch: Any) -> None:
+def test_reference_data_uses_literal_lookup_without_snake_directory_scans(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
     from rustyera_tui.storage import StorageBackend
 
     root = tmp_path / "data"
@@ -622,7 +651,12 @@ def test_reference_data_uses_literal_lookup_without_snake_directory_scans(tmp_pa
     monkeypatch.setattr(storage_path, "directory_entries", no_scan)
     monkeypatch.setattr(storage_listing, "directory_entries", no_scan)
     assert backend.handle({0: 1, 1: 3, 2: "Literal.TXT", 3: variant(0)})[1][1][0] == b"old"
-    assert backend.handle({0: 2, 1: 3, 2: "Literal.TXT", 3: variant(1, b"new", True, variant(0))})[1][0] == 1
+    assert (
+        backend.handle({0: 2, 1: 3, 2: "Literal.TXT", 3: variant(1, b"new", True, variant(0))})[1][
+            0
+        ]
+        == 1
+    )
     assert original.read_bytes() == b"new"
 
 
@@ -636,7 +670,9 @@ def test_snake_data_namespace_link_cannot_reauthorize_an_outside_directory(tmp_p
     (outside / "seed.txt").write_bytes(b"safe")
     (backend.data_root / "data").symlink_to(outside, target_is_directory=True)
     for operation in (variant(0), variant(1, b"bad", False, variant(0)), variant(2, "*", True)):
-        result = backend.handle({0: 1, 1: 3, 2: "" if operation[0] == 2 else "seed.txt", 3: operation})[1]
+        result = backend.handle(
+            {0: 1, 1: 3, 2: "" if operation[0] == 2 else "seed.txt", 3: operation}
+        )[1]
         assert result[0] == 4
         assert result[1][0][0] == 1
     assert (outside / "seed.txt").read_bytes() == b"safe"
@@ -662,9 +698,7 @@ def test_tui_does_not_advertise_or_fake_missing_projection_services(
     tag, hello = captured.pop()
     assert tag == 0
     assert hello[4][3] is False  # No pixel scene projection or scene hit testing.
-    assert not any(
-        service[0] == kind and service[1] == operation for service in hello[4][10]
-    )
+    assert not any(service[0] == kind and service[1] == operation for service in hello[4][10])
 
     # An unsolicited request still cannot turn an unavailable service into a ready value.
     client._handle_service(

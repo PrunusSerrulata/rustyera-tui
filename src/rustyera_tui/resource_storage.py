@@ -65,7 +65,8 @@ class ResourceStorage:
             pattern, recursive = fields
             matcher = (
                 SnakeStoragePattern(pattern)
-                if self.bundle.compatibility_profile == "emuera.skia.snake" else None
+                if self.bundle.compatibility_profile == "emuera.skia.snake"
+                else None
             )
             if pattern and len(pattern.encode("utf-8")) > MAXIMUM_PATH_BYTES:
                 raise ValueError("resource listing pattern exceeds the response limit")
@@ -75,7 +76,7 @@ class ResourceStorage:
             for key, (canonical, item) in sorted(files.items(), key=lambda pair: pair[1][0]):
                 if not key.startswith(prefix):
                     continue
-                tail = "/".join(canonical.split("/")[len(relative.split("/")) if relative else 0:])
+                tail = "/".join(canonical.split("/")[len(relative.split("/")) if relative else 0 :])
                 if not tail or (not recursive and "/" in tail):
                     continue
                 name = PurePosixPath(tail).name
@@ -109,8 +110,10 @@ class ResourceStorage:
         elif operation == 5:
             offset, maximum, expected = fields
             if (
-                type(offset) is not int or offset < 0
-                or type(maximum) is not int or not 0 < maximum <= MAXIMUM_RANGE_READ_BYTES
+                type(offset) is not int
+                or offset < 0
+                or type(maximum) is not int
+                or not 0 < maximum <= MAXIMUM_RANGE_READ_BYTES
             ):
                 raise ValueError("resource range exceeds the response limit")
         elif operation != 4:
@@ -177,7 +180,8 @@ class ResourceStorage:
             if source.resolve(strict=True) != resolved or _source_signature(source) != before:
                 return self._conflict()
         if (
-            length != item.content_size or digest.digest() != item.content_hash
+            length != item.content_size
+            or digest.digest() != item.content_hash
             or (expected is not None and token != expected)
         ):
             return self._conflict()

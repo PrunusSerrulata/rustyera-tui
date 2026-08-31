@@ -339,11 +339,14 @@ class SqlProvider:
         bindings = {str(index): value for index, value in enumerate(parameters)}
         probe = [False]
         try:
-            with self._write_probe(
-                connection,
-                probe,
-                allow_bare_vacuum=mode == 0 and not parameters and _is_bare_vacuum(sql),
-            ), self._budget(connection.database, deadline):
+            with (
+                self._write_probe(
+                    connection,
+                    probe,
+                    allow_bare_vacuum=mode == 0 and not parameters and _is_bare_vacuum(sql),
+                ),
+                self._budget(connection.database, deadline),
+            ):
                 cursor = (
                     connection.database.execute(sql, bindings)
                     if parameters
@@ -903,11 +906,14 @@ def _map(value: Any, keys: set[int], name: str) -> dict[int, Any]:
 
 def _is_bare_vacuum(sql: str) -> bool:
     whitespace = r"[\t\n\v\f\r ]*"
-    return re.fullmatch(
-        rf"{whitespace}vacuum{whitespace};?{whitespace}",
-        sql,
-        re.ASCII | re.IGNORECASE,
-    ) is not None
+    return (
+        re.fullmatch(
+            rf"{whitespace}vacuum{whitespace};?{whitespace}",
+            sql,
+            re.ASCII | re.IGNORECASE,
+        )
+        is not None
+    )
 
 
 def _length(value: list[Any], expected: int, name: str) -> None:

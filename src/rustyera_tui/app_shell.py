@@ -228,9 +228,7 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
             self._activated_wait = None
             boundary = self._pending_retired_interaction_boundary
             if wait_identity is not None and boundary is not None:
-                restored = self.presentation.restore_submitted_interaction_boundary(
-                    boundary
-                )
+                restored = self.presentation.restore_submitted_interaction_boundary(boundary)
                 self._pending_retired_interaction_boundary = None
                 if restored:
                     self._queue_local_presentation_render()

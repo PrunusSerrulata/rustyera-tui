@@ -77,7 +77,11 @@ def _walk_storage(
             if visited_entries > MAXIMUM_LIST_ENTRIES:
                 raise ValueError("storage listing exceeds the response limit")
             validate_actual_basename(candidate.name)
-            name = unicodedata.normalize("NFC", candidate.name) if matcher is not None else candidate.name
+            name = (
+                unicodedata.normalize("NFC", candidate.name)
+                if matcher is not None
+                else candidate.name
+            )
             logical = f"{prefix}/{name}" if prefix else name
             logical_bytes = len(logical.encode("utf-8"))
             if logical_bytes > 4096 or len(PurePosixPath(logical).parts) > MAXIMUM_PATH_DEPTH:

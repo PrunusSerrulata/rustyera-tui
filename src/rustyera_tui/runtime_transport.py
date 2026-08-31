@@ -147,9 +147,7 @@ class _RuntimeTransportMixin:
                 self._runtime_epoch_transition is not None
                 and tag not in self._EPOCH_TRANSITION_REPLY_TAGS
             ):
-                self._deferred_runtime_messages.append(
-                    (message_id, tag, value, correlation_id)
-                )
+                self._deferred_runtime_messages.append((message_id, tag, value, correlation_id))
                 continue
             self._submit_runtime(message_id, tag, value, correlation_id)
 

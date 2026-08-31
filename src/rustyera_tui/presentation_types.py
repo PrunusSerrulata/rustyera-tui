@@ -125,6 +125,4 @@ class DisplayLineModel:
                 utf8_bytes += utf8_length(item.pattern)
                 separator_count += 1
         object.__setattr__(self, "_retained_utf8_bytes", utf8_bytes)
-        object.__setattr__(
-            self, "_retained_segments", len(self.segments) + separator_count
-        )
+        object.__setattr__(self, "_retained_segments", len(self.segments) + separator_count)

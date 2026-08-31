@@ -367,9 +367,7 @@ class RuntimeAbi:
                 # the pointer from the numeric address instead; `buffer` remains in this scope
                 # for the complete synchronous ABI call and can then release the mmap export.
                 address = ctypes.addressof(buffer)
-                pointer = ctypes.cast(
-                    ctypes.c_void_p(address), ctypes.POINTER(ctypes.c_uint8)
-                )
+                pointer = ctypes.cast(ctypes.c_void_p(address), ctypes.POINTER(ctypes.c_uint8))
                 borrowed = EraByteSlice(pointer, length)
                 try:
                     return self._decode_project_manifest(borrowed, decoder)

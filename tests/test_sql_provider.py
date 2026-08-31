@@ -51,9 +51,7 @@ def request(
     *,
     provider_handle: dict[int, int] = PROVIDER,
 ) -> dict[int, Any]:
-    return decode(
-        provider.handle(encode({0: provider_handle, 1: operation}), storage, None)
-    )
+    return decode(provider.handle(encode({0: provider_handle, 1: operation}), storage, None))
 
 
 def result(response: dict[int, Any]) -> tuple[int, list[Any]]:
@@ -432,9 +430,7 @@ def test_missing_reader_and_row_limit_return_core_valid_error_state(
         ("SELECT load_extension('/tmp/rustyera-forbidden')", apsw.SQLITE_ERROR),
     ],
 )
-def test_untrusted_sql_cannot_access_host_files_or_extensions(
-    sql: str, sqlite_code: int
-) -> None:
+def test_untrusted_sql_cannot_access_host_files_or_extensions(sql: str, sqlite_code: int) -> None:
     provider = SqlProvider()
     storage = UnusedStorage()
     open_memory(provider, storage)
@@ -444,9 +440,10 @@ def test_untrusted_sql_cannot_access_host_files_or_extensions(
     assert result(rejected)[0] == 10
     assert result(rejected)[1][0][0] == SqlErrorCode.SQLITE
     assert result(rejected)[1][0][3] == sqlite_code
-    assert result(
-        request(provider, variant(1, CONNECTION, 1, "SELECT 42", []), storage)
-    ) == (2, [variant(1, 42)])
+    assert result(request(provider, variant(1, CONNECTION, 1, "SELECT 42", []), storage)) == (
+        2,
+        [variant(1, 42)],
+    )
 
 
 @pytest.mark.parametrize("sql", ["VACUUM", " vacuum;\n"])

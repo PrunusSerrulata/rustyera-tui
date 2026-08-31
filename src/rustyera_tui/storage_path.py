@@ -38,7 +38,11 @@ class ResolvedDataPath:
 def validate_actual_basename(name: str) -> None:
     """Validate an actual directory entry before treating it as a protocol component."""
     if (
-        not name or name in (".", "..") or "/" in name or "\\" in name or "\0" in name
+        not name
+        or name in (".", "..")
+        or "/" in name
+        or "\\" in name
+        or "\0" in name
         or (len(name) > 1 and name[1] == ":")
         or len(name.encode("utf-8")) > 4096
     ):
@@ -83,7 +87,9 @@ def _resolve_components(root: Path, parts: tuple[str, ...], root_exists: bool) -
             if index > 0 or root_exists:
                 raise ValueError("storage directory changed during path lookup") from None
             # No directory is created until every existing prefix has been validated.
-            return _resolved_path(root, current.joinpath(*parts[index:]), [*logical, *parts[index:]])
+            return _resolved_path(
+                root, current.joinpath(*parts[index:]), [*logical, *parts[index:]]
+            )
         if not stat.S_ISDIR(metadata.st_mode):
             raise ValueError("storage path component is not a directory")
         identity = (metadata.st_dev, metadata.st_ino)
@@ -117,7 +123,9 @@ def _resolve_components(root: Path, parts: tuple[str, ...], root_exists: bool) -
         except FileNotFoundError as error:
             raise ValueError("storage directory changed during path lookup") from error
         if selected is None:
-            return _resolved_path(root, current.joinpath(*parts[index:]), [*logical, *parts[index:]])
+            return _resolved_path(
+                root, current.joinpath(*parts[index:]), [*logical, *parts[index:]]
+            )
         try:
             current = selected.resolve(strict=True)
         except FileNotFoundError as error:

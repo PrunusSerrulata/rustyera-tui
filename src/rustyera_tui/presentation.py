@@ -42,6 +42,7 @@ MAXIMUM_VIEWPORT_SEGMENTS = 250_000
 DEFAULT_BUTTON_FOCUS = "#ffff00"
 DEFAULT_PRESENTATION_TITLE = "RustyEra"
 
+
 @dataclass(slots=True)
 class PresentationModel:
     revision: int = 0
@@ -90,8 +91,7 @@ class PresentationModel:
         retained_lines = self._budgeted_parsed_tail(raw_lines)
         self._hidden_prefix = len(raw_lines) - len(retained_lines)
         self.lines = [
-            self._assign_interaction_sequences(line, previous_sequences)
-            for line in retained_lines
+            self._assign_interaction_sequences(line, previous_sequences) for line in retained_lines
         ]
         self.scene = scene
         self._line_index_offset = 0
@@ -283,16 +283,10 @@ class PresentationModel:
         return line._retained_utf8_bytes, line._retained_segments
 
     def _recalculate_retained_cost(self) -> None:
-        self._retained_utf8_bytes = sum(
-            line._retained_utf8_bytes for line in self.lines
-        )
-        self._retained_segments = sum(
-            line._retained_segments for line in self.lines
-        )
+        self._retained_utf8_bytes = sum(line._retained_utf8_bytes for line in self.lines)
+        self._retained_segments = sum(line._retained_segments for line in self.lines)
 
-    def _budgeted_parsed_tail(
-        self, raw_lines: list[dict[int, Any]]
-    ) -> list[DisplayLineModel]:
+    def _budgeted_parsed_tail(self, raw_lines: list[dict[int, Any]]) -> list[DisplayLineModel]:
         retained: list[DisplayLineModel] = []
         retained_bytes = 0
         retained_segments = 0
@@ -307,9 +301,7 @@ class PresentationModel:
                 retained_bytes > MAXIMUM_VIEWPORT_UTF8_BYTES
                 or retained_segments > MAXIMUM_VIEWPORT_SEGMENTS
             ):
-                removed_bytes, removed_segments = self._line_cost(
-                    retained[first_retained]
-                )
+                removed_bytes, removed_segments = self._line_cost(retained[first_retained])
                 retained_bytes -= removed_bytes
                 retained_segments -= removed_segments
                 first_retained += 1
