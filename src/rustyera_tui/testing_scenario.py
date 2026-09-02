@@ -62,12 +62,15 @@ class Scenario:
             {"value": item} if isinstance(item, (str, int)) else dict(item)
             for item in raw.get("inputs", [])
         )
-        if any(item.get("action", "input") not in {"input", "skip_message"} for item in inputs):
-            raise TestDriverError("scenario input action must be input or skip_message")
-        if any(item.get("action") == "skip_message" for item in inputs) and raw.get(
+        rust_only_actions = {"skip_message", "activate_last_button"}
+        if any(item.get("action", "input") not in {"input", *rust_only_actions} for item in inputs):
+            raise TestDriverError(
+                "scenario input action must be input, skip_message, or activate_last_button"
+            )
+        if any(item.get("action") in rust_only_actions for item in inputs) and raw.get(
             "comparison", {}
         ).get("reference"):
-            raise TestDriverError("skip_message scenario inputs cannot be compared by value")
+            raise TestDriverError("frontend action scenario inputs cannot be compared by value")
         limits = {**DEFAULT_LIMITS, **raw.get("limits", {})}
         if limits["max_steps"] <= 0 or limits["timeout_seconds"] <= 0:
             raise TestDriverError("scenario limits must be positive")

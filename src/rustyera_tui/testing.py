@@ -111,6 +111,15 @@ class RustTestSession:
     def skip_message(self) -> None:
         self.worker.send("skip_message_waits")
 
+    def activate_last_button(self) -> dict[int, int]:
+        for line in reversed(self.model.lines):
+            for segment in reversed(line.segments):
+                if segment.token is not None and self.model.segment_enabled(segment):
+                    token = dict(segment.token)
+                    self.worker.send("activate", token)
+                    return token
+        raise TestDriverError("the current presentation has no enabled button")
+
     def restart(self) -> None:
         self.model = PresentationModel()
         self.previous_output = []

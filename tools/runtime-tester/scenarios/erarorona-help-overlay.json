@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "project": "../../../../games/erarorona",
+  "mode": "fixed",
+  "start": {
+    "type": "vm_snapshot",
+    "path": "../../../../games/erarorona/runtime_20260902-151836.snapshot"
+  },
+  "inputs": [{ "action": "activate_last_button" }],
+  "goal": { "wait_kind": 3 },
+  "limits": { "max_steps": 2, "timeout_seconds": 60 }
+}

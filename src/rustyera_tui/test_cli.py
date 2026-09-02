@@ -179,7 +179,7 @@ def _reject_reference_operation(enabled: bool, operation: str) -> None:
         raise TestDriverError(f"{operation} unavailable during reference comparison")
 
 
-def _input_event(step: int, source: str, action: str, value: str) -> dict[str, Any]:
+def _input_event(step: int, source: str, action: str, value: Any) -> dict[str, Any]:
     return {
         "type": "input",
         "step": step + 1,
@@ -360,10 +360,14 @@ def execute(args: argparse.Namespace) -> int:
                 completed_successfully = status == "passed"
                 return 0 if status == "passed" else 2 if status == "input_exhausted" else 1
             if agent_dispatch is None:
-                trace.emit(_input_event(step, source, input_action, value))
                 if input_action == "skip_message":
+                    trace.emit(_input_event(step, source, input_action, value))
                     rust.skip_message()
+                elif input_action == "activate_last_button":
+                    token = rust.activate_last_button()
+                    trace.emit(_input_event(step, source, input_action, token))
                 else:
+                    trace.emit(_input_event(step, source, input_action, value))
                     rust.submit(value)
             reference_observation = (
                 reference.step(value, scenario.watches)
