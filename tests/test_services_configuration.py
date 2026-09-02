@@ -687,6 +687,7 @@ def test_snake_data_namespace_link_cannot_reauthorize_an_outside_directory(tmp_p
         (10, "get_line_geometry_v1", 1),
         (7, "pointer_state", 1),
         (2, "sample_canvas_pixel", 1),
+        (3, "audio_observation", 1),
     ],
 )
 def test_tui_does_not_advertise_or_fake_missing_projection_services(
@@ -698,6 +699,7 @@ def test_tui_does_not_advertise_or_fake_missing_projection_services(
     tag, hello = captured.pop()
     assert tag == 0
     assert hello[4][3] is False  # No pixel scene projection or scene hit testing.
+    assert hello[4][4] is False  # No physical audio provider.
     assert not any(service[0] == kind and service[1] == operation for service in hello[4][10])
 
     # An unsolicited request still cannot turn an unavailable service into a ready value.

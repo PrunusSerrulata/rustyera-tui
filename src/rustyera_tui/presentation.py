@@ -74,7 +74,7 @@ class PresentationModel:
     def apply_snapshot(self, snapshot: dict[int, Any]) -> None:
         previous_sequences = self._collect_interaction_sequences(self.lines)
         if 3 not in snapshot:
-            raise ValueError("protocol 45 presentation snapshot is missing scene state")
+            raise ValueError("protocol 46 presentation snapshot is missing scene state")
         scene = normalize_scene(snapshot[3])
         self.revision = snapshot[0]
         self.title = snapshot[1]

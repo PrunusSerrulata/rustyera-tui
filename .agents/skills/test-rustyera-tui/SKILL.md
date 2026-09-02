@@ -112,9 +112,10 @@ the scenario explicitly defines exploration-only acceptance; exhausting the curr
 
 - Compare normalized text added since the previous stable wait, wait semantics, termination, and
   configured watches. Do not hide differences unless the scenario names the ignore rule.
-- Traditional saves are comparable across implementations. VM snapshots are RustyEra-only unless
-  the scenario supplies an equivalent reference save.
-- A traditional save or VM snapshot owns its RNG state; do not reseed after restore.
+- Traditional saves are comparable across implementations. Standard snake-profile saves restore
+  ordinary or GLOBAL scope only; they do not own SFMT, SQL state, or the other scope. VM snapshots
+  are RustyEra-only unless the scenario supplies an equivalent reference save, and retain the
+  complete runtime state including RNG and SQL revision. Do not reseed after snapshot restore.
 - Report the scenario, command, exit code, effective seed, trace path, completed assertions,
   first difference, and every blocked or unverified check.
 

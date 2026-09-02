@@ -70,7 +70,11 @@ class StorageBackend:
             self.data_root = base.resolve() / "games" / project_key
         else:
             self.data_root = self.project_root
+        self.save_root = self.data_root
         if compatibility_profile == "emuera.skia.snake":
+            # Directory projects exchange standard Emuera saves in their own sav directory.
+            # Packaged projects instead use the persistent project copy selected by the caller.
+            self.save_root = self.data_root if identity_path is not None else self.project_root
             self.data_root = self.data_root / ".rustyera" / "profiles" / compatibility_profile
         elif compatibility_profile != "emuera.em":
             raise ValueError("unsupported project compatibility profile")
@@ -119,8 +123,8 @@ class StorageBackend:
     def _namespace_root(self, namespace: int) -> Path:
         roots = {
             0: self.data_root / "project",
-            1: self.data_root / "sav",
-            2: self.data_root / "sav",
+            1: self.save_root / "sav",
+            2: self.save_root / "sav",
             3: self.data_root / "data",
             4: self.data_root / "logs",
             5: self.project_root,

@@ -52,7 +52,7 @@ class ServicePresentationModel:
 
     def apply_snapshot(self, snapshot: dict[int, object]) -> None:
         if 3 not in snapshot:
-            raise ValueError("protocol 45 presentation snapshot is missing scene state")
+            raise ValueError("protocol 46 presentation snapshot is missing scene state")
         scene = normalize_scene(snapshot[3])
         revision = int(snapshot[0])
         history = snapshot[2]

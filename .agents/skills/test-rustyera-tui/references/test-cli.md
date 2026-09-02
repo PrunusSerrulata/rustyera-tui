@@ -9,7 +9,8 @@ Use JSON `schema_version: 1`.
 - `start.type`: `new_game`, `traditional_save`, or `vm_snapshot`. Restore types require `path`.
 - `seed`: Optional unsigned 64-bit integer. Use a decimal string for the full range when authoring
   portable JSON. When absent, the driver generates a random seed and records it. It applies only
-  to `new_game`.
+  to `new_game`; a standard snake traditional save does not replace the current SFMT state, while
+  a VM snapshot restores its captured RNG state.
 - `inputs`: Fixed prefix. An item is a string/integer or `{ "value": ..., "when": {
   "output_contains": ... } }`. Use `{ "action": "skip_message" }` to submit the visible
   Enter/AnyKey wait with continuous message skipping in Rust-only scenarios; reference comparison

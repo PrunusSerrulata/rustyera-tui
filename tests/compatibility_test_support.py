@@ -21,8 +21,14 @@ def snake_identity() -> dict[int, Any]:
     return {
         **reference_identity(),
         0: 1,
-        1: 8,
-        2: 8,
+        1: 12,
+        2: 12,
         3: "snake_saturating_i64_v1",
-        7: "rustyera_envelope_v1:emuera1808",
+        7: "snake_emuera1808_interop_v1",
+        8: [
+            {0: "rustyera.sql", 1: 1},
+            {0: "rustyera.sql.limits", 1: 1},
+            {0: "rustyera.scene", 1: 1},
+            {0: "rustyera.audio", 1: 1},
+        ],
     }

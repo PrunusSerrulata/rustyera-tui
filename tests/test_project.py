@@ -77,7 +77,7 @@ def test_root_configuration_detects_changes_after_scan(tmp_path: Path, initial: 
         bundle.root_configuration()
 
 
-def test_snake_storage_does_not_overwrite_reference_slots(tmp_path: Path) -> None:
+def test_snake_storage_uses_project_slots_and_keeps_private_runtime_data(tmp_path: Path) -> None:
     reference = StorageBackend(tmp_path)
     snake = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake")
     assert reference.compiled_cache_path() != snake.compiled_cache_path()
@@ -86,15 +86,61 @@ def test_snake_storage_does_not_overwrite_reference_slots(tmp_path: Path) -> Non
         original = reference._resolve(namespace, "save00.sav")
         original.parent.mkdir(parents=True, exist_ok=True)
         original.write_bytes(b"reference save")
-        assert not snake._resolve(namespace, "save00.sav").exists()
-        isolated = snake._resolve(namespace, "save00.sav")
-        isolated.parent.mkdir(parents=True, exist_ok=True)
-        isolated.write_bytes(b"snake envelope")
-        assert original.read_bytes() == b"reference save"
-        isolated.unlink()
+        assert snake._resolve(namespace, "save00.sav") == original
+        assert snake._resolve(namespace, "save00.sav").read_bytes() == b"reference save"
     assert snake._resolve(5, "main.erb") == reference._resolve(5, "main.erb")
+    assert snake._resolve(3, "state.db") != reference._resolve(3, "state.db")
     with pytest.raises(ValueError, match="unsupported"):
         StorageBackend(tmp_path, compatibility_profile="../../outside")
+
+
+def test_snake_directory_saves_ignore_configured_data_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    private = tmp_path / "private"
+    monkeypatch.setenv("ERA_TUI_DATA_DIR", str(private))
+
+    backend = StorageBackend(project, compatibility_profile="emuera.skia.snake")
+
+    assert backend._namespace_root(1) == project.resolve() / "sav"
+    assert backend._namespace_root(2) == project.resolve() / "sav"
+    assert backend._namespace_root(3).is_relative_to(private.resolve())
+
+
+def test_snake_directory_saves_ignore_explicit_data_root(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    private = tmp_path / "private"
+
+    backend = StorageBackend(
+        project,
+        data_root=private,
+        compatibility_profile="emuera.skia.snake",
+    )
+
+    assert backend._namespace_root(1) == project.resolve() / "sav"
+    assert backend._namespace_root(2) == project.resolve() / "sav"
+    assert backend._namespace_root(3).is_relative_to(private.resolve())
+
+
+def test_snake_packaged_saves_use_the_persistent_project_copy(tmp_path: Path) -> None:
+    package = tmp_path / "game.reraproj"
+    package.write_bytes(b"package identity")
+    persistent = tmp_path / "packaged-projects"
+
+    backend = StorageBackend(
+        tmp_path,
+        data_root=persistent,
+        identity_path=package,
+        compatibility_profile="emuera.skia.snake",
+    )
+
+    assert backend._namespace_root(1) == backend.save_root / "sav"
+    assert backend._namespace_root(2) == backend.save_root / "sav"
+    assert backend.save_root.parent == persistent.resolve() / "games"
+    assert backend.data_root == backend.save_root / ".rustyera/profiles/emuera.skia.snake"
 
 
 def test_parallel_ordered_merges_out_of_order_results_and_reports_on_coordinator(

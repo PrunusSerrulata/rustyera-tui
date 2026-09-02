@@ -25,7 +25,7 @@ def packed_color_hex(value: int) -> str:
 
 
 def cell_width(width: Any) -> tuple[CellWidthIntent, int]:
-    """Decode one protocol-45 cell width intent at the untrusted wire boundary."""
+    """Decode one protocol-46 cell width intent at the untrusted wire boundary."""
 
     tag, fields = unwrap_variant(width)
     if len(fields) != 1 or not isinstance(fields[0], int) or isinstance(fields[0], bool):
