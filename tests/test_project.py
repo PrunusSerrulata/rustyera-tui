@@ -1369,6 +1369,22 @@ def test_storage_enforces_revision_preconditions_and_lists_root(tmp_path: Path) 
     assert chunk_fields[:3] == [b"t", 0, False]
 
 
+@pytest.mark.parametrize("operation", [variant(5, 0, 1), variant(5, 0, 1, None)])
+def test_storage_range_accepts_an_omitted_optional_token(tmp_path: Path, operation: list) -> None:
+    backend = StorageBackend(tmp_path)
+    request = {0: 1, 1: 1, 2: "save00.sav", 3: operation}
+    tag, fields = unwrap_variant(backend.handle(request)[1])
+    assert tag == 4
+    assert fields[0][0] == 0  # NotFound, rather than an invalid tuple shape.
+    saved = backend._namespace_root(1) / "save00.sav"
+    saved.parent.mkdir(parents=True, exist_ok=True)
+    saved.write_bytes(b"header")
+    tag, fields = unwrap_variant(backend.handle(request)[1])
+    assert tag == 6
+    assert fields[:3] == [b"h", 0, False]
+    assert isinstance(fields[3], str)
+
+
 def test_storage_idempotency_results_are_epoch_scoped_and_lru_bounded(tmp_path: Path) -> None:
     backend = StorageBackend(tmp_path)
     backend.maximum_idempotent_results = 2
@@ -1669,6 +1685,7 @@ def test_resource_storage_uses_manifest_and_keeps_data_overlay_separate(tmp_path
         0: 6,
         1: blake3.blake3(b"source").hexdigest(),
     }
+    assert request("plugins/a.xml", variant(5, 2, 3))[1][:3] == [b"urc", 2, False]
     assert request("plugins/a.xml", variant(5, 2, 3, listed[0][3]))[1][:3] == [b"urc", 2, False]
     assert request("plugins/a.xml", variant(5, 0, 3, "stale"))[1][0][0] == IO_CONFLICT
     assert request("main.erb", variant(0))[1][0][0] == 1

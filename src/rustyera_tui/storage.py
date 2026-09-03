@@ -272,7 +272,8 @@ class StorageBackend:
                 return variant(4, {0: IO_CONFLICT, 1: "storage file changed during stat"})
             return variant(5, {0: after.st_size, 1: digest})
         if operation_tag == 5:  # ReadRange
-            offset, maximum_bytes, expected_token = fields
+            # The wire codec omits a trailing None change token on the first chunk.
+            offset, maximum_bytes, expected_token = [*fields, None] if len(fields) == 2 else fields
             if (
                 not isinstance(offset, int)
                 or offset < 0

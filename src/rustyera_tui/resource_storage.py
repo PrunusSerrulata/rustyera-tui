@@ -108,7 +108,8 @@ class ResourceStorage:
                 raise ValueError("resource full read exceeds the response limit; use ReadRange")
             maximum = MAXIMUM_FULL_READ_BYTES
         elif operation == 5:
-            offset, maximum, expected = fields
+            # The first range request may omit its trailing optional change token.
+            offset, maximum, expected = [*fields, None] if len(fields) == 2 else fields
             if (
                 type(offset) is not int
                 or offset < 0
