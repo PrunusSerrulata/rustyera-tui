@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import queue
 
+import apsw
 import pytest
+from rustyera_tui.image_metadata import decode_image_metadata
 
 from services_test_support import (
     Any,
@@ -26,7 +28,26 @@ from services_test_support import (
     _PendingExport,
     ExportStage,
 )
-from rustyera_tui.wire import CHANNEL_RUNTIME, RUNTIME_VERSION, encode_envelope, runtime_message
+from rustyera_tui.wire import (
+    CHANNEL_RUNTIME,
+    RUNTIME_VERSION,
+    decode_envelope,
+    encode_envelope,
+    runtime_message,
+)
+from rustyera_tui.sql_provider import LIMITS, SqlProvider
+
+
+def test_image_metadata_decodes_vp8l_from_a_bounded_prefix() -> None:
+    bits = (640 - 1) | ((480 - 1) << 14)
+    image_prefix = (
+        b"RIFF\x00\x00\x00\x00WEBPVP8L"
+        + (2 * 1024 * 1024).to_bytes(4, "little")
+        + b"\x2f"
+        + bits.to_bytes(4, "little")
+    )
+
+    assert decode_image_metadata(image_prefix) == {0: 640, 1: 480, 2: "webp", 3: False}
 
 
 def test_server_hello_reports_the_runtime_product_version() -> None:
@@ -41,8 +62,41 @@ def test_server_hello_reports_the_runtime_product_version() -> None:
 def test_first_envelope_of_new_epoch_resets_storage_before_dispatch(tmp_path: Path) -> None:
     client = object.__new__(RuntimeClient)
     client.epoch = 7
+    client._runtime_epoch_transition = None
     client.expected_runtime_output = 0
     client.storage = StorageBackend(tmp_path)
+    client._pending_sql_requests = {}
+    client.sql_provider = SqlProvider()
+    sql_provider = {0: 7, 1: 1}
+    connection = {0: 7, 1: 2}
+    client.sql_provider.handle(
+        encode(
+            {
+                0: sql_provider,
+                1: variant(
+                    0,
+                    connection,
+                    "memory",
+                    {0: variant(0), 1: "3.53.0", 2: 1},
+                    variant(0),
+                    dict(LIMITS),
+                ),
+            }
+        ),
+        client.storage,
+        None,
+    )
+    client.sql_provider.handle(
+        encode(
+            {
+                0: sql_provider,
+                1: variant(1, connection, 3, "SELECT 1", []),
+            }
+        ),
+        client.storage,
+        None,
+    )
+    database = client.sql_provider.connections[(7, 2)].database
     client.storage.begin_epoch(7)
     client.storage.idempotent_results["old"] = variant(3)
     observed: list[tuple[int | None, list[str]]] = []
@@ -66,6 +120,10 @@ def test_first_envelope_of_new_epoch_resets_storage_before_dispatch(tmp_path: Pa
     client._handle_envelope(envelope)
 
     assert observed == [(8, [])]
+    assert client.sql_provider.connections == {}
+    assert client.sql_provider.readers == {}
+    with pytest.raises(apsw.ConnectionClosedError):
+        database.get_autocommit()
 
 
 def test_session_reset_releases_old_client_state_before_recreate(tmp_path: Path) -> None:
@@ -107,7 +165,7 @@ def test_session_reset_releases_old_client_state_before_recreate(tmp_path: Path)
     client.recreate(replacement)
     assert calls[-2:] == ["create", "submit"]
     assert client.pending_bundle is replacement
-    assert client.storage is not None
+    assert client.storage is None  # The negotiated core resolver binds storage later.
     assert not client._session_reset_active
 
 
@@ -272,9 +330,7 @@ def test_full_project_chunks_stream_to_an_atomic_target(tmp_path: Path) -> None:
     stream = AtomicExportStream.open(target)
     client.full_project_export = FullProjectExport(target, stream)
     descriptor = {0: 7, 1: 3, 2: 6, 3: blake3.blake3(b"abcdef").digest()}
-    client.pending_export = _PendingExport(
-        target, ExportStage.PROJECT_FILE, stream
-    )
+    client.pending_export = _PendingExport(target, ExportStage.PROJECT_FILE, stream)
 
     client._handle_export_ready({0: 3, 1: variant(0, descriptor)})
 
@@ -425,6 +481,182 @@ def test_client_hello_negotiates_the_pending_project_envelope_size(tmp_path: Pat
     assert limits[1] >= 200 * 1024 * 1024
     assert limits[0] > limits[1]
     assert limits[5] == 1024 * 1024 * 1024
+    capabilities = captured[0][1][4]
+    services = {(item[0], item[1]) for item in capabilities[10]}
+    assert (7, "device_pump") in services
+    assert (11, "rustyera.sql") in services
+    assert (7, "get_key_state") not in services
+    assert {item[0] for item in capabilities[12]} == {
+        "input.timed_viewport",
+        "input.device_pump",
+    }
+
+
+def test_same_batch_sql_cancellation_wins_before_provider_execution() -> None:
+    client, captured = client_with_capture()
+    client._pending_sql_requests = {}
+    client._handle_service(
+        {
+            0: 41,
+            1: 11,
+            2: "rustyera.sql",
+            3: {0: 1, 1: 0},
+            4: b"not-executed",
+            5: None,
+        },
+        73,
+    )
+
+    client._cancel_external_request({0: 41, 1: 1})
+
+    assert client._pending_sql_requests == {}
+    assert captured == []
+
+
+def test_pump_drains_same_batch_sql_cancel_before_provider_execution(tmp_path: Path) -> None:
+    submissions: list[bytes] = []
+    session = {0: 1, 1: 2}
+    service = {
+        0: 41,
+        1: 11,
+        2: "rustyera.sql",
+        3: {0: 1, 1: 0},
+        4: b"not-executed",
+        5: None,
+    }
+    pending = [
+        encode_envelope(
+            channel=CHANNEL_RUNTIME,
+            channel_version=RUNTIME_VERSION,
+            session=session,
+            sequence=0,
+            message_id=1,
+            correlation_id=None,
+            payload_tag=52,
+            payload=runtime_message(52, service),
+            epoch=7,
+        ),
+        encode_envelope(
+            channel=CHANNEL_RUNTIME,
+            channel_version=RUNTIME_VERSION,
+            session=session,
+            sequence=1,
+            message_id=2,
+            correlation_id=None,
+            payload_tag=54,
+            payload=runtime_message(54, {0: 41, 1: 1}),
+            epoch=7,
+        ),
+    ]
+
+    class FakeAbi:
+        def submit(self, data: bytes) -> None:
+            submissions.append(data)
+
+        @staticmethod
+        def drive() -> SimpleNamespace:
+            return SimpleNamespace(state=0)
+
+        @staticmethod
+        def poll() -> bytes:
+            return pending.pop(0) if pending else b""
+
+    client = RuntimeClient(FakeAbi(), queue.Queue())  # type: ignore[arg-type]
+    submissions.clear()
+    bundle = ProjectBundle.scan(tmp_path)
+    client.bundle = bundle
+    client.storage = StorageBackend(tmp_path, resource_bundle=bundle)
+    client.session = session
+    client.epoch = 7
+    client.expected_runtime_output = 0
+    provider_calls: list[bytes] = []
+    client.sql_provider = SimpleNamespace(
+        handle=lambda payload, *_args: provider_calls.append(payload) or b"",
+        reset=lambda: None,
+    )
+
+    assert client.pump()
+
+    assert provider_calls == []
+    assert client._pending_sql_requests == {}
+    assert [decode_envelope(item).payload_tag for item in submissions] == [93]
+
+
+def test_device_pump_waits_for_a_frontend_loop_acknowledgement() -> None:
+    client, captured = client_with_capture()
+
+    client._handle_service(
+        {
+            0: 17,
+            1: 7,
+            2: "device_pump",
+            4: encode({0: 4, 1: 12}),
+        },
+        99,
+    )
+
+    assert captured == []
+    assert client.events.get_nowait() == FrontendEvent("device_pump", 17)
+    client.complete_device_pump(17)
+    assert ready_payload(captured) == {0: 4, 1: 12}
+    assert 17 not in client._pending_device_pumps
+
+
+def test_runtime_output_responses_follow_the_batch_acknowledgement() -> None:
+    submissions: list[bytes] = []
+
+    class FakeAbi:
+        def submit(self, data: bytes) -> None:
+            submissions.append(data)
+
+    client = RuntimeClient(FakeAbi(), queue.Queue())  # type: ignore[arg-type]
+    submissions.clear()  # Ignore ClientHello.
+    client.session = {0: 1, 1: 2}
+    client.epoch = 4
+    client._runtime_output_batch_active = True
+    transition = client.send_runtime(20, {0: 0})
+    after_transition = client.send_runtime(60, {0: 2, 1: 0})
+    transition_service_result = client.send_runtime(
+        53,
+        {0: 17, 1: variant(0, b"exact revision")},
+    )
+    client._runtime_output_batch_active = False
+
+    acknowledgement = client.send_runtime(93, {0: 7})
+    client._flush_deferred_runtime_messages()
+
+    envelopes = [decode_envelope(data) for data in submissions]
+    assert [envelope.payload_tag for envelope in envelopes] == [93, 20, 53]
+    assert [envelope.message_id for envelope in envelopes] == [
+        acknowledgement,
+        transition,
+        transition_service_result,
+    ]
+    assert [envelope.epoch for envelope in envelopes] == [4, 4, 4]
+    assert [envelope.sequence for envelope in envelopes] == [1, 2, 3]
+    assert client._deferred_runtime_messages == [(after_transition, 60, {0: 2, 1: 0}, None)]
+
+    client._handle_runtime = lambda *_args: None  # type: ignore[method-assign]
+    client._handle_envelope(
+        encode_envelope(
+            channel=CHANNEL_RUNTIME,
+            channel_version=RUNTIME_VERSION,
+            session=client.session,
+            sequence=0,
+            message_id=8,
+            correlation_id=transition,
+            payload_tag=42,
+            payload=runtime_message(42, {}),
+            epoch=5,
+        )
+    )
+    client._flush_deferred_runtime_messages()
+
+    envelopes = [decode_envelope(data) for data in submissions]
+    assert [envelope.payload_tag for envelope in envelopes] == [93, 20, 53, 60]
+    assert envelopes[-1].message_id == after_transition
+    assert envelopes[-1].epoch == 5
+    assert envelopes[-1].sequence == 4
 
 
 def test_projection_is_bound_to_the_revision_the_tui_rendered() -> None:

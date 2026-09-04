@@ -57,9 +57,7 @@ def test_debug_console_byte_budget_emits_an_observable_warning() -> None:
     client.debug_grant = None
     client.debug_requested = True
 
-    client.request_debug_action(
-        "console_evaluate", "x" * (MAX_PENDING_DEBUG_CONSOLE_BYTES + 1)
-    )
+    client.request_debug_action("console_evaluate", "x" * (MAX_PENDING_DEBUG_CONSOLE_BYTES + 1))
 
     assert client.pending_debug_actions == []
     event = client.events.get_nowait()

@@ -7,9 +7,11 @@ from typing import TYPE_CHECKING
 from . import project as project_facade
 from .project import (
     Any,
+    FILE_ALS,
     FILE_CONFIGURATION,
     FILE_CSV,
     FILE_ERB,
+    FILE_ERD,
     FILE_ERH,
     Path,
     ProjectConfigurationUpdate,
@@ -25,6 +27,7 @@ from .project import (
     _parallel_project_reads,
     _path_sort_key,
     _project_paths,
+    _project_candidates,
     blake3,
     os,
     variant,
@@ -97,6 +100,8 @@ class _ProjectBundleReloadMixin:
         if self.project_file is not None:
             raise RuntimeError("a packaged project cannot reload source files")
         candidate = project_facade.ProjectBundle.scan(self.root, self.revision + 1, progress)
+        candidate.compatibility = self.compatibility
+        candidate.configuration_digest = self.configuration_digest
         changes: list[Any] = []
         for relative_path in sorted(set(self.files) | set(candidate.files), key=_path_sort_key):
             old = self.files.get(relative_path)
@@ -139,11 +144,7 @@ class _ProjectBundleReloadMixin:
             for relative in self.files
             if PurePosixPath(relative).parts[0].lower() in {"csv", "erb"}
         )
-        candidates = [
-            (path, category)
-            for path in _project_paths(directory)
-            if (category := _classify_project_path(self.root, path, canonical_roots)) is not None
-        ]
+        candidates = _project_candidates(self.root, _project_paths(directory), canonical_roots)
         if progress is not None:
             progress(0, len(candidates))
         return {
@@ -174,6 +175,8 @@ class _ProjectBundleReloadMixin:
             self.revision + 1,
             files,
             quick_scan_pending=any(item.payload is None for item in files.values()),
+            compatibility=self.compatibility,
+            configuration_digest=self.configuration_digest,
         )
         return candidate, {0: self.revision, 1: candidate.revision, 2: changes}
 
@@ -183,7 +186,7 @@ class _ProjectBundleReloadMixin:
         relative = self._project_relative_path(path, expected="file")
         lexical = self.root / PurePosixPath(relative)
         category = _classify_project_path(self.root, lexical, _canonical_source_roots(self.root))
-        if category not in (FILE_CSV, FILE_ERH, FILE_ERB, FILE_CONFIGURATION):
+        if category not in (FILE_CSV, FILE_ERH, FILE_ERB, FILE_CONFIGURATION, FILE_ALS, FILE_ERD):
             raise ValueError("only project source and configuration files can be reloaded")
         item = project_facade._stable_read_project_file(self.root, lexical, category)
         files = dict(self.files)
@@ -193,6 +196,8 @@ class _ProjectBundleReloadMixin:
             self.revision + 1,
             files,
             quick_scan_pending=any(value.payload is None for value in files.values()),
+            compatibility=self.compatibility,
+            configuration_digest=self.configuration_digest,
         )
         request = {
             0: self.revision,

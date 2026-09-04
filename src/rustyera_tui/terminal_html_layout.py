@@ -55,7 +55,7 @@ def project_html_shape(semantic: Any, context: DisplaySegment) -> list[DisplaySe
     return _project_rectangle(shape, context, domain=_LengthDomain.HTML)
 
 
-def has_relative_division(node: list[Any]) -> bool:
+def has_positioned_division(node: list[Any]) -> bool:
     try:
         tag, fields = unwrap_variant(node)
     except (TypeError, ValueError):
@@ -63,9 +63,10 @@ def has_relative_division(node: list[Any]) -> bool:
     if tag != 1 or len(fields) < 3 or not isinstance(fields[2], list):
         return False
     semantic = fields[6] if len(fields) > 6 else None
-    if fields[0] == 12 and _semantic_field(semantic, 6, False) is True:
+    if fields[0] == 12:
+        _division_display_mode(semantic)
         return True
-    return any(has_relative_division(child) for child in fields[2])
+    return any(has_positioned_division(child) for child in fields[2])
 
 
 def project_positioned_html(
@@ -206,8 +207,8 @@ def _paint_html_node(
                 canvas.priority(depth),
             )
         return
-    if kind == 12 and _semantic_field(semantic, 6, False) is True:
-        _paint_relative_division(
+    if kind == 12:
+        _paint_division(
             semantic,
             children,
             context,
@@ -257,7 +258,7 @@ def _paint_html_node(
         )
 
 
-def _paint_relative_division(
+def _paint_division(
     semantic: Any,
     children: list[Any],
     context: DisplaySegment,
@@ -268,36 +269,76 @@ def _paint_relative_division(
     font_context: Callable[[Any, DisplaySegment], DisplaySegment],
     button_context: Callable[[Any, dict[int, Any] | None, DisplaySegment], DisplaySegment],
 ) -> None:
+    display_mode = _division_display_mode(semantic)
     x_value = _semantic_field(semantic, 0)
     y_value = _semantic_field(semantic, 1)
     width_value = _semantic_field(semantic, 2)
     height_value = _semantic_field(semantic, 3)
-    if not _raw_length_positive(width_value) or not _raw_length_positive(height_value):
+    if not _raw_length_positive(width_value):
         return
-    x = _project_length(
-        x_value,
-        horizontal=True,
-        domain=_LengthDomain.HTML,
-    )
-    y = _project_length(
-        y_value,
-        horizontal=False,
-        domain=_LengthDomain.HTML,
-    )
     width = _project_length(
         width_value,
         horizontal=True,
         domain=_LengthDomain.HTML,
         extent=True,
     )
-    height = _project_length(
-        height_value,
-        horizontal=False,
-        domain=_LengthDomain.HTML,
-        extent=True,
-    )
+    if width is None:
+        # A valid logical width can exceed the bounded terminal canvas. In that
+        # case the non-pixel client omits the box instead of treating it as a
+        # malformed protocol value.
+        return
+    height = None
+    if height_value is not None:
+        if not _raw_length_positive(height_value):
+            raise ValueError("positioned division height must be positive")
+        height = _project_length(
+            height_value,
+            horizontal=False,
+            domain=_LengthDomain.HTML,
+            extent=True,
+        )
+        if height is None:
+            raise ValueError("positioned division height is invalid")
     declared_depth = _bounded_depth(_semantic_field(semantic, 4, 0))
-    if x is None or y is None or width is None or height is None or declared_depth is None:
+    if declared_depth is None:
+        raise ValueError("positioned division depth is invalid")
+    child_depth = parent_depth + declared_depth
+    if not -32_768 <= child_depth <= 32_767:
+        raise ValueError("positioned division depth exceeds the terminal range")
+    if display_mode != 0 or height is None:
+        # Absolute anchors and auto-height boxes cannot be represented honestly by a
+        # terminal. Preserve their semantic text/button stream at the current cursor.
+        for child in children:
+            _paint_html_node(
+                child,
+                context,
+                anchor,
+                canvas,
+                parent_clip,
+                child_depth,
+                font_context,
+                button_context,
+            )
+        return
+    x = (
+        0
+        if x_value is None
+        else _project_length(
+            x_value,
+            horizontal=True,
+            domain=_LengthDomain.HTML,
+        )
+    )
+    y = (
+        0
+        if y_value is None
+        else _project_length(
+            y_value,
+            horizontal=False,
+            domain=_LengthDomain.HTML,
+        )
+    )
+    if x is None or y is None:
         return
     box_model = _semantic_field(semantic, 7, {})
     margin = _project_box_sides(box_model.get(2) if isinstance(box_model, dict) else None)
@@ -319,9 +360,7 @@ def _paint_relative_division(
     ):
         return
     own_clip = intersect_clip(parent_clip, (top, left, top + height, left + width))
-    layer_depth = parent_depth + declared_depth
-    if not -32_768 <= layer_depth <= 32_767:
-        return
+    layer_depth = child_depth
     colors = box_model.get(4) if isinstance(box_model, dict) else None
     border_colors = _border_colors(border, colors, context.style.foreground)
     background_value = _semantic_field(semantic, 5)
@@ -351,3 +390,10 @@ def _paint_relative_division(
             font_context,
             button_context,
         )
+
+
+def _division_display_mode(semantic: Any) -> int:
+    value = _semantic_field(semantic, 6)
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 3:
+        return value
+    raise ValueError("positioned division display mode is invalid")

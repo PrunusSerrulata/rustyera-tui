@@ -13,7 +13,7 @@ from typing import Any
 import cbor2
 
 WIRE_VERSION = (2, 0)
-RUNTIME_VERSION = (35, 0)
+RUNTIME_VERSION = (46, 0)
 DEBUG_VERSION = (4, 0)
 
 CHANNEL_RUNTIME = 0
@@ -44,7 +44,12 @@ def unwrap_variant(value: Any) -> tuple[int, list[Any]]:
     if not isinstance(value, list) or len(value) != 2:
         raise ValueError(f"expected a two-element enum array, got {value!r}")
     tag, fields = value
-    if not isinstance(tag, int) or not isinstance(fields, list):
+    if (
+        not isinstance(tag, int)
+        or isinstance(tag, bool)
+        or not 0 <= tag <= 0xFFFF_FFFF
+        or not isinstance(fields, list)
+    ):
         raise ValueError(f"invalid enum projection: {value!r}")
     return tag, fields
 

@@ -1,6 +1,7 @@
 """Private RuntimeClient handling for rejected runtime commands."""
 
 from __future__ import annotations
+from .compatibility import compatibility_context
 
 from .runtime_dependencies import (
     Any,
@@ -29,6 +30,14 @@ class _RuntimeRejectionMixin:
 
     def _handle_command_rejection(self, value: dict[int, Any], correlation_id: int | None) -> None:
         rejection = value.get(1, "")
+        context = compatibility_context(value.get(4))
+        if context:
+            self.events.put(log_event(context, LogLevel.WARNING, authoritative=True))
+        if correlation_id is not None and correlation_id == getattr(
+            self, "pending_compatibility_request", None
+        ):
+            self.pending_compatibility_request = None
+            self.fail_startup(str(rejection))
         non_notified_input_warning = rejection in _NON_NOTIFIED_INPUT_WARNINGS
         stale_projection = rejection in {
             "projection environment revision is not newer",
@@ -60,16 +69,10 @@ class _RuntimeRejectionMixin:
             else None
         )
         cache_export_rejection = rejected_export_stage == ExportStage.COMPILED_CACHE
-        diagnosis_export_rejection = (
-            rejected_export_stage in DIAGNOSIS_EXPORT_STAGES
-        )
+        diagnosis_export_rejection = rejected_export_stage in DIAGNOSIS_EXPORT_STAGES
         snapshot_export_rejection = rejected_export_stage == ExportStage.SNAPSHOT
-        input_replay_export_rejection = (
-            rejected_export_stage == ExportStage.INPUT_REPLAY
-        )
-        project_file_export_rejection = (
-            rejected_export_stage == ExportStage.PROJECT_FILE
-        )
+        input_replay_export_rejection = rejected_export_stage == ExportStage.INPUT_REPLAY
+        project_file_export_rejection = rejected_export_stage == ExportStage.PROJECT_FILE
         pending_import = self.pending_import
         import_rejection = (
             pending_import is not None and correlation_id in pending_import.command_message_ids

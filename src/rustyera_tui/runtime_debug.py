@@ -21,9 +21,7 @@ MAX_PENDING_DEBUG_ACTION_BYTES = 1024 * 1024
 MAX_PENDING_DEBUG_CORRELATIONS = 256
 MAX_PENDING_DEBUG_CONSOLE_REQUESTS = 32
 MAX_PENDING_DEBUG_CONSOLE_BYTES = 1024 * 1024
-_DEBUG_REFRESH_PENDING = frozenset(
-    {"variables", "variable_value", "fibers", "call_stack"}
-)
+_DEBUG_REFRESH_PENDING = frozenset({"variables", "variable_value", "fibers", "call_stack"})
 
 
 class _RuntimeDebugMixin:
@@ -41,9 +39,7 @@ class _RuntimeDebugMixin:
             console_actions = [
                 item for item in self.pending_debug_actions if item[0].startswith("console_")
             ]
-            console_bytes = sum(
-                retained_text_utf8_length(item[1]) for item in console_actions
-            )
+            console_bytes = sum(retained_text_utf8_length(item[1]) for item in console_actions)
             if (
                 len(console_actions) >= MAX_PENDING_DEBUG_CONSOLE_REQUESTS
                 or console_bytes + cost > MAX_PENDING_DEBUG_CONSOLE_BYTES
@@ -204,13 +200,8 @@ class _RuntimeDebugMixin:
     def _debug_request(self, command: list[Any], pending: str) -> None:
         if self.debug_grant is None:
             return
-        cost = retained_text_utf8_length(
-            command, stop_after=MAX_PENDING_DEBUG_CONSOLE_BYTES
-        )
-        if (
-            pending in DEBUG_LIFECYCLE_PENDING
-            and pending in self.debug_pending_by_message.values()
-        ):
+        cost = retained_text_utf8_length(command, stop_after=MAX_PENDING_DEBUG_CONSOLE_BYTES)
+        if pending in DEBUG_LIFECYCLE_PENDING and pending in self.debug_pending_by_message.values():
             return
         if pending in _DEBUG_REFRESH_PENDING and (
             pending in self.debug_pending_by_message.values()
@@ -221,8 +212,7 @@ class _RuntimeDebugMixin:
         if pending == "console" and not self._reserve_console_request(cost):
             return
         normal_pending = sum(
-            name not in DEBUG_LIFECYCLE_PENDING
-            for name in self.debug_pending_by_message.values()
+            name not in DEBUG_LIFECYCLE_PENDING for name in self.debug_pending_by_message.values()
         )
         if (
             pending not in DEBUG_LIFECYCLE_PENDING
@@ -244,8 +234,7 @@ class _RuntimeDebugMixin:
         ]
         count = len(in_flight) + len(self.deferred_debug_console)
         retained_bytes = sum(
-            self.debug_pending_cost_by_message.get(message_id, 0)
-            for message_id in in_flight
+            self.debug_pending_cost_by_message.get(message_id, 0) for message_id in in_flight
         ) + sum(item[1] for item in self.deferred_debug_console)
         if (
             count >= MAX_PENDING_DEBUG_CONSOLE_REQUESTS
@@ -256,9 +245,7 @@ class _RuntimeDebugMixin:
         return True
 
     def _submit_debug_request(self, command: list[Any], pending: str, cost: int) -> None:
-        message_id = self.send_debug(
-            10, {0: self.debug_grant[1], 1: command}, pending=pending
-        )
+        message_id = self.send_debug(10, {0: self.debug_grant[1], 1: command}, pending=pending)
         self.debug_pending_cost_by_message[message_id] = cost
 
     def _complete_debug_request(self, correlation_id: int | None) -> str:

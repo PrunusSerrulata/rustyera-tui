@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 from .presentation_helpers import (
+    cell_width as _cell_width,
     packed_color_hex as _packed_color_hex,
     segment_columns as _segment_columns,
     semantic_field as _semantic_field,
@@ -25,7 +26,7 @@ from .presentation_types import (
     SeparatorLayout,
 )
 from .terminal_html_layout import (
-    has_relative_division,
+    has_positioned_division,
     project_direct_shape,
     project_html_shape,
     project_positioned_html,
@@ -60,12 +61,19 @@ def parse_line(line: dict[int, Any]) -> DisplayLineModel:
     for run in line.get(5, []):
         tag, fields = unwrap_variant(run)
         if tag == 5:  # PRINTC-family semantic cell
-            content, alignment, preferred_columns = fields
+            content, alignment, width = fields
+            width_intent, width_value = _cell_width(width)
             start = len(segments)
             for child in content:
                 segments.extend(parse_run(child))
             layout.append(
-                ColumnCellLayout(start, len(segments), int(alignment), int(preferred_columns))
+                ColumnCellLayout(
+                    start,
+                    len(segments),
+                    int(alignment),
+                    width_value,
+                    width_intent,
+                )
             )
         elif tag == 6:  # Width-independent separator
             layout.append(SeparatorLayout(len(segments), fields[0] or "-"))
@@ -78,6 +86,7 @@ def parse_line(line: dict[int, Any]) -> DisplayLineModel:
         line_end=line.get(3, True),
         alignment=line.get(4, 0),
         segments=tuple(segments),
+        text_background_eligible=bool(line.get(6, False)),
         layout=tuple(layout),
     )
 
@@ -134,12 +143,20 @@ def parse_run(run: list[Any], inherited: DisplaySegment | None = None) -> list[D
     if tag == 4:  # Shape
         return project_direct_shape(fields[0], inherited or DisplaySegment(""))
     if tag == 5:  # PRINTC-family semantic cell
-        content, alignment, preferred_columns = fields
+        content, alignment, width = fields
+        width_intent, width_value = _cell_width(width)
+        terminal_columns = ColumnCellLayout(
+            0,
+            0,
+            int(alignment),
+            width_value,
+            width_intent,
+        ).terminal_columns
         nested: list[DisplaySegment] = []
         for child in content:
             nested.extend(parse_run(child, inherited))
         width = sum(_segment_columns(part) for part in nested)
-        padding = max(0, preferred_columns - width)
+        padding = max(0, terminal_columns - width)
         if padding:
             edge = nested[0 if alignment == 1 else -1] if nested else None
             if edge is None:
@@ -187,7 +204,7 @@ def parse_html_document(
 
     base = inherited or DisplaySegment("")
     nodes = document.get(0, [])
-    if any(has_relative_division(node) for node in nodes):
+    if any(has_positioned_division(node) for node in nodes):
         return project_positioned_html(
             nodes,
             base,

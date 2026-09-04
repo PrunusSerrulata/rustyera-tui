@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+
+from compatibility_test_support import reference_identity
+from rustyera_tui.presentation import PresentationModel
+from rustyera_tui.testing import apply_presentation_event, plain_output
+
 from runtime_cabi_test_support import (
     AbiError,
     DiagnosisProgress,
@@ -24,6 +30,38 @@ from runtime_cabi_test_support import (
     wait_for_path,
     zstandard,
 )
+
+
+@pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
+def test_real_c_abi_snake_ingestion_fixture_reaches_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "snake-ingestion"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "snake-ingestion-project", project)
+    model = PresentationModel()
+    logs: list[str] = []
+
+    def reached_input(event: FrontendEvent) -> bool:
+        if event.kind == "log":
+            logs.append(str(event.value))
+        return apply_presentation_event(model, event) is not None
+
+    worker = RuntimeWorker(RUNTIME_LIBRARY, project, new_game_seed=123456)
+    worker.start()
+    try:
+        try:
+            wait_for(worker, reached_input)
+        except AssertionError as error:
+            raise AssertionError("\n".join(logs)) from error
+        output = plain_output(model)
+        assert "INGEST_FLAG=10,11,300" in output
+        assert "INGEST_BUFF=50,60" in output
+        assert "INGEST_ERD=70,80,90" in output
+        assert "SNAKE_INGESTION_READY" in output
+    finally:
+        worker.stop()
+        worker.join(timeout=5)
 
 
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
@@ -65,9 +103,9 @@ def test_real_c_abi_relaunch_uses_the_persistent_compiled_cache(
 @pytest.mark.skipif(RUNTIME_LIBRARY is None, reason="era-runtime-capi has not been built")
 def test_real_abi_38_manifest_staging_reports_success_busy_and_invalid_cbor() -> None:
     with RuntimeAbi(RUNTIME_LIBRARY) as abi:
-        assert abi.stage_project_manifest({0: 1, 1: []})
+        assert abi.stage_project_manifest({0: 1, 1: [], 2: reference_identity()})
         with pytest.raises(AbiError, match="Busy"):
-            abi.stage_project_manifest({0: 1, 1: []})
+            abi.stage_project_manifest({0: 1, 1: [], 2: reference_identity()})
 
     malformed_values = (
         b"\xa2\x00\x01\x01\x81",  # truncated
@@ -261,6 +299,15 @@ def test_real_c_abi_diagnosis_contains_a_parseable_full_project(
     ]
     assert header["step_count"] == 1
     step = json.loads(replay.splitlines()[1])
+    source = step.pop("source")
+    assert source == {
+        "root": "External",
+        "admission": 2,
+        "fragment": 0,
+        "raw": "8",
+        "macro_enabled": True,
+        "message_skip": False,
+    }
     assert step == {
         "record": "step",
         "sequence": 1,
@@ -519,3 +566,123 @@ def test_real_c_abi_reports_a_terminal_runtime_fault(
     finally:
         worker.stop()
         worker.join(timeout=3)
+
+
+@pytest.mark.skipif(
+    os.environ.get("RUSTYERA_TEST_D_SERVICE_CABI") != "1",
+    reason="1D service C ABI acceptance requires explicit opt-in after shared static gates",
+)
+@pytest.mark.parametrize(
+    ("fixture", "expression", "service", "major", "api"),
+    [
+        (
+            "html",
+            'RESULT = HTML_STRINGLEN("x",1)',
+            "PresentationQuery.html_string_len",
+            2,
+            "HTML_STRINGLEN",
+        ),
+        (
+            "html",
+            'RESULTS \'= HTML_SUBSTRING("x",1)',
+            "PresentationQuery.html_substring",
+            2,
+            "HTML_SUBSTRING",
+        ),
+        (
+            "html",
+            'RESULT = HTML_STRINGLINES("x",1)',
+            "PresentationQuery.html_string_lines",
+            2,
+            "HTML_STRINGLINES",
+        ),
+        ("pointer", None, "InputState.pointer_state", 1, "MOUSEB"),
+        ("canvas", None, "Canvas.sample_canvas_pixel", 1, "GGETCOLOR"),
+    ],
+    ids=("html-length-v2", "html-substring-v2", "html-lines-v2", "pointer-v1", "canvas-pixel-v1"),
+)
+def test_real_c_abi_snake_projection_services_report_exact_missing_capability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fixture: str,
+    expression: str | None,
+    service: str,
+    major: int,
+    api: str,
+) -> None:
+    # Never discover a main-workspace library or skip a requested acceptance run.
+    configured = os.environ.get("ERA_RUNTIME_LIBRARY")
+    assert configured, "ERA_RUNTIME_LIBRARY must explicitly name the final 1D group C ABI library"
+    library = Path(configured).expanduser().resolve(strict=True)
+    assert library.is_file(), f"runtime library is not a file: {library}"
+    monkeypatch.setenv("ERA_TUI_DATA_DIR", str(tmp_path / "data"))
+    project = tmp_path / "unsupported-project"
+    shutil.copytree(
+        Path(__file__).parent / "fixtures" / "snake-services-unsupported" / fixture, project
+    )
+    if expression is not None:
+        source = project / "ERB" / "main.erb"
+        text = source.read_text(encoding="utf-8")
+        original = 'RESULT = HTML_STRINGLEN("x",1)'
+        assert text.count(original) == 1
+        source.write_text(text.replace(original, expression, 1), encoding="utf-8")
+
+    model = PresentationModel()
+    logs: list[str] = []
+
+    def initial_wait(event: FrontendEvent) -> bool:
+        if event.kind == "log":
+            logs.append(str(event.value))
+        return apply_presentation_event(model, event) is not None
+
+    def terminal_fault(event: FrontendEvent) -> bool:
+        if event.kind == "log":
+            logs.append(str(event.value))
+        wait = apply_presentation_event(model, event)
+        assert wait is None, f"{api} unexpectedly returned to another input wait"
+        assert event.kind != "worker_stopped", "worker stopped without a capability fault"
+        return event.kind == "runtime_fault"
+
+    worker = RuntimeWorker(library, project, new_game_seed=123456)
+    worker.start()
+    try:
+        try:
+            wait_for(worker, initial_wait)
+            assert f"SNAKE_UNSUPPORTED_{fixture.upper()}" in plain_output(model)
+            worker.send("submit_text", "0")
+            fault = wait_for(worker, terminal_fault).value
+        except AssertionError as error:
+            raise AssertionError(f"{api}: {error}\n" + "\n".join(logs)) from error
+        assert fault.code == 7  # Public FaultCode::UnsupportedRuntimeFeature.
+        assert fault.function == "SYSTEM_TITLE"
+        assert "profile=emuera.skia.snake@" in fault.compatibility
+        assert f"requires={service}@{major}.0" in fault.compatibility
+        assert "UnsupportedRuntimeFeature" in fault.display()
+        assert "profile=emuera.skia.snake@" in fault.display()
+        assert f"requires={service}@{major}.0" in fault.display()
+        assert "SNAKE_UNSUPPORTED_UNEXPECTED_SUCCESS" not in plain_output(model)
+        (tmp_path / "service-fault-evidence.json").write_text(
+            json.dumps(
+                {
+                    "seed": 123456,
+                    "runtime_library": str(library),
+                    "requested_core_revision": (Path(__file__).parents[1] / "rustyera-core.rev")
+                    .read_text(encoding="utf-8")
+                    .strip(),
+                    "api": api,
+                    "required_service": f"{service}@{major}.0",
+                    "output": plain_output(model),
+                    "fault_code": fault.code,
+                    "fault_display": fault.display(),
+                    "fault_context": fault.compatibility,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    finally:
+        worker.stop()
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "real RuntimeWorker did not release its C ABI session"

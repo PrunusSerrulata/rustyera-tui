@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import sys
 import time
 from io import StringIO
 from pathlib import Path
@@ -11,8 +12,13 @@ from typing import Any
 import pytest
 
 from rustyera_tui.runtime import FrontendEvent, PendingStateImport, PresentationBatch, RuntimeClient
-from rustyera_tui.test_cli import build_parser, dispatch_agent_request
+from rustyera_tui.test_cli import (
+    build_parser,
+    dispatch_agent_request,
+    scenario_checkpoint_target,
+)
 from rustyera_tui.testing import (
+    ReferenceProcess,
     RustTestSession,
     Scenario,
     TestDriverError,
@@ -115,6 +121,46 @@ def test_scenario_rejects_snapshot_without_path(tmp_path: Path) -> None:
         Scenario.load(path)
 
 
+def test_scenario_distinguishes_an_omitted_checkpoint_from_an_empty_object(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "game"
+    project.mkdir()
+    path = tmp_path / "scenario.json"
+    trace_path = tmp_path / "run" / "trace.ndjson"
+    write_scenario(path, project)
+
+    omitted = Scenario.load(path)
+
+    assert omitted.checkpoint is None
+    assert scenario_checkpoint_target(omitted, trace_path) is None
+
+    write_scenario(path, project, checkpoint={})
+    explicit = Scenario.load(path)
+
+    assert explicit.checkpoint == {}
+    assert scenario_checkpoint_target(explicit, trace_path) == (
+        trace_path.parent / "checkpoint.snapshot"
+    )
+
+
+def test_scenario_validates_and_resolves_a_configured_checkpoint(tmp_path: Path) -> None:
+    project = tmp_path / "game"
+    project.mkdir()
+    path = tmp_path / "scenario.json"
+    write_scenario(path, project, checkpoint={"path": "snapshots/state.bin"})
+
+    scenario = Scenario.load(path)
+
+    assert scenario_checkpoint_target(scenario, tmp_path / "trace.ndjson") == (
+        tmp_path / "snapshots" / "state.bin"
+    )
+
+    write_scenario(path, project, checkpoint=[])
+    with pytest.raises(TestDriverError, match="checkpoint must be an object"):
+        Scenario.load(path)
+
+
 def test_scenario_accepts_rust_only_message_skip_action(tmp_path: Path) -> None:
     project = tmp_path / "game"
     project.mkdir()
@@ -166,6 +212,29 @@ def test_reference_commands_are_accepted_as_quoted_command_lines() -> None:
 
     assert parsed.reference_command == "wine Reference.exe"
     assert parsed.reference_path_command == "winepath -w"
+
+
+def test_reference_process_uses_the_isolated_project_as_its_working_directory(
+    tmp_path: Path,
+) -> None:
+    script = """
+import json
+import os
+import sys
+request = json.loads(sys.stdin.readline())
+print(json.dumps({
+    "id": request["id"],
+    "ok": True,
+    "schemaVersion": 2,
+    "referenceCommit": "fixture",
+    "result": {"cwd": os.getcwd()},
+}), flush=True)
+"""
+    reference = ReferenceProcess([sys.executable, "-c", script], cwd=tmp_path)
+    try:
+        assert Path(reference.request("capabilities")["cwd"]) == tmp_path
+    finally:
+        reference.close()
 
 
 def test_output_delta_and_normalization_cover_append_replace_and_noise() -> None:
@@ -300,6 +369,7 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
             ("edit", (path, expected, replacement))
         ),
         export_snapshot=lambda path: calls.append(("snapshot", path)),
+        restore_snapshot=lambda path: calls.append(("restore_snapshot", path)),
         restart=lambda: calls.append(("restart", None)),
         reload=lambda scope, path: calls.append(("reload", (scope, path))),
         submit=lambda value: calls.append(("step", value)),
@@ -326,6 +396,9 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
     reload = dispatch_agent_request(
         {"op": "reload", "scope": "folder", "path": "ERB/folder"}, **common
     )
+    snapshot = tmp_path / "checkpoint.snapshot"
+    snapshot.write_bytes(b"snapshot")
+    restore = dispatch_agent_request({"op": "restore_snapshot", "path": str(snapshot)}, **common)
     restart = dispatch_agent_request({"op": "restart"}, **common)
     step = dispatch_agent_request({"op": "step", "input": "1"}, **common)
 
@@ -342,6 +415,14 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
         "action": "reload_folder",
         "path": "ERB/folder",
     }
+    assert restore.advances and not restore.drives_reference
+    assert restore.trace_event == {
+        "type": "runtime_action",
+        "step": 5,
+        "source": "agent",
+        "action": "restore_snapshot",
+        "path": str(snapshot),
+    }
     assert restart.advances and not restart.drives_reference
     assert step.advances and step.drives_reference and step.input_value == "1"
     assert calls == [
@@ -349,6 +430,7 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
         ("wait", ("项目缓存已保存。", 12.5)),
         ("edit", ("ERB/main.erb", "v1", "v2")),
         ("reload", ("folder", "ERB/folder")),
+        ("restore_snapshot", snapshot),
         ("restart", None),
         ("step", "1"),
     ]
@@ -356,6 +438,11 @@ def test_agent_dispatch_classifies_non_step_and_advancing_operations(tmp_path: P
     with pytest.raises(TestDriverError, match="reference comparison"):
         dispatch_agent_request(
             {"op": "reload", "scope": "all"},
+            **{**common, "reference_enabled": True},
+        )
+    with pytest.raises(TestDriverError, match="reference comparison"):
+        dispatch_agent_request(
+            {"op": "restore_snapshot", "path": str(snapshot)},
             **{**common, "reference_enabled": True},
         )
 
@@ -440,6 +527,32 @@ def test_presentation_adapter_applies_atomic_batch_before_returning_wait() -> No
     assert model.deltas == [{0: 2}]
 
 
+def test_headless_driver_acknowledges_device_pump_before_the_next_wait() -> None:
+    wait = {0: 7, 1: 2, 2: 0, 5: True, 11: {0: 1, 1: 2}}
+    events: queue.Queue[FrontendEvent] = queue.Queue()
+    events.put(FrontendEvent("device_pump", 17))
+    events.put(FrontendEvent("presentation_batch", PresentationBatch(None, None, wait, True)))
+    commands: list[tuple[str, Any]] = []
+    session = object.__new__(RustTestSession)
+    session.model = SimpleNamespace(lines=[])
+    session.previous_output = []
+    session.statuses = []
+    session.logs = []
+    session.metrics = []
+    session._last_wait = None
+    session.worker = SimpleNamespace(
+        events=events,
+        is_alive=lambda: True,
+        client=SimpleNamespace(phase=5, epoch=2, active_wait=wait),
+        send=lambda kind, value=None: commands.append((kind, value)),
+    )
+
+    observation = session.wait_observation(time.monotonic() + 1)
+
+    assert commands == [("device_pump_ack", 17)]
+    assert observation["wait"]["id"] == 7
+
+
 def test_comparison_uses_default_wait_map_and_reports_projection_difference() -> None:
     rust = {
         "wait": {"kind": 2},
@@ -475,6 +588,39 @@ def test_goal_combines_output_wait_watch_line_and_status_checks() -> None:
     }
 
     assert goal_status(observation, goal)["satisfied"]
+
+
+def test_snake_data_scenario_requires_all_stages_and_preserves_ordinary_flag(
+    tmp_path: Path,
+) -> None:
+    scenario_path = (
+        Path(__file__).resolve().parents[1] / "tools/runtime-tester/scenarios/snake-data.json"
+    )
+    scenario = Scenario.load(scenario_path, project_override=tmp_path)
+    assert scenario.inputs == ({"value": "1", "when": {"output_contains": "SNAKE_DATA_START"}},)
+    observation = {
+        "output": [
+            "SNAKE_DATA_INDEX=2/main/42",
+            "SNAKE_DATA_RESOURCE=1/1/0",
+            "SNAKE_DATA_OVERLAY=1/1/1/2",
+            "SNAKE_DATA_STRUCTURED=1/station/29/29/42/from-schema",
+            "SNAKE_DATA_GLOBAL_MISSING=0/66/55",
+            "SNAKE_DATA_GLOBAL=1/7/55/1/12/saved-map/saved-xml",
+            "SNAKE_DISPLAY_TIMER=10/77",
+            "SNAKE_DISPLAY_BACKGROUND",
+            "SNAKE_DATA_READY",
+        ],
+        "wait": {"kind": 2},
+        "watches": {"GLOBAL:0": 7, "FLAG:0": 55, "C1_METHOD_VALUE:0": 42},
+    }
+
+    assert goal_status(observation, scenario.goal)["satisfied"]
+    assert not goal_status({**observation, "output": ["SNAKE_DATA_READY"]}, scenario.goal)[
+        "satisfied"
+    ]
+    assert not goal_status(
+        {**observation, "watches": {**observation["watches"], "FLAG:0": 8}}, scenario.goal
+    )["satisfied"]
 
 
 def test_runtime_start_request_uses_configured_seed() -> None:

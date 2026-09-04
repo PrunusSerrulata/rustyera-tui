@@ -25,21 +25,27 @@ from .runtime_dependencies import (
 class _RuntimeTransportMixin:
     """Own the wire envelopes and the atomic poll/acknowledgement pump boundary."""
 
+    _EPOCH_TRANSITION_TAGS = frozenset({20, 23})
+    _EPOCH_TRANSITION_REPLY_TAGS = frozenset({51, 53})
+
     def _send_hello(self) -> None:
         service_capabilities = [
             {0: 9, 1: "random_seed", 2: version_range(1, 0)},
             {0: 8, 1: "local_date_time", 2: version_range(1, 0)},
-            {0: 7, 1: "get_key_state", 2: version_range(1, 0)},
+            {0: 7, 1: "device_pump", 2: version_range(1, 0)},
             {0: 1, 1: "image_metadata", 2: version_range(1, 0)},
             {0: 10, 1: "get_display_line", 2: version_range(1, 0)},
             {0: 10, 1: "html_get_printed_str", 2: version_range(1, 0)},
             {0: 10, 1: "serialize_physical_history", 2: version_range(1, 0)},
             {0: 0, 1: "gget_text_size", 2: version_range(1, 0)},
+            {0: 11, 1: "rustyera.sql", 2: version_range(1, 0)},
         ]
         capabilities = {
             0: [0, 1],
             1: True,
             2: True,
+            # Mouse input activates projected terminal text buttons only. The TUI
+            # intentionally advertises neither pixel scene rendering nor hit testing.
             3: False,
             4: False,
             5: False,
@@ -49,6 +55,12 @@ class _RuntimeTransportMixin:
             9: [],
             10: service_capabilities,
             11: {0: True, 1: True, 2: True, 3: True},
+            # Textual can preserve NF scroll intent and acknowledge a real UI-loop
+            # pump, but it cannot expose trustworthy terminal key up/down latches.
+            12: [
+                {0: "input.timed_viewport", 1: version_range(1, 0)},
+                {0: "input.device_pump", 1: version_range(1, 0)},
+            ],
         }
         maximum_envelope_bytes, maximum_payload_bytes = (
             self.pending_bundle.requested_wire_limits()
@@ -80,11 +92,17 @@ class _RuntimeTransportMixin:
     @staticmethod
     def _storage_for_bundle(bundle: ProjectBundle) -> StorageBackend:
         if bundle.project_file is None:
-            return StorageBackend(bundle.root)
+            return StorageBackend(
+                bundle.root,
+                compatibility_profile=bundle.compatibility_profile,
+                resource_bundle=bundle,
+            )
         return StorageBackend(
             bundle.root,
             data_root=bundle.root / ".rustyera" / "packaged-projects",
             identity_path=bundle.project_file,
+            compatibility_profile=bundle.compatibility_profile,
+            resource_bundle=bundle,
         )
 
     def send_runtime(
@@ -92,6 +110,19 @@ class _RuntimeTransportMixin:
     ) -> int:
         message_id = self.next_message_id
         self.next_message_id += 1
+        if self._runtime_output_batch_active or self._runtime_epoch_transition is not None:
+            self._deferred_runtime_messages.append((message_id, tag, value, correlation_id))
+            return message_id
+        self._submit_runtime(message_id, tag, value, correlation_id)
+        return message_id
+
+    def _submit_runtime(
+        self,
+        message_id: int,
+        tag: int,
+        value: Any | None,
+        correlation_id: int | None,
+    ) -> None:
         data = encode_envelope(
             channel=CHANNEL_RUNTIME,
             channel_version=RUNTIME_VERSION,
@@ -105,7 +136,20 @@ class _RuntimeTransportMixin:
         )
         self.runtime_sequence += 1
         self.abi.submit(data)
-        return message_id
+        if tag in self._EPOCH_TRANSITION_TAGS:
+            self._runtime_epoch_transition = (message_id, self.epoch)
+
+    def _flush_deferred_runtime_messages(self) -> None:
+        messages = self._deferred_runtime_messages
+        self._deferred_runtime_messages = []
+        for message_id, tag, value, correlation_id in messages:
+            if (
+                self._runtime_epoch_transition is not None
+                and tag not in self._EPOCH_TRANSITION_REPLY_TAGS
+            ):
+                self._deferred_runtime_messages.append((message_id, tag, value, correlation_id))
+                continue
+            self._submit_runtime(message_id, tag, value, correlation_id)
 
     def send_debug(self, tag: int, value: Any | None = None, *, pending: str = "") -> int:
         if self.session is None or self.epoch is None:
@@ -141,10 +185,19 @@ class _RuntimeTransportMixin:
 
     def _handle_envelope(self, data: bytes) -> int | None:
         envelope = decode_envelope(data)
+        transition = self._runtime_epoch_transition
+        if transition is not None and (
+            (envelope.epoch is not None and envelope.epoch != transition[1])
+            or (envelope.payload_tag == 95 and envelope.correlation_id == transition[0])
+        ):
+            self._runtime_epoch_transition = None
         # A committed new game, restore, or hot reload may advance the epoch before its first
         # StateChanged message is observed. The common envelope already carries that authority;
         # adopt it before acknowledging the message so the acknowledgement cannot be stale.
         if envelope.epoch is not None:
+            if self.epoch is not None and envelope.epoch != self.epoch:
+                self._pending_sql_requests.clear()
+                self.sql_provider.begin_epoch(envelope.epoch)
             self.epoch = envelope.epoch
             if self.storage is not None:
                 self.storage.begin_epoch(self.epoch)
@@ -185,17 +238,35 @@ class _RuntimeTransportMixin:
         drive_ms = (time.perf_counter() - drive_started) * 1000
         emitted = False
         acknowledge_through: int | None = None
-        while data := self.abi.poll():
-            emitted = True
-            runtime_sequence = self._handle_envelope(data)
-            if runtime_sequence is not None:
-                acknowledge_through = runtime_sequence
+        self._runtime_output_batch_active = True
+        try:
+            while data := self.abi.poll():
+                emitted = True
+                runtime_sequence = self._handle_envelope(data)
+                if runtime_sequence is not None:
+                    acknowledge_through = runtime_sequence
+        except Exception:
+            self._deferred_runtime_messages.clear()
+            self._pending_sql_requests.clear()
+            self.sql_provider.reset()
+            raise
+        finally:
+            self._runtime_output_batch_active = False
+        # SQL requests are deliberately executed after the complete runtime batch has been
+        # observed, so a CancelExternalRequest emitted later in that same batch wins before
+        # APSW can create side effects. Queue their responses with the other batch replies.
+        self._runtime_output_batch_active = True
+        try:
+            self._flush_pending_sql_requests()
+        finally:
+            self._runtime_output_batch_active = False
         self._flush_presentation_events()
         # Runtime output acknowledgement is cumulative. Deferring it until the complete poll
         # batch also ensures an epoch-changing reload is acknowledged with its final epoch,
         # even when an earlier message in the same batch was emitted before the commit.
         if acknowledge_through is not None and self.session is not None:
             self.send_runtime(93, {0: acknowledge_through})
+        self._flush_deferred_runtime_messages()
         pump_ms = (time.perf_counter() - pump_started) * 1000
         if (
             self.metrics_threshold_ms is not None

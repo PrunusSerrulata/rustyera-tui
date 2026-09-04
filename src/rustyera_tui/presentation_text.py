@@ -6,8 +6,9 @@ from typing import Any
 
 from rich.cells import cell_len
 
+from .presentation_helpers import cell_width as _cell_width
 from .presentation_helpers import semantic_field as _semantic_field
-from .presentation_types import DEFAULT_VIEWPORT_COLUMNS
+from .presentation_types import DEFAULT_VIEWPORT_COLUMNS, ColumnCellLayout
 from .wire import unwrap_variant
 
 
@@ -61,10 +62,18 @@ def plain_run(run: list[Any]) -> str:
     if tag == 4:
         return "[图形]"
     if tag == 5:
-        content, alignment, preferred_columns = fields
+        content, alignment, width_intent = fields
+        width_kind, width_value = _cell_width(width_intent)
+        cell = ColumnCellLayout(
+            0,
+            0,
+            int(alignment),
+            width_value,
+            width_kind,
+        )
         text = "".join(plain_run(child) for child in content)
         width = sum(_plain_run_columns(child) for child in content)
-        padding = " " * max(0, preferred_columns - width)
+        padding = " " * max(0, cell.terminal_columns - width)
         return f"{padding}{text}" if alignment == 1 else f"{text}{padding}"
     if tag == 6:
         pattern = fields[0] or "-"

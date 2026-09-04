@@ -95,6 +95,9 @@ class _WorkerEventMixin:
         changed_from, trimmed_prefix = self.presentation.take_render_change()
         with self.batch_update():
             viewport.set_button_focus(self.presentation.button_focus)
+            viewport.observe_input_viewport_policy(
+                self.active_wait.get(13) if self.active_wait is not None else None
+            )
             horizontal_overflow = await viewport.set_lines(
                 self.presentation.lines,
                 changed_from=changed_from,
@@ -104,7 +107,9 @@ class _WorkerEventMixin:
             )
             self.query_one("#separator-line").display = not horizontal_overflow
             self.title = self.presentation.title or self.TITLE
-            viewport.set_presentation_background(self.presentation.background)
+            viewport.set_presentation_background(
+                self.presentation.background, self.presentation.text_line_background
+            )
         revision = self.presentation.revision
         self._presentation_dirty = False
         self._presentation_commit_ready = False
@@ -119,6 +124,10 @@ class _WorkerEventMixin:
         if kind == "game_state_reset":
             self._reset_game_state_projection(int(value))
             return True
+        if kind == "device_pump":
+            # A later Textual callback establishes the frontend pump boundary.
+            self.call_next(self.worker.send, "device_pump_ack", int(value))
+            return False
         if kind == "presentation_batch":
             if not isinstance(value, PresentationBatch):
                 self._log("worker returned an invalid presentation batch", LogLevel.WARNING)
@@ -130,7 +139,7 @@ class _WorkerEventMixin:
             if value.delta is not None:
                 try:
                     self.presentation.apply_delta(value.delta)
-                except ValueError as error:
+                except (TypeError, ValueError) as error:
                     self._log(str(error), LogLevel.WARNING)
                 else:
                     dirty = True
@@ -190,6 +199,10 @@ class _WorkerEventMixin:
             if dialog is not None and dialog.is_mounted:
                 dialog.dismiss(None)
         self.active_wait = None
+        try:
+            self.query_one(GameViewport).observe_input_viewport_policy(0)
+        except NoMatches:
+            pass
         self._activated_wait = None
         self._pending_retired_interaction_boundary = None
         self.input_undo_token = None

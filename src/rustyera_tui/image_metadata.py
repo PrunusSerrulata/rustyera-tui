@@ -107,20 +107,25 @@ def _webp_size(data: bytes) -> tuple[int, int, bool]:
         kind = data[offset : offset + 4]
         length = int.from_bytes(data[offset + 4 : offset + 8], "little")
         payload = data[offset + 8 : offset + 8 + length]
-        if len(payload) != length:
-            break
-        if kind == b"VP8X" and length >= 10:
+        if kind == b"VP8X" and length >= 10 and len(payload) >= 10:
             width = 1 + int.from_bytes(payload[4:7], "little")
             height = 1 + int.from_bytes(payload[7:10], "little")
             return width, height, bool(payload[0] & 0x02)
-        if kind == b"VP8 " and length >= 10 and payload[3:6] == b"\x9d\x01\x2a":
+        if (
+            kind == b"VP8 "
+            and length >= 10
+            and len(payload) >= 10
+            and payload[3:6] == b"\x9d\x01\x2a"
+        ):
             width = int.from_bytes(payload[6:8], "little") & 0x3FFF
             height = int.from_bytes(payload[8:10], "little") & 0x3FFF
             return width, height, False
-        if kind == b"VP8L" and length >= 5 and payload[0] == 0x2F:
+        if kind == b"VP8L" and length >= 5 and len(payload) >= 5 and payload[0] == 0x2F:
             bits = int.from_bytes(payload[1:5], "little")
             width = 1 + (bits & 0x3FFF)
             height = 1 + ((bits >> 14) & 0x3FFF)
             return width, height, False
+        if len(payload) != length:
+            break
         offset += 8 + length + (length & 1)
     raise ValueError("malformed WebP header")

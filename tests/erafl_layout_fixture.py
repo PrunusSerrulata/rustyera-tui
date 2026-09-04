@@ -64,7 +64,7 @@ def html_image(source: str = "portrait.png") -> list[object]:
         None,
         0,
         0,
-        variant(7, source, None, None, None, None, None),
+        variant(7, source, None, None, None, None, None, None, 0, None),
     )
 
 
@@ -106,7 +106,7 @@ def html_division(
             html_length(height),
             depth,
             background,
-            True,
+            0,
             box_model,
         ),
     )

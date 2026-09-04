@@ -194,9 +194,7 @@ def test_operation_sequence_export_reuses_the_state_transfer_pipeline(tmp_path: 
     client._handle_export_chunk({0: 17, 1: 0, 2: data[:split], 3: False})
     assert client.pending_export is not None
     assert client.pending_export.descriptor == descriptor
-    client._handle_export_chunk(
-        {0: 17, 1: split, 2: data[split:], 3: True}
-    )
+    client._handle_export_chunk({0: 17, 1: split, 2: data[split:], 3: True})
 
     assert target.read_bytes() == data
     assert client.pending_export is None
@@ -264,9 +262,7 @@ def test_snapshot_restore_stages_the_source_file_without_reading_it_whole(
 
 def test_manual_state_export_does_not_replace_an_active_transfer(tmp_path: Path) -> None:
     client, captured = client_with_capture()
-    active = _PendingExport.open(
-        tmp_path / "cache.reracache", ExportStage.COMPILED_CACHE
-    )
+    active = _PendingExport.open(tmp_path / "cache.reracache", ExportStage.COMPILED_CACHE)
     active.descriptor = {0: 9}
     active.message_id = 41
     client.pending_export = active

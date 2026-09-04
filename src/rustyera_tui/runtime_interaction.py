@@ -62,11 +62,28 @@ class _RuntimeInteractionMixin:
         if self.storage is None:
             result = {0: request[0], 1: variant(4, {0: 6, 1: "no active project storage"})}
         else:
+            if request[1] == 5 and self.bundle is not None:
+                self.storage.bind_resources(self.bundle)
             result = self.storage.handle(request)
         self.send_runtime(51, result, correlation_id=correlation_id)
 
     def _handle_service(self, request: dict[int, Any], correlation_id: int | None) -> None:
         request_id, kind, operation = request[0], request[1], request[2]
+        if kind == 11 and operation == "rustyera.sql":
+            self._pending_sql_requests[request_id] = (request, correlation_id)
+            return
+        if kind == 7 and operation == "device_pump":
+            query = decode(request[4])
+            epoch, after_event_sequence = query[0], query[1]
+            self._pending_device_pumps[request_id] = (
+                epoch,
+                after_event_sequence,
+                correlation_id,
+            )
+            # Textual acknowledges this on a later UI-loop callback. This is a
+            # real frontend pump even though TUI advertises no device latch.
+            self.events.put(FrontendEvent("device_pump", request_id))
+            return
         try:
             if kind == 9 and operation == "random_seed":
                 response = {0: secrets.randbits(64)}
@@ -83,8 +100,6 @@ class _RuntimeInteractionMixin:
                     6: now.microsecond // 1000,
                     7: int(offset.total_seconds() // 60) if offset else 0,
                 }
-            elif kind == 7 and operation == "get_key_state":
-                response = {0: True, 1: False, 2: False}
             elif kind == 1 and operation == "image_metadata":
                 query = decode(request[4])
                 bundle = next(
@@ -103,25 +118,22 @@ class _RuntimeInteractionMixin:
             elif kind == 10 and operation == "get_display_line":
                 query = decode(request[4])
                 text = self.presentation.display_line(query[1])
-                if utf8_length(
-                    text, stop_after=MAXIMUM_FRONTEND_SERVICE_BYTES
-                ) > MAXIMUM_FRONTEND_SERVICE_BYTES:
+                if (
+                    utf8_length(text, stop_after=MAXIMUM_FRONTEND_SERVICE_BYTES)
+                    > MAXIMUM_FRONTEND_SERVICE_BYTES
+                ):
                     raise ValueError("display line exceeds the frontend service limit")
                 response = {0: query[0], 1: text}
             elif kind == 10 and operation == "html_get_printed_str":
                 query = decode(request[4])
                 response = {
                     0: query[0],
-                    1: self.presentation.html_printed_str(
-                        query[1], MAXIMUM_FRONTEND_SERVICE_BYTES
-                    ),
+                    1: self.presentation.html_printed_str(query[1], MAXIMUM_FRONTEND_SERVICE_BYTES),
                 }
             elif kind == 10 and operation == "serialize_physical_history":
                 query = decode(request[4])
                 retained_bytes = self.presentation.physical_history_utf8_bytes()
-                prefix_bytes = (
-                    0 if query[2] else utf8_length(str(query[1])) + 2
-                )
+                prefix_bytes = 0 if query[2] else utf8_length(str(query[1])) + 2
                 if retained_bytes + prefix_bytes > MAXIMUM_FRONTEND_SERVICE_BYTES:
                     raise ValueError("physical history exceeds the frontend service limit")
                 body = self.presentation.physical_history()
@@ -136,6 +148,64 @@ class _RuntimeInteractionMixin:
         except Exception as error:  # noqa: BLE001 - external-service boundary
             result = variant(1, {0: "frontend.unsupported_service", 1: str(error)})
         self.send_runtime(53, {0: request_id, 1: result}, correlation_id=correlation_id)
+
+    def _flush_pending_sql_requests(self) -> None:
+        pending = self._pending_sql_requests
+        self._pending_sql_requests = {}
+        for request_id, (request, correlation_id) in pending.items():
+            try:
+                if request.get(3) != {0: 1, 1: 0}:
+                    raise ValueError("unsupported rustyera.sql operation version")
+                payload = request.get(4)
+                if not isinstance(payload, bytes):
+                    raise ValueError("rustyera.sql request payload is not bytes")
+                if self.storage is None:
+                    raise RuntimeError("rustyera.sql requested without active project storage")
+                if self.bundle is not None:
+                    self.storage.bind_resources(self.bundle)
+                response = self.sql_provider.handle(
+                    payload,
+                    self.storage,
+                    request.get(5),
+                )
+                result = variant(0, response)
+            except Exception as error:  # noqa: BLE001 - external-service boundary
+                result = variant(1, {0: "frontend.sql_failure", 1: str(error)})
+            self.send_runtime(
+                53,
+                {0: request_id, 1: result},
+                correlation_id=correlation_id,
+            )
+
+    def _cancel_external_request(self, request: dict[int, Any]) -> None:
+        request_id = request[0]
+        if request[1] != 1:
+            return
+        self._pending_sql_requests.pop(request_id, None)
+        self._pending_device_pumps.pop(request_id, None)
+        self._deferred_runtime_messages = [
+            message
+            for message in self._deferred_runtime_messages
+            if not (
+                message[1] == 53
+                and isinstance(message[2], dict)
+                and message[2].get(0) == request_id
+            )
+        ]
+
+    def complete_device_pump(self, request_id: int) -> None:
+        pending = self._pending_device_pumps.pop(request_id, None)
+        if pending is None:
+            return
+        epoch, through_event_sequence, correlation_id = pending
+        self.send_runtime(
+            53,
+            {
+                0: request_id,
+                1: variant(0, encode({0: epoch, 1: through_event_sequence})),
+            },
+            correlation_id=correlation_id,
+        )
 
     def _advance_deadline(self) -> None:
         if (

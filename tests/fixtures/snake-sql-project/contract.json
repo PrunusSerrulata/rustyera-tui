@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "sqliteVersion": "3.53.0",
+  "seedSha256": "3eefa4c1f5e8eb01010ad3c3200364da0e506a639258062c0f7c52163eb0acd2",
+  "limits": {
+    "maximumConnections": 8,
+    "maximumReaders": 32,
+    "maximumSqlBytes": 262144,
+    "maximumParameters": 64,
+    "maximumParameterBytes": 8388608,
+    "maximumCellBytes": 1048576,
+    "maximumDatabaseBytes": 67108864,
+    "maximumMapRows": 100000,
+    "maximumMapBytes": 8388608,
+    "maximumReaderRows": 1000000,
+    "executionBudgetMs": 5000
+  },
+  "errorCodes": {
+    "invalidSource": 2,
+    "revisionConflict": 21,
+    "staleEpoch": 26,
+    "invalidTableName": 27
+  },
+  "files": {
+    "CSV/GAMEBASE.CSV": "7c713ccf4eaf1957ea603b791e534fe04a4e777744995127f297b6f8729364b0",
+    "ERB/main.erb": "20294445dad1b052ed0f0b7590a946a586b6881f6e8bc1ba3f6d621606001cec",
+    "plugins/map.xml": "7dcc4385d4ea78d2af2c1f0488719da87de4bf051c30bc5545d27f3735d6fca8",
+    "plugins/qol_data.seed.sql": "6f3ad9ab468b6d309b07d940ec8c0fc93d0f429fea2c301fddb9ed8e43ccd4f1",
+    "plugins/qol_data.db": "3eefa4c1f5e8eb01010ad3c3200364da0e506a639258062c0f7c52163eb0acd2",
+    "reraconfig.toml": "31b01a76f9cb8714f5cbabaac38228fb4e8805a46bb11e70cbc6a2d1fb8063e0"
+  },
+  "outputTemplate": [
+    "SNAKE_SQL_CONNECT={connectResult}/1",
+    "SNAKE_SQL_CONTRACT=1/0//1/1/雪/1/0/1/1",
+    "SNAKE_SQL_TX=1/0",
+    "SNAKE_SQL_MAP=1/4/0",
+    "SNAKE_SQL_MAP_MARKUP=3C62206C616E673D227A68223E626F6C643C2F623E26616D703B74657874",
+    "SNAKE_SQL_MAP_DUP=3C693E6E65773C2F693E",
+    "SNAKE_SQL_WRITE_READER=1/7/0/1/1/{runCount}",
+    "SNAKE_SQL_SUMMARY=seed=1;contract=1;map=4",
+    "SNAKE_SQL_PERSIST={runCount}",
+    "SNAKE_SQL_REOPEN={runCount}",
+    "SNAKE_SQL_READY"
+  ],
+  "followupTemplate": ["SNAKE_SQL_RESTORED_QUERY={runCount}", "SNAKE_SQL_OMITTED=1"],
+  "referenceDifferences": {
+    "connectResult": {
+      "rustFirst": 0,
+      "rustCurrent": 1,
+      "snake": 1
+    },
+    "omittedVariadicParameter": {
+      "rust": "NULL",
+      "snake": "missing parameter error"
+    }
+  }
+}

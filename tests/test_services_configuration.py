@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from compatibility_test_support import reference_identity
+
 from services_test_support import (
     Any,
     ConfigurationChange,
@@ -11,9 +13,34 @@ from services_test_support import (
     SimpleNamespace,
     blake3,
     client_with_capture,
+    encode,
+    pytest,
+    unwrap_variant,
     variant,
 )
 from rustyera_tui.client_preferences import LoadedPreferences, PreferenceValues
+
+
+def test_configuration_write_does_not_authorize_uncommitted_resource_changes(
+    tmp_path: Path,
+) -> None:
+    from rustyera_tui.project import StorageBackend
+
+    (tmp_path / "seed.xml").write_bytes(b"old")
+    bundle = ProjectBundle.scan(tmp_path)
+    bundle.compatibility = reference_identity()
+    client, captured = client_with_capture()
+    client.bundle = bundle
+    client.storage = StorageBackend(tmp_path, resource_bundle=bundle)
+    (tmp_path / "seed.xml").write_bytes(b"new")
+    (tmp_path / "added.xml").write_bytes(b"added")
+    client.bundle = client._write_configuration(bundle, b"", "[meta]\nschema_version = 4\n")
+    assert "added.xml" not in client.bundle.files
+    assert client.bundle.files["seed.xml"].content_hash == bundle.files["seed.xml"].content_hash
+    client._handle_storage({0: 1, 1: 5, 2: "seed.xml", 3: variant(0)}, None)
+    assert captured[-1][1][1][1][0][0] == 7
+    client._handle_storage({0: 2, 1: 5, 2: "added.xml", 3: variant(0)}, None)
+    assert captured[-1][1][1][1][0][0] == 1
 
 
 def test_configuration_update_uses_authoritative_snapshot_and_open_effect_is_supported() -> None:
@@ -170,7 +197,7 @@ def test_packaged_configuration_commits_through_the_append_update(tmp_path: Path
     client, captured = client_with_capture()
     project_file = tmp_path / "game.reraproj"
     project_file.write_bytes(b"base")
-    bundle = ProjectBundle(tmp_path, 7, {}, project_file)
+    bundle = ProjectBundle(tmp_path, 7, {}, project_file, compatibility=reference_identity())
     client.bundle = bundle
     client.pending_configuration = None
     digest = b"package-digest"
@@ -201,6 +228,7 @@ def test_packaged_configuration_commits_through_the_append_update(tmp_path: Path
     client.abi.prepare_project_configuration_update = lambda *_args: (4, b"journal")
     client.abi.project_file_manifest = lambda _bytes: {
         0: 7,
+        2: reference_identity(),
         1: [{0: "reraconfig.toml", 1: 5, 2: variant(0, contents), 3: prepared_digest}],
     }
     client._handle_configuration_prepared(
@@ -238,6 +266,7 @@ def test_packaged_configuration_restarts_with_the_updated_identity(tmp_path: Pat
         project_file,
         {
             0: 8,
+            2: reference_identity(),
             1: [{0: "reraconfig.toml", 1: 5, 2: variant(0, old_source), 3: old_digest}],
         },
     )
@@ -273,6 +302,7 @@ def test_packaged_configuration_restarts_with_the_updated_identity(tmp_path: Pat
     client.abi.prepare_project_configuration_update = lambda *_args: (4, b"journal")
     client.abi.project_file_manifest = lambda _bytes: {
         0: 8,
+        2: reference_identity(),
         1: [{0: "reraconfig.toml", 1: 5, 2: variant(0, contents), 3: prepared_digest}],
     }
     recreated: list[tuple[ProjectBundle, bytes | None]] = []
@@ -452,3 +482,233 @@ def test_invalid_committed_configuration_stops_the_success_path(tmp_path: Path) 
     assert any(event.kind == "configuration_save_failed" for event in events)
     assert not any(event.kind == "configuration_saved" for event in events)
     assert not recreated
+
+
+def test_snake_data_names_share_resource_identity_and_preserve_existing_spelling(
+    tmp_path: Path,
+) -> None:
+    from rustyera_tui.storage import StorageBackend
+    from rustyera_tui.storage_path import normalized_data_path
+
+    source = tmp_path / "plugins" / "café"
+    source.mkdir(parents=True)
+    (source / "seed.txt").write_bytes(b"source")
+    backend = StorageBackend(
+        tmp_path,
+        compatibility_profile="emuera.skia.snake",
+        resource_bundle=ProjectBundle.scan(tmp_path),
+    )
+    data = backend.data_root / "data"
+    actual = data / "PlUgIns" / "Cafe\u0301" / "SEED.TXT"
+    actual.parent.mkdir(parents=True)
+    actual.write_bytes(b"overlay")
+
+    def call(path: str, operation: list[Any], namespace: int = 3) -> list[Any]:
+        return backend.handle({0: 1, 1: namespace, 2: path, 3: operation})[1]
+
+    for path in ("plugins/CAFÉ/seed.txt", "PLUGINS/cafe\u0301/SEED.TXT"):
+        assert call(path, variant(0))[1][0] == b"overlay"
+        assert call(path, variant(4))[1][0][0] == 7
+        assert call(path, variant(5, 1, 3, None))[1][0] == b"ver"
+    listed = call("pLuGiNs", variant(2, "*", True))
+    assert [entry[0] for entry in listed[1][0]] == ["PlUgIns/Café/SEED.TXT"]
+    assert call(listed[1][0][0][0], variant(0))[1][0] == b"overlay"
+    assert call("PLUGINS/café/seed.txt", variant(0), 5)[1][0] == b"source"
+
+    assert call("plugins/CAFÉ/Seed.Txt", variant(1, b"changed", True, variant(0)))[0] == 1
+    assert actual.read_bytes() == b"changed"
+    assert len(list(actual.parent.iterdir())) == 1
+    assert normalized_data_path(data, "New/e\u0301.txt").parts[-1] == "é.txt"
+    assert call("New/e\u0301.txt", variant(1, b"new", False, variant(0)))[0] == 1
+    assert call("new/É.TXT", variant(0))[1][0] == b"new"
+    assert call("PLUGINS/café/seed.txt", variant(3, variant(0)))[0] == 3
+    assert not actual.exists()
+    assert call("plugins/café/seed.txt", variant(0))[1][0][0] == 0
+    assert (source / "seed.txt").read_bytes() == b"source"
+
+
+def test_snake_data_collision_rejects_every_operation_before_mutation(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from rustyera_tui.storage import StorageBackend
+
+    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake")
+    root = backend.data_root / "data"
+    root.mkdir(parents=True)
+    actual = root / "seed.txt"
+    actual.write_bytes(b"unchanged")
+    duplicate = root / "SEED.TXT"
+    from rustyera_tui import storage_listing, storage_path
+
+    original_entries = storage_path.directory_entries
+    original_resolve = Path.resolve
+
+    # A synthetic case-sensitive directory makes the collision portable to macOS APFS.
+    def entries(path: Path):
+        if path == root:
+            return iter([actual, duplicate])
+        return original_entries(path)
+
+    def resolve(path: Path, strict: bool = False):
+        return original_resolve(actual if path == duplicate else path, strict=strict)
+
+    monkeypatch.setattr(storage_path, "directory_entries", entries)
+    monkeypatch.setattr(storage_listing, "directory_entries", entries)
+    monkeypatch.setattr(Path, "resolve", resolve)
+    for operation in (
+        variant(0),
+        variant(4),
+        variant(5, 0, 1, None),
+        variant(1, b"overwrite", True, variant(0)),
+        variant(3, variant(0)),
+        variant(2, "*", True),
+    ):
+        relative = "" if operation[0] == 2 else "seed.txt"
+        result = backend.handle({0: 1, 1: 3, 2: relative, 3: operation})[1]
+        assert result[0] == 4
+        assert result[1][0][0] == 2
+        assert actual.read_bytes() == b"unchanged"
+    rejected = backend.handle(
+        {0: 2, 1: 3, 2: "new/different.txt", 3: variant(1, b"new", False, variant(0))}
+    )[1]
+    assert rejected[0] == 4
+    assert rejected[1][0][0] == 2
+    assert not (root / "new").exists()
+
+
+def test_snake_data_rejects_escaped_links_cycles_and_excessive_paths(tmp_path: Path) -> None:
+    from rustyera_tui.storage import StorageBackend
+
+    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake")
+    root = backend.data_root / "data"
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "seed.txt").write_bytes(b"private")
+    (root / "Escape").symlink_to(outside, target_is_directory=True)
+    (root / "Loop").symlink_to(root, target_is_directory=True)
+    for relative, kind in (
+        ("escape/seed.txt", 1),
+        ("loop/seed.txt", 2),
+        ("a" * 4097, 2),
+        ("/".join(["a"] * 257), 2),
+    ):
+        for operation in (
+            variant(0),
+            variant(4),
+            variant(1, b"bad", False, variant(0)),
+            variant(3, variant(0)),
+        ):
+            result = backend.handle({0: 1, 1: 3, 2: relative, 3: operation})[1]
+            assert result[0] == 4
+            assert result[1][0][0] == kind
+    assert (outside / "seed.txt").read_bytes() == b"private"
+
+
+def test_snake_data_lookup_preserves_permission_error_and_scan_budget(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from rustyera_tui.storage import StorageBackend
+    from rustyera_tui import storage_path
+
+    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake")
+    root = backend.data_root / "data"
+    root.mkdir(parents=True)
+    (root / "a.txt").write_bytes(b"a")
+    original_entries = storage_path.directory_entries
+
+    def denied(path: Path):
+        if path == root:
+            raise PermissionError("denied")
+        return original_entries(path)
+
+    monkeypatch.setattr(storage_path, "directory_entries", denied)
+    result = backend.handle({0: 1, 1: 3, 2: "a.txt", 3: variant(0)})[1]
+    assert result[1][0][0] == 1
+    monkeypatch.setattr(storage_path, "directory_entries", original_entries)
+    monkeypatch.setattr(storage_path, "MAXIMUM_LOOKUP_ENTRIES", 0)
+    result = backend.handle({0: 1, 1: 3, 2: "new.txt", 3: variant(1, b"new", False, variant(0))})[1]
+    assert result[1][0][0] == 2
+    assert not (root / "new.txt").exists()
+
+
+def test_reference_data_uses_literal_lookup_without_snake_directory_scans(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from rustyera_tui.storage import StorageBackend
+
+    root = tmp_path / "data"
+    root.mkdir()
+    original = root / "Literal.TXT"
+    original.write_bytes(b"old")
+    backend = StorageBackend(tmp_path)
+
+    def no_scan(_path: Path):
+        raise AssertionError("reference lookup must not scan normalized directory names")
+
+    from rustyera_tui import storage_listing, storage_path
+
+    monkeypatch.setattr(storage_path, "directory_entries", no_scan)
+    monkeypatch.setattr(storage_listing, "directory_entries", no_scan)
+    assert backend.handle({0: 1, 1: 3, 2: "Literal.TXT", 3: variant(0)})[1][1][0] == b"old"
+    assert (
+        backend.handle({0: 2, 1: 3, 2: "Literal.TXT", 3: variant(1, b"new", True, variant(0))})[1][
+            0
+        ]
+        == 1
+    )
+    assert original.read_bytes() == b"new"
+
+
+def test_snake_data_namespace_link_cannot_reauthorize_an_outside_directory(tmp_path: Path) -> None:
+    from rustyera_tui.storage import StorageBackend
+
+    backend = StorageBackend(tmp_path, compatibility_profile="emuera.skia.snake")
+    backend.data_root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "seed.txt").write_bytes(b"safe")
+    (backend.data_root / "data").symlink_to(outside, target_is_directory=True)
+    for operation in (variant(0), variant(1, b"bad", False, variant(0)), variant(2, "*", True)):
+        result = backend.handle(
+            {0: 1, 1: 3, 2: "" if operation[0] == 2 else "seed.txt", 3: operation}
+        )[1]
+        assert result[0] == 4
+        assert result[1][0][0] == 1
+    assert (outside / "seed.txt").read_bytes() == b"safe"
+
+
+@pytest.mark.parametrize(
+    ("kind", "operation", "major"),
+    [
+        (10, "html_string_len", 2),
+        (10, "html_substring", 2),
+        (10, "html_string_lines", 2),
+        (10, "get_line_geometry_v1", 1),
+        (7, "pointer_state", 1),
+        (2, "sample_canvas_pixel", 1),
+        (3, "audio_observation", 1),
+    ],
+)
+def test_tui_does_not_advertise_or_fake_missing_projection_services(
+    kind: int, operation: str, major: int
+) -> None:
+    client, captured = client_with_capture()
+    client.pending_bundle = None
+    client._send_hello()
+    tag, hello = captured.pop()
+    assert tag == 0
+    assert hello[4][3] is False  # No pixel scene projection or scene hit testing.
+    assert hello[4][4] is False  # No physical audio provider.
+    assert not any(service[0] == kind and service[1] == operation for service in hello[4][10])
+
+    # An unsolicited request still cannot turn an unavailable service into a ready value.
+    client._handle_service(
+        {0: 741, 1: kind, 2: operation, 3: {0: major, 1: 0}, 4: encode({})}, None
+    )
+    tag, response = captured.pop()
+    assert tag == 53 and response[0] == 741
+    result, fields = unwrap_variant(response[1])
+    assert result == 1
+    assert fields[0][0] == "frontend.unsupported_service"
+    assert operation in fields[0][1]

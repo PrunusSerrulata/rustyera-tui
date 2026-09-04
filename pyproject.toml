@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "GPL-3.0-only"
 dependencies = [
+    "apsw==3.53.0.0",
     "blake3>=1.0.5",
     "cbor2>=5.6.5",
     "pyinstaller>=6.21.0",

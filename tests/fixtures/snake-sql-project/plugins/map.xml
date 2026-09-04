@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<map>
+  <p><k>plain</k><v>first</v></p>
+  <p><k>markup</k><v><b lang="zh">bold</b>&amp;text</v></p>
+  <p><k>empty</k><v /></p>
+  <p><k>重复</k><v>old</v></p>
+  <p><k>重复</k><v><i>new</i></v></p>
+</map>

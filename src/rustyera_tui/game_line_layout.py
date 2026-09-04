@@ -11,6 +11,7 @@ from .presentation import (
     MIN_TABLE_COLUMN_WIDTH,
     TARGET_TABLE_COLUMNS,
     ColumnCellLayout,
+    CellWidthIntent,
     DisplayLineModel,
     DisplaySegment,
     SeparatorLayout,
@@ -157,11 +158,13 @@ def project_column_group(
     width: int,
     preceding: list[DisplaySegment],
 ) -> list[DisplaySegment]:
+    if any(cell.width_intent is CellWidthIntent.LOGICAL_PIXELS for cell in cells):
+        return _project_pixel_intent_group(segments, cells, width, preceding)
     preferred = max(
         MIN_TABLE_COLUMN_WIDTH,
         min(
             MAX_TABLE_COLUMN_WIDTH,
-            max(cell.preferred_columns for cell in cells),
+            max(cell.terminal_columns for cell in cells),
         ),
     )
     target_width = MAX_TABLE_COLUMN_WIDTH * TARGET_TABLE_COLUMNS
@@ -203,6 +206,37 @@ def project_column_group(
         result.extend(content)
         cursor += content_width
         cells_on_row += 1
+    return result
+
+
+def _project_pixel_intent_group(
+    segments: tuple[DisplaySegment, ...],
+    cells: list[ColumnCellLayout],
+    viewport_width: int,
+    preceding: list[DisplaySegment],
+) -> list[DisplaySegment]:
+    """Project logical-pixel cells without claiming a physical terminal width."""
+
+    result: list[DisplaySegment] = []
+    cursor = last_row_width(preceding)
+    for cell in cells:
+        if cell.width_intent is CellWidthIntent.LOGICAL_PIXELS:
+            column_width = cell.terminal_columns
+        else:
+            column_width = max(
+                MIN_TABLE_COLUMN_WIDTH,
+                min(MAX_TABLE_COLUMN_WIDTH, cell.terminal_columns),
+            )
+        if cursor > 0 and cursor + column_width > viewport_width:
+            result.append(DisplaySegment("\n"))
+            cursor = 0
+        content = pad_column_cell(
+            segments[cell.start : cell.end],
+            cell.alignment,
+            column_width,
+        )
+        result.extend(content)
+        cursor += sum(_segment_columns(segment) for segment in content)
     return result
 
 

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/snake-sql-project",
+  "mode": "autonomous",
+  "seed": 123456,
+  "goal": {
+    "output_contains": [
+      "SNAKE_SQL_CONNECT=1/1",
+      "SNAKE_SQL_CONTRACT=1/0//1/1/雪/1/0/1/1",
+      "SNAKE_SQL_TX=1/0",
+      "SNAKE_SQL_MAP=1/4/0",
+      "SNAKE_SQL_MAP_MARKUP=3C62206C616E673D227A68223E626F6C643C2F623E26616D703B74657874",
+      "SNAKE_SQL_MAP_DUP=3C693E6E65773C2F693E",
+      "SNAKE_SQL_WRITE_READER=1/7/0/1/1/2",
+      "SNAKE_SQL_SUMMARY=seed=1;contract=1;map=4",
+      "SNAKE_SQL_PERSIST=2",
+      "SNAKE_SQL_REOPEN=2",
+      "SNAKE_SQL_READY"
+    ],
+    "wait_kind": 2
+  },
+  "limits": {
+    "max_steps": 8,
+    "timeout_seconds": 120
+  }
+}

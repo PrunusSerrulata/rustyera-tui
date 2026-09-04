@@ -10,6 +10,7 @@ from rich.cells import cell_len
 from .log_model import LogLevel, LogMessage
 from .protocol_text import FAULT_CODES, enum_text
 from .runtime_types import FrontendEvent
+from .compatibility import compatibility_context
 
 
 def log_event(
@@ -30,6 +31,9 @@ def format_project_diagnostic(diagnostic: dict[int, Any], source_text: str | Non
 
     code = str(diagnostic.get(0, "unknown"))
     message = str(diagnostic.get(2, ""))
+    context = compatibility_context(diagnostic.get(5))
+    if context:
+        message = f"{message} [{context}]"
     source = diagnostic.get(3)
     if not isinstance(source, dict):
         return f"[{code}]: {message}"
@@ -79,6 +83,7 @@ class RuntimeFailure:
     function: str | None = None
     source_path: str | None = None
     source_line: int | None = None
+    compatibility: str = ""
 
     def display(self) -> str:
         location = ""
@@ -89,4 +94,5 @@ class RuntimeFailure:
             location += "）"
         context = f" [{self.function}]" if self.function else ""
         code = enum_text(self.code, FAULT_CODES, "FaultCode")
-        return f"Runtime 故障 [{code}]{context}：{self.message}{location}"
+        compatibility = f" [{self.compatibility}]" if self.compatibility else ""
+        return f"Runtime 故障 [{code}]{context}：{self.message}{location}{compatibility}"

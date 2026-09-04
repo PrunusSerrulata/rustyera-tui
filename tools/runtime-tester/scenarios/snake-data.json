@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "project": "../../../../rustyera-core/tools/runtime-tester/fixture-snake-data-clients",
+  "mode": "fixed",
+  "seed": 123456,
+  "inputs": [
+    {
+      "value": "1",
+      "when": {
+        "output_contains": "SNAKE_DATA_START"
+      }
+    }
+  ],
+  "goal": {
+    "output_contains": [
+      "SNAKE_DATA_INDEX=2/main/42",
+      "SNAKE_DATA_RESOURCE=1/1/0",
+      "SNAKE_DATA_OVERLAY=1/1/1/2",
+      "SNAKE_DATA_STRUCTURED=1/station/29/29/42/from-schema",
+      "SNAKE_DATA_GLOBAL_MISSING=0/66/55",
+      "SNAKE_DATA_GLOBAL=1/7/55/1/12/saved-map/saved-xml",
+      "SNAKE_DISPLAY_TIMER=10/77",
+      "SNAKE_DISPLAY_BACKGROUND",
+      "SNAKE_DATA_READY"
+    ],
+    "wait_kind": 2,
+    "watch_equals": {
+      "GLOBAL:0": 7,
+      "FLAG:0": 55,
+      "C1_METHOD_VALUE:0": 42
+    }
+  },
+  "limits": {
+    "max_steps": 4,
+    "timeout_seconds": 120
+  },
+  "watches": [
+    "GLOBAL:0",
+    "FLAG:0",
+    "C1_METHOD_VALUE:0"
+  ]
+}

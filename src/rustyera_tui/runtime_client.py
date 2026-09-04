@@ -1,6 +1,7 @@
 """Runtime client orchestration over private responsibility mixins."""
 
 from __future__ import annotations
+from .compatibility import compatibility_context
 
 from .runtime_dependencies import (
     Any,
@@ -41,6 +42,7 @@ from .runtime_project import _RuntimeProjectMixin
 from .runtime_rejections import _RuntimeRejectionMixin
 from .runtime_transport import _RuntimeTransportMixin
 from .runtime_transfer import _RuntimeTransferMixin
+from .sql_provider import SqlProvider
 from .client_preferences import (
     LoadedPreferences,
     global_preferences_path,
@@ -80,6 +82,7 @@ class RuntimeClient(
         self.expected_debug_output = 0
         self.bundle: ProjectBundle | None = None
         self.pending_bundle: ProjectBundle | None = None
+        self.pending_compatibility_request: int | None = None
         self.reload_candidate: ProjectBundle | None = None
         self.reload_message_id: int | None = None
         self.storage: StorageBackend | None = None
@@ -146,6 +149,12 @@ class RuntimeClient(
         self._presentation_boundary_dirty = False
         self._projection_messages: set[int] = set()
         self._input_messages: dict[int, PendingGameInput] = {}
+        self._pending_device_pumps: dict[int, tuple[int, int, int | None]] = {}
+        self.sql_provider = SqlProvider()
+        self._pending_sql_requests: dict[int, tuple[dict[int, Any], int | None]] = {}
+        self._runtime_output_batch_active = False
+        self._deferred_runtime_messages: list[tuple[int, int, Any, int | None]] = []
+        self._runtime_epoch_transition: tuple[int, int | None] | None = None
         self._session_reset_active = False
         self._session_destroy_pending = False
         self._replacement_session_prepared = False
@@ -231,6 +240,12 @@ class RuntimeClient(
         self._presentation_boundary_dirty = False
         self._projection_messages.clear()
         self._input_messages.clear()
+        self._pending_device_pumps.clear()
+        self._pending_sql_requests.clear()
+        self.sql_provider.reset()
+        self._runtime_output_batch_active = False
+        self._deferred_runtime_messages.clear()
+        self._runtime_epoch_transition = None
         self.reload_candidate = None
         self.reload_message_id = None
         if self.pending_export is not None:
@@ -258,13 +273,12 @@ class RuntimeClient(
         self.configuration_profile_supported = False
         self.bundle = None
         self.pending_bundle = None
+        self.pending_compatibility_request = None
         self.storage = None
         self.pending_restore = None
         self.pending_project_file_bytes = None
 
-    def begin_game_state_transition(
-        self, message_id: int, *, shutting_down: bool = False
-    ) -> None:
+    def begin_game_state_transition(self, message_id: int, *, shutting_down: bool = False) -> None:
         """Retire VM-owned frontend state after a replacement command is submitted."""
 
         revision = self.presentation.begin_replacement(message_id)
@@ -285,9 +299,7 @@ class RuntimeClient(
         self.debug_step_in_flight = False
         self.transient_pause_owner = None
         self.transient_close_pending = None
-        self._retire_transfers_for_game_transition(
-            reschedule_cache=not shutting_down
-        )
+        self._retire_transfers_for_game_transition(reschedule_cache=not shutting_down)
         self.events.put(FrontendEvent("game_state_reset", revision))
 
     def begin_session_reset(self) -> None:
@@ -379,7 +391,7 @@ class RuntimeClient(
             self.pending_restore = restore
             self.allow_compiled_cache_load = allow_compiled_cache
             self.pending_project_file_bytes = project_file_bytes
-            self.storage = self._storage_for_bundle(bundle)
+            self.storage = None
             self._send_hello()
         except BaseException as error:
             self.abort_session_replacement(error)
@@ -477,19 +489,15 @@ class RuntimeClient(
             self.configuration_profile_supported = value.get(7) == 1
             self.events.put(FrontendEvent("runtime_version", value.get(8, "unknown")))
             if self.pending_bundle is not None:
-                if self.pending_project_file_bytes is not None:
-                    project_file = self.pending_project_file_bytes
-                    self.pending_project_file_bytes = None
-                    self.events.put(FrontendEvent("status", "正在载入项目文件…"))
-                    self._stage_project_cache(project_file, "project_file")
-                    return
-                self._stage_persistent_cache_or_source()
+                self._resolve_project_compatibility()
             return
         if tag == 2:
             self.fail_startup(f"protocol version rejected: {value.get(1, '')}")
             self.events.put(FrontendEvent("runtime_error", f"协议版本被拒绝：{value.get(1, '')}"))
         elif tag == 11:  # ProjectLoadReport
             self._handle_project_report(value)
+        elif tag == 73:  # ProjectCompatibilityResolved
+            self._handle_project_compatibility(value, correlation_id)
         elif tag == 25:  # ConfigurationUpdatePrepared
             self._handle_configuration_prepared(value, correlation_id)
         elif tag == 27:  # ConfigurationUpdateCommitted
@@ -529,16 +537,21 @@ class RuntimeClient(
         elif tag == 38:
             self.events.put(FrontendEvent("input_undo", value))
         elif tag == 40:
-            self.presentation.apply_snapshot(value)
-            wait_changed = self._set_active_wait(self.presentation.input_wait)
-            # Decoded envelopes are immutable after dispatch. The accumulator reduces later
-            # deltas incrementally until a visible boundary crosses to Textual.
-            self._pending_presentation.replace_snapshot(value)
-            self._wait_event_dirty = self._wait_event_dirty or wait_changed
+            try:
+                self.presentation.apply_snapshot(value)
+            except (TypeError, ValueError) as error:
+                self.events.put(log_event(str(error), LogLevel.WARNING))
+                self.send_runtime(94, {0: self.expected_runtime_output - 1})
+            else:
+                wait_changed = self._set_active_wait(self.presentation.input_wait)
+                # Decoded envelopes are immutable after dispatch. The accumulator reduces later
+                # deltas incrementally until a visible boundary crosses to Textual.
+                self._pending_presentation.replace_snapshot(value)
+                self._wait_event_dirty = self._wait_event_dirty or wait_changed
         elif tag == 41:
             try:
                 projected_delta = self.presentation.apply_delta(value)
-            except ValueError as error:
+            except (TypeError, ValueError) as error:
                 self.events.put(log_event(str(error), LogLevel.WARNING))
                 self.send_runtime(94, {0: self.expected_runtime_output - 1})
             else:
@@ -551,6 +564,8 @@ class RuntimeClient(
             self._handle_storage(value, correlation_id)
         elif tag == 52:
             self._handle_service(value, correlation_id)
+        elif tag == 54:
+            self._cancel_external_request(value)
         elif tag == 61:
             self._handle_export_ready(value, correlation_id)
         elif tag == 63:
@@ -575,6 +590,7 @@ class RuntimeClient(
                 function=origin.get(1),
                 source_path=source.get(0),
                 source_line=source.get(3),
+                compatibility=compatibility_context(value.get(3)),
             )
             self.events.put(FrontendEvent("runtime_fault", failure))
         elif tag == 95:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .compatibility import compatibility_identity
+
 TUI_CLIENT = 1 << 1
 APPLICATION_HOT = 0
 APPLICATION_RESTART = 1
@@ -85,6 +87,7 @@ class ConfigurationSnapshot:
     entries: tuple[ConfigurationEntry, ...]
     restart_pending: bool
     generated_source: str | None
+    compatibility: dict[int, Any] | None = None
 
     @classmethod
     def from_wire(cls, value: Any) -> ConfigurationSnapshot:
@@ -109,6 +112,7 @@ class ConfigurationSnapshot:
             tuple(ConfigurationEntry.from_wire(item) for item in entries),
             restart_pending,
             generated_source,
+            compatibility_identity(value[5]) if 5 in value else None,
         )
 
     @property

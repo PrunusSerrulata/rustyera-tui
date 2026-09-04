@@ -57,7 +57,13 @@ async def test_worker_notification_commits_without_the_polling_interval(
     monkeypatch.setattr(app, "_drain_worker_events", counted_drain)
     line = {0: 1, 1: False, 2: True, 3: True, 4: 0, 5: [variant(0, "ready", None, None)]}
     wait = {0: 1, 1: 0, 11: {0: 1, 1: 1}}
-    snapshot = {0: 1, 1: "Game", 2: {0: [line], 1: []}, 5: wait}
+    snapshot = {
+        0: 1,
+        1: "Game",
+        2: {0: [line], 1: []},
+        3: {0: 0, 1: []},
+        5: wait,
+    }
 
     async with app.run_test(size=(100, 20)) as pilot:
         worker.publish(
@@ -177,6 +183,7 @@ async def test_gameplay_output_commits_once_at_the_next_wait_without_a_tail_flas
         0: 1,
         1: "Game",
         2: {0: [line(1, "before")], 1: []},
+        3: {0: 0, 1: []},
         5: first_wait,
     }
     async with app.run_test(size=(100, 20)) as pilot:
@@ -294,6 +301,7 @@ async def test_session_reset_releases_presentation_and_interaction_state(tmp_pat
             ],
             1: [],
         },
+        3: {0: 0, 1: []},
         5: wait,
     }
     async with app.run_test(size=(100, 20)) as pilot:
@@ -334,7 +342,13 @@ async def test_game_state_reset_retires_history_but_preserves_project_state(
         4: 0,
         5: [variant(0, "old history", None, None)],
     }
-    snapshot = {0: 7, 1: "Old game", 2: {0: [line], 1: []}, 5: None}
+    snapshot = {
+        0: 7,
+        1: "Old game",
+        2: {0: [line], 1: []},
+        3: {0: 0, 1: []},
+        5: None,
+    }
 
     async with app.run_test(size=(100, 20)) as pilot:
         worker.events.put(
@@ -572,6 +586,7 @@ async def test_presentation_background_reaches_existing_and_new_game_lines(
                         0: 1,
                         1: "Game",
                         2: {0: [], 1: []},
+                        3: {0: 0, 1: []},
                         6: {
                             2: {0: 1, 1: 24, 2: 60, 3: 255},
                             3: {0: 0, 1: 0, 2: 0, 3: 255},
@@ -594,3 +609,35 @@ async def test_presentation_background_reaches_existing_and_new_game_lines(
         assert str(child.styles.background) == "Color(1, 24, 60)"
         viewport.set_presentation_background("#000000")
         assert str(child.styles.background) == "Color(0, 0, 0)"
+
+        eligible = DisplayLineModel(
+            2,
+            False,
+            True,
+            True,
+            0,
+            (DisplaySegment("highlighted"),),
+            text_background_eligible=True,
+        )
+        ineligible = DisplayLineModel(
+            3,
+            False,
+            True,
+            True,
+            0,
+            (DisplaySegment(""),),
+        )
+        await viewport.set_lines([eligible, ineligible], changed_from=0)
+        children = list(app.query(GameLine))
+        viewport.set_presentation_background("#01183c", ("#ff0000", 127))
+        assert str(children[0].styles.background) == "Color(128, 12, 30)"
+        assert str(children[1].styles.background) == "Color(1, 24, 60)"
+        viewport.set_presentation_background("#000000", ("#ff0000", 127))
+        assert str(children[0].styles.background) == "Color(127, 0, 0)"
+        assert str(children[1].styles.background) == "Color(0, 0, 0)"
+
+        await pilot.resize_terminal(80, 30)
+        await pilot.pause()
+        children = list(app.query(GameLine))
+        assert str(children[0].styles.background) == "Color(127, 0, 0)"
+        assert str(children[1].styles.background) == "Color(0, 0, 0)"

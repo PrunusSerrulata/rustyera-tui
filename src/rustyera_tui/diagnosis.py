@@ -102,22 +102,16 @@ def write_diagnosis_archive(
                 for name, payload in members:
                     info = tarfile.TarInfo(name)
                     info.size = (
-                        payload.stat().st_size
-                        if isinstance(payload, Path)
-                        else len(payload)
+                        payload.stat().st_size if isinstance(payload, Path) else len(payload)
                     )
                     info.mtime = timestamp
                     info.mode = 0o600
                     if isinstance(payload, Path):
                         with payload.open("rb") as source:
-                            archive.addfile(
-                                info, _ProgressReader(source, record_progress)
-                            )
+                            archive.addfile(info, _ProgressReader(source, record_progress))
                     else:
                         with io.BytesIO(payload) as source:
-                            archive.addfile(
-                                info, _ProgressReader(source, record_progress)
-                            )
+                            archive.addfile(info, _ProgressReader(source, record_progress))
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, target)

@@ -32,17 +32,13 @@ from .runtime_dependencies import (
 
 
 class _RuntimeTransferMixin:
-    def _retire_transfers_for_game_transition(
-        self, *, reschedule_cache: bool = True
-    ) -> None:
+    def _retire_transfers_for_game_transition(self, *, reschedule_cache: bool = True) -> None:
         """Release frontend transfer state invalidated by a VM replacement."""
 
         import_active = self.pending_import is not None
         if import_active:
             self._clear_pending_import()
-        export_kind = (
-            self.pending_export.stage if self.pending_export is not None else None
-        )
+        export_kind = self.pending_export.stage if self.pending_export is not None else None
         diagnosis_active = self.pending_diagnosis is not None
         if self.pending_export is not None:
             self.pending_export.cancel()
@@ -183,9 +179,7 @@ class _RuntimeTransferMixin:
             self._finish_cache_export(False)
             return
         cache_path = self.storage.compiled_cache_path()
-        self.pending_export = _PendingExport.open(
-            cache_path, ExportStage.COMPILED_CACHE
-        )
+        self.pending_export = _PendingExport.open(cache_path, ExportStage.COMPILED_CACHE)
         if not self.cache_preparation_started:
             self.cache_preparation_started = True
             self.events.put(
@@ -302,12 +296,8 @@ class _RuntimeTransferMixin:
 
     def cancel_project_file_export(self) -> None:
         if (
-            (
-                self.pending_export is None
-                or self.pending_export.stage != ExportStage.PROJECT_FILE
-            )
-            and self.full_project_export is None
-        ):
+            self.pending_export is None or self.pending_export.stage != ExportStage.PROJECT_FILE
+        ) and self.full_project_export is None:
             return
         self.send_runtime(71, {0: 3})
         self._finish_project_file_export(None, "已取消导出全量项目文件")
@@ -328,9 +318,7 @@ class _RuntimeTransferMixin:
                 self._start_diagnosis_replay_export()
             except Exception:
                 if self.pending_diagnosis is not None:
-                    self._finish_diagnosis_export(
-                        False, "无法创建诊断操作序列临时文件"
-                    )
+                    self._finish_diagnosis_export(False, "无法创建诊断操作序列临时文件")
                 raise
 
     def _start_diagnosis_replay_export(self) -> None:
@@ -375,10 +363,7 @@ class _RuntimeTransferMixin:
         expected_kind = RUNTIME_EXPORT_KIND.get(stage)
         if (
             expected_kind is None
-            or (
-                pending.message_id is not None
-                and correlation_id != pending.message_id
-            )
+            or (pending.message_id is not None and correlation_id != pending.message_id)
             or ready.get(0) != expected_kind
         ):
             self._fail_mismatched_export("state export ready does not match the active request")
@@ -389,11 +374,7 @@ class _RuntimeTransferMixin:
             reasons = enum_list_text(
                 fields[0], SNAPSHOT_INELIGIBLE_REASONS, "SnapshotIneligibleReason"
             )
-            label = (
-                "导出操作序列"
-                if stage == ExportStage.INPUT_REPLAY
-                else "生成快照"
-            )
+            label = "导出操作序列" if stage == ExportStage.INPUT_REPLAY else "生成快照"
             self.events.put(FrontendEvent("runtime_error", f"当前状态不能{label}：{reasons}"))
             pending.cancel()
             self.pending_export = None
@@ -724,17 +705,11 @@ class _RuntimeTransferMixin:
     def _clear_pending_import(self) -> None:
         pending = self.pending_import
         self.pending_import = None
-        if (
-            pending is not None
-            and pending.path is not None
-            and pending.delete_path_when_finished
-        ):
+        if pending is not None and pending.path is not None and pending.delete_path_when_finished:
             try:
                 pending.path.unlink(missing_ok=True)
             except OSError as error:
-                self.events.put(
-                    log_event(f"删除状态导入临时文件失败：{error}", LogLevel.WARNING)
-                )
+                self.events.put(log_event(f"删除状态导入临时文件失败：{error}", LogLevel.WARNING))
 
     def _cancel_pending_import(self) -> None:
         pending = self.pending_import

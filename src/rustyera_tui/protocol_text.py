@@ -79,6 +79,7 @@ SERVICE_KINDS = {
     8: "Clock",
     9: "Entropy",
     10: "PresentationQuery",
+    11: "Sql",
 }
 
 ERA_STATUSES = {

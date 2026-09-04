@@ -18,11 +18,11 @@ from .project import (
     _IndexedCandidate,
     _ProjectChangedDuringScan,
     _canonical_source_roots,
-    _classify_project_path,
     _normalize_relative_path,
     _parallel_ordered,
     _parallel_project_reads,
     _project_paths,
+    _project_candidates,
     _portable_source_signature,
     _report_scan_progress,
     _source_index_category,
@@ -58,11 +58,7 @@ class _ProjectBundleScanMixin:
             started = time.perf_counter()
             paths = _project_paths(root)
             canonical_roots = _canonical_source_roots(root)
-            candidates = [
-                (path, category)
-                for path in paths
-                if (category := _classify_project_path(root, path, canonical_roots)) is not None
-            ]
+            candidates = _project_candidates(root, paths, canonical_roots)
             if cancelled is not None and cancelled():
                 raise InterruptedError("project file operation cancelled")
             enumerate_ms = (time.perf_counter() - started) * 1000
@@ -144,11 +140,7 @@ class _ProjectBundleScanMixin:
         metrics.source_index_present = index_current
         started = time.perf_counter()
         canonical_roots = _canonical_source_roots(root)
-        candidates = [
-            (path, category)
-            for path in _project_paths(root)
-            if (category := _classify_project_path(root, path, canonical_roots)) is not None
-        ]
+        candidates = _project_candidates(root, _project_paths(root), canonical_roots)
         if cancelled is not None and cancelled():
             raise InterruptedError("project file operation cancelled")
         metrics.enumerate_ms = (time.perf_counter() - started) * 1000
@@ -158,6 +150,7 @@ class _ProjectBundleScanMixin:
         def inspect(candidate: tuple[Path, int]) -> _IndexedCandidate:
             path, category = candidate
             relative = _normalize_relative_path(path.relative_to(root).as_posix())
+            project_facade._validate_new_project_file(root, path, category)
             source_signature = project_facade._source_signature(path)
             prior = previous.get(relative)
             if (
@@ -331,6 +324,7 @@ class _ProjectBundleScanMixin:
                 self.root / PurePosixPath(materialized.relative_path)
             )
             try:
+                project_facade._validate_new_project_file(self.root, source_path, item.category)
                 signature_matches = (
                     materialized.source_signature == project_facade._source_signature(source_path)
                 )
@@ -349,7 +343,14 @@ class _ProjectBundleScanMixin:
             cancelled=cancelled,
         )
         files = {item.relative_path: item for item in materialized}
-        return project_facade.ProjectBundle(self.root, self.revision, files, self.project_file)
+        return project_facade.ProjectBundle(
+            self.root,
+            self.revision,
+            files,
+            self.project_file,
+            compatibility=self.compatibility,
+            configuration_digest=self.configuration_digest,
+        )
 
 
 def _indexed_image_metadata(value: object) -> dict[int, object] | None:
