@@ -13,6 +13,7 @@ from runtime_cabi_test_support import (
     queue,
 )
 from rustyera_tui.presentation import PresentationEventAccumulator
+from rustyera_tui.performance import PerformanceProbe
 from rustyera_tui.runtime_export import ExportStage, _PendingExport
 from rustyera_tui.worker import MAX_WORKER_EVENTS
 from rustyera_tui.wire import variant
@@ -217,6 +218,7 @@ def test_runtime_progress_records_structured_core_phase_duration(
     client.startup_host_durations = {}
     client.startup_core_durations = {}
     client._startup_core_phase_started = {}
+    client.performance_probe = PerformanceProbe(enabled=True)
     times = iter((1_000_000_000, 1_075_000_000))
     milestones: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr("rustyera_tui.runtime.time.monotonic_ns", lambda: next(times))
@@ -252,6 +254,7 @@ def test_runtime_progress_ignores_duplicate_starts_and_supports_interleaving(
     client.startup_attempt = 4
     client.startup_core_durations = {}
     client._startup_core_phase_started = {}
+    client.performance_probe = PerformanceProbe(enabled=True)
     times = iter((1_000_000_000, 1_010_000_000, 1_020_000_000, 1_050_000_000, 1_090_000_000))
     monkeypatch.setattr("rustyera_tui.runtime.time.monotonic_ns", lambda: next(times))
     monkeypatch.setattr(

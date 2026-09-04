@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .client_hello import build_client_hello
+
 from .runtime_dependencies import (
     Any,
     CHANNEL_DEBUG,
@@ -18,7 +20,6 @@ from .runtime_dependencies import (
     message_value,
     runtime_message,
     time,
-    version_range,
 )
 
 
@@ -28,66 +29,33 @@ class _RuntimeTransportMixin:
     _EPOCH_TRANSITION_TAGS = frozenset({20, 23})
     _EPOCH_TRANSITION_REPLY_TAGS = frozenset({51, 53})
 
-    def _send_hello(self) -> None:
-        service_capabilities = [
-            {0: 9, 1: "random_seed", 2: version_range(1, 0)},
-            {0: 8, 1: "local_date_time", 2: version_range(1, 0)},
-            {0: 7, 1: "device_pump", 2: version_range(1, 0)},
-            {0: 1, 1: "image_metadata", 2: version_range(1, 0)},
-            {0: 10, 1: "get_display_line", 2: version_range(1, 0)},
-            {0: 10, 1: "html_get_printed_str", 2: version_range(1, 0)},
-            {0: 10, 1: "serialize_physical_history", 2: version_range(1, 0)},
-            {0: 0, 1: "gget_text_size", 2: version_range(1, 0)},
-            {0: 11, 1: "rustyera.sql", 2: version_range(1, 0)},
-        ]
-        capabilities = {
-            0: [0, 1],
-            1: True,
-            2: True,
-            # Mouse input activates projected terminal text buttons only. The TUI
-            # intentionally advertises neither pixel scene rendering nor hit testing.
-            3: False,
-            4: False,
-            5: False,
-            6: True,
-            7: True,
-            8: True,
-            9: [],
-            10: service_capabilities,
-            11: {0: True, 1: True, 2: True, 3: True},
-            # Textual can preserve NF scroll intent and acknowledge a real UI-loop
-            # pump, but it cannot expose trustworthy terminal key up/down latches.
-            12: [
-                {0: "input.timed_viewport", 1: version_range(1, 0)},
-                {0: "input.device_pump", 1: version_range(1, 0)},
-            ],
-        }
-        maximum_envelope_bytes, maximum_payload_bytes = (
-            self.pending_bundle.requested_wire_limits()
-            if self.pending_bundle is not None
-            else (128 * 1024 * 1024, 127 * 1024 * 1024)
-        )
-        limits = {
-            0: maximum_envelope_bytes,
-            1: maximum_payload_bytes,
-            2: 128,
-            3: 4096,
-            4: 1_000_000,
-            5: 1024 * 1024 * 1024,
-            6: 64 * 1024 * 1024,
-        }
-        self.send_runtime(
-            0,
-            {
-                0: version_range(*RUNTIME_VERSION),
-                1: "rustyera-textual-tui",
-                2: [0, 1, 2, 3, 4, 10, 11, 12, 13, 14],
-                3: limits,
-                4: capabilities,
-                5: ["zh-CN", "ja", "en"],
-                6: 1,
+    def _submit_encoded_unmeasured(
+        self, data: bytes, channel: str, payload_tag: int
+    ) -> None:
+        self.abi.submit(data)
+
+    def _submit_encoded_measured(
+        self, data: bytes, channel: str, payload_tag: int
+    ) -> None:
+        probe = self.performance_probe
+        span = probe.start("runtime", "c_abi", "submit")
+        self.abi.submit(data)
+        probe.finish(
+            span,
+            fields={
+                "envelopeCount": 1,
+                "envelopeBytes": len(data),
+                "channel": channel,
+                "payloadTag": payload_tag,
             },
         )
+
+    # Replaced once at client construction when the opt-in probe is enabled. This keeps
+    # the production outbound hot path free of a per-envelope probe lookup and branch.
+    _submit_encoded = _submit_encoded_unmeasured
+
+    def _send_hello(self) -> None:
+        self.send_runtime(0, build_client_hello(self.pending_bundle))
 
     @staticmethod
     def _storage_for_bundle(bundle: ProjectBundle) -> StorageBackend:
@@ -135,7 +103,7 @@ class _RuntimeTransportMixin:
             epoch=self.epoch,
         )
         self.runtime_sequence += 1
-        self.abi.submit(data)
+        self._submit_encoded(data, "runtime", tag)
         if tag in self._EPOCH_TRANSITION_TAGS:
             self._runtime_epoch_transition = (message_id, self.epoch)
 
@@ -178,7 +146,7 @@ class _RuntimeTransportMixin:
             epoch=self.epoch,
         )
         self.debug_sequence += 1
-        self.abi.submit(data)
+        self._submit_encoded(data, "debug", tag)
         if pending:
             self.debug_pending_by_message[message_id] = pending
         return message_id
@@ -209,6 +177,8 @@ class _RuntimeTransportMixin:
                 )
             self.expected_runtime_output += 1
             value = message_value(envelope.payload, envelope.payload_tag)
+            if self.audit_capture is not None:
+                self.audit_capture.observe_runtime(envelope.payload_tag, value)
             self._handle_runtime(envelope.payload_tag, value, envelope.correlation_id)
             return envelope.sequence
         if envelope.channel == CHANNEL_DEBUG:
@@ -225,7 +195,9 @@ class _RuntimeTransportMixin:
         return None
 
     def pump(self) -> bool:
-        pump_started = time.perf_counter()
+        probe = self.performance_probe
+        measure = probe.enabled or self.metrics_threshold_ms is not None
+        pump_started_ns = time.monotonic_ns() if measure else 0
         self._wait_event_dirty = False
         self._presentation_boundary_dirty = False
         # Sample automatic time only when the next drive is about to start. The worker drains
@@ -233,18 +205,40 @@ class _RuntimeTransportMixin:
         # submitted before this timer tick instead of racing a tick left queued by the prior
         # presentation batch.
         self._advance_deadline()
-        drive_started = time.perf_counter()
+        drive_started_ns = time.monotonic_ns() if measure else 0
         report = self.abi.drive()
-        drive_ms = (time.perf_counter() - drive_started) * 1000
+        drive_ns = time.monotonic_ns() - drive_started_ns if measure else 0
         emitted = False
+        probe_enabled = probe.enabled
+        if probe_enabled:
+            envelope_count = 0
+            envelope_bytes = 0
+            poll_ns = 0
+            decode_ns = 0
         acknowledge_through: int | None = None
         self._runtime_output_batch_active = True
         try:
-            while data := self.abi.poll():
-                emitted = True
-                runtime_sequence = self._handle_envelope(data)
-                if runtime_sequence is not None:
-                    acknowledge_through = runtime_sequence
+            if probe_enabled:
+                while True:
+                    poll_started_ns = time.monotonic_ns()
+                    data = self.abi.poll()
+                    poll_ns += time.monotonic_ns() - poll_started_ns
+                    if not data:
+                        break
+                    emitted = True
+                    envelope_count += 1
+                    envelope_bytes += len(data)
+                    decode_started_ns = time.monotonic_ns()
+                    runtime_sequence = self._handle_envelope(data)
+                    decode_ns += time.monotonic_ns() - decode_started_ns
+                    if runtime_sequence is not None:
+                        acknowledge_through = runtime_sequence
+            else:
+                while data := self.abi.poll():
+                    emitted = True
+                    runtime_sequence = self._handle_envelope(data)
+                    if runtime_sequence is not None:
+                        acknowledge_through = runtime_sequence
         except Exception:
             self._deferred_runtime_messages.clear()
             self._pending_sql_requests.clear()
@@ -267,7 +261,50 @@ class _RuntimeTransportMixin:
         if acknowledge_through is not None and self.session is not None:
             self.send_runtime(93, {0: acknowledge_through})
         self._flush_deferred_runtime_messages()
-        pump_ms = (time.perf_counter() - pump_started) * 1000
+        pump_ns = time.monotonic_ns() - pump_started_ns if measure else 0
+        drive_ms = drive_ns / 1e6
+        pump_ms = pump_ns / 1e6
+        if probe_enabled:
+            common = {
+                "vmInstructions": report.vm_instructions,
+                "runtimeTransitions": report.runtime_transitions,
+                "queuedEnvelopes": report.queued_envelopes,
+                "runtimeState": report.state,
+                "envelopeCount": envelope_count,
+                "envelopeBytes": envelope_bytes,
+            }
+            probe.record(
+                "sample",
+                phase="runtime",
+                stage="c_abi",
+                operation="drive",
+                duration_ns=drive_ns,
+                fields=common,
+            )
+            probe.record(
+                "sample",
+                phase="runtime",
+                stage="c_abi",
+                operation="poll",
+                duration_ns=poll_ns,
+                fields={"envelopeCount": envelope_count, "envelopeBytes": envelope_bytes},
+            )
+            probe.record(
+                "sample",
+                phase="runtime",
+                stage="protocol",
+                operation="decode",
+                duration_ns=decode_ns,
+                fields={"envelopeCount": envelope_count, "envelopeBytes": envelope_bytes},
+            )
+            probe.record(
+                "sample",
+                phase="runtime",
+                stage="pump",
+                operation="complete",
+                duration_ns=pump_ns,
+                fields=common,
+            )
         if (
             self.metrics_threshold_ms is not None
             and max(drive_ms, pump_ms) >= self.metrics_threshold_ms

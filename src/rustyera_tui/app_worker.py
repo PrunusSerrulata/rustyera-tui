@@ -85,12 +85,17 @@ class _WorkerEventMixin:
         self._presentation_dirty = True
 
     async def _commit_presentation(self) -> None:
+        probe = self.performance_probe
+        span = probe.start("frontend", "presentation", "commit") if probe.enabled else None
         try:
             viewport = self.query_one(GameViewport)
         except NoMatches:
             self._presentation_dirty = False
             self._presentation_commit_ready = False
             self.presentation_rendering = False
+            if probe.enabled:
+                probe.finish(span, fields={"status": "viewport_unavailable"})
+            self._discard_presentation_render_span()
             return
         changed_from, trimmed_prefix = self.presentation.take_render_change()
         with self.batch_update():
@@ -111,10 +116,21 @@ class _WorkerEventMixin:
                 self.presentation.background, self.presentation.text_line_background
             )
         revision = self.presentation.revision
+        if self._presentation_render_span is not None:
+            self._presentation_render_revision = revision
         self._presentation_dirty = False
         self._presentation_commit_ready = False
         self._schedule_viewport_projection()
         self.call_after_refresh(self._finish_presentation_render, revision)
+        if probe.enabled:
+            probe.finish(
+                span,
+                fields={
+                    "presentationRevision": revision,
+                    "lineCount": len(self.presentation.lines),
+                    "runCount": sum(len(line.segments) for line in self.presentation.lines),
+                },
+            )
 
     def _handle_worker_event(self, event: FrontendEvent) -> bool:
         kind, value = event.kind, event.value
@@ -132,6 +148,8 @@ class _WorkerEventMixin:
             if not isinstance(value, PresentationBatch):
                 self._log("worker returned an invalid presentation batch", LogLevel.WARNING)
                 return False
+            probe = self.performance_probe
+            span = probe.start("frontend", "store", "presentation_batch") if probe.enabled else None
             dirty = False
             if value.snapshot is not None:
                 self.presentation.apply_snapshot(value.snapshot)
@@ -150,6 +168,18 @@ class _WorkerEventMixin:
                 self._mark_presentation_dirty()
             self._set_active_wait(value.active_wait)
             self._presentation_commit_ready = value.render
+            if probe.enabled:
+                probe.finish(
+                    span,
+                    fields={
+                        "snapshotCount": int(value.snapshot is not None),
+                        "deltaCount": int(value.delta is not None),
+                        "lineCount": len(self.presentation.lines),
+                        "runCount": sum(len(line.segments) for line in self.presentation.lines),
+                        "resourceCount": None,
+                        "sceneLayerCount": len(self.presentation.scene.get(1, [])),
+                    },
+                )
             return dirty
         if self._handle_runtime_state_event(kind, value):
             return False
@@ -165,6 +195,7 @@ class _WorkerEventMixin:
     def _reset_session_state(self) -> None:
         """Drop every UI object whose contents belong to the previous runtime session."""
 
+        self._discard_presentation_render_span()
         self._clear_vm_ui_state()
         self.presentation = PresentationModel()
         self.runtime_phase = 0
@@ -179,6 +210,7 @@ class _WorkerEventMixin:
     def _reset_game_state_projection(self, revision: int) -> None:
         """Drop VM-owned UI state while keeping the loaded project and preferences."""
 
+        self._discard_presentation_render_span()
         self._clear_vm_ui_state()
         self.presentation.retire_history(revision)
         self._refresh_after_vm_cleanup()

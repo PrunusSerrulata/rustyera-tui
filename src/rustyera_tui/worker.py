@@ -14,6 +14,8 @@ from .project import ProjectBundle
 from .runtime_export import ExportStage
 from .runtime_types import FrontendCommand, FrontendEvent
 from .startup_telemetry import emit_startup_milestone
+from .performance import PerformanceProbe, performance_probe
+from .performance_capture import AuditCaptureState
 from .worker_project import _WorkerProjectMixin
 
 MAX_WORKER_COMMANDS = 256
@@ -52,6 +54,8 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
         metrics_threshold_ms: float | None = None,
         initial_state: tuple[Path, str] | None = None,
         initial_project_file: Path | None = None,
+        performance: PerformanceProbe | None = None,
+        audit_capture: AuditCaptureState | None = None,
     ):
         super().__init__(name="rustyera-runtime", daemon=False)
         self.runtime_library = runtime_library
@@ -60,6 +64,8 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
         self.metrics_threshold_ms = metrics_threshold_ms
         self.initial_state = initial_state
         self.initial_project_file = initial_project_file
+        self.performance_probe = performance if performance is not None else performance_probe()
+        self.audit_capture = audit_capture
         self.commands: queue.Queue[FrontendCommand] = queue.Queue(maxsize=MAX_WORKER_COMMANDS)
         self._projection_command_lock = threading.Lock()
         self._pending_projection: Any = None
@@ -128,6 +134,8 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
                 self.events,
                 new_game_seed=self.new_game_seed,
                 metrics_threshold_ms=self.metrics_threshold_ms,
+                probe=self.performance_probe,
+                audit_capture=self.audit_capture,
             )
             if self.initial_project is not None:
                 self._load_project(self.initial_project)
@@ -154,12 +162,15 @@ class RuntimeWorker(_WorkerProjectMixin, threading.Thread):
                     self._process_command(command)
         except InterruptedError as error:
             if not self._stop_requested.is_set():
+                if self.client is not None:
+                    self.performance_probe.terminal("failed", error=str(error))
                 emit_startup_milestone("failed", attempt_id=0, scenario="unknown", error=str(error))
                 self._emit_terminal_event(
                     FrontendEvent("error", f"前端 Runtime worker 失败：{error}")
                 )
         except Exception as error:  # noqa: BLE001 - worker must report all boundary failures
             if self.client is not None:
+                self.performance_probe.terminal("failed", error=str(error))
                 if self.client.full_project_export is not None:
                     self.client._finish_project_file_export(False)
                 if (

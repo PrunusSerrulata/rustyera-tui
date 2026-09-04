@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from . import project as project_facade
+from .performance import performance_probe
 from .project import (
     Any,
     Callable,
@@ -50,6 +51,7 @@ class _ProjectBundleScanMixin:
         root = root.expanduser().resolve(strict=True)
         if not root.is_dir():
             raise NotADirectoryError(root)
+        probe = performance_probe()
         for attempt in range(_attempt, STABLE_READ_ATTEMPTS):
             if progress is not None:
                 progress(0, 0)
@@ -62,6 +64,15 @@ class _ProjectBundleScanMixin:
             if cancelled is not None and cancelled():
                 raise InterruptedError("project file operation cancelled")
             enumerate_ms = (time.perf_counter() - started) * 1000
+            if probe.enabled:
+                probe.record(
+                    "sample",
+                    phase="loading",
+                    stage="project",
+                    operation="scan_enumerate",
+                    duration_ns=int(enumerate_ms * 1e6),
+                    fields={"pathCount": len(paths), "fileCount": len(candidates)},
+                )
             if progress is not None:
                 progress(0, len(candidates))
             started = time.perf_counter()
@@ -76,6 +87,18 @@ class _ProjectBundleScanMixin:
                     raise
                 continue
             source_ms = (time.perf_counter() - started) * 1000
+            if probe.enabled:
+                probe.record(
+                    "sample",
+                    phase="loading",
+                    stage="project",
+                    operation="read_decode_hash",
+                    duration_ns=int(source_ms * 1e6),
+                    fields={
+                        "fileCount": len(files),
+                        "bytes": sum(item.content_size for item in files.values()),
+                    },
+                )
             return cls(
                 root=root,
                 revision=revision,
@@ -118,6 +141,7 @@ class _ProjectBundleScanMixin:
         root = root.expanduser().resolve(strict=True)
         if not root.is_dir():
             raise NotADirectoryError(root)
+        probe = performance_probe()
         if progress is not None:
             progress(0, 0)
         if cancelled is not None and cancelled():
@@ -137,6 +161,14 @@ class _ProjectBundleScanMixin:
         except (OSError, ValueError, TypeError):
             previous = {}
         metrics.index_read_ms = (time.perf_counter() - started) * 1000
+        if probe.enabled:
+            probe.record(
+                "sample",
+                phase="loading",
+                stage="project",
+                operation="index_read",
+                duration_ns=int(metrics.index_read_ms * 1e6),
+            )
         metrics.source_index_present = index_current
         started = time.perf_counter()
         canonical_roots = _canonical_source_roots(root)
@@ -144,6 +176,15 @@ class _ProjectBundleScanMixin:
         if cancelled is not None and cancelled():
             raise InterruptedError("project file operation cancelled")
         metrics.enumerate_ms = (time.perf_counter() - started) * 1000
+        if probe.enabled:
+            probe.record(
+                "sample",
+                phase="loading",
+                stage="project",
+                operation="scan_enumerate",
+                duration_ns=int(metrics.enumerate_ms * 1e6),
+                fields={"fileCount": len(candidates)},
+            )
         if progress is not None:
             progress(0, len(candidates))
 
@@ -202,6 +243,15 @@ class _ProjectBundleScanMixin:
             started = time.perf_counter()
             inspected = _parallel_ordered(candidates, inspect, cancelled=cancelled)
             metrics.stat_ms = (time.perf_counter() - started) * 1000
+            if probe.enabled:
+                probe.record(
+                    "sample",
+                    phase="loading",
+                    stage="project",
+                    operation="stat",
+                    duration_ns=int(metrics.stat_ms * 1e6),
+                    fields={"fileCount": len(inspected)},
+                )
             invalid = [item for item in inspected if item.content_hash is None]
             metrics.source_index_misses = tuple(item.relative_path for item in invalid)
             started = time.perf_counter()
@@ -213,6 +263,18 @@ class _ProjectBundleScanMixin:
                 cancelled=cancelled,
             )
             metrics.source_read_decode_hash_ms = (time.perf_counter() - started) * 1000
+            if probe.enabled:
+                probe.record(
+                    "sample",
+                    phase="loading",
+                    stage="project",
+                    operation="read_decode_hash",
+                    duration_ns=int(metrics.source_read_decode_hash_ms * 1e6),
+                    fields={
+                        "fileCount": len(loaded),
+                        "bytes": sum(item.content_size for item in loaded),
+                    },
+                )
         except InterruptedError:
             raise
         except (OSError, UnicodeError, ValueError, KeyError, TypeError):
@@ -295,6 +357,15 @@ class _ProjectBundleScanMixin:
             started = time.perf_counter()
             _write_source_index(index_path, {"version": SOURCE_INDEX_VERSION, "files": next_index})
             metrics.index_write_ms = (time.perf_counter() - started) * 1000
+            if probe.enabled:
+                probe.record(
+                    "sample",
+                    phase="loading",
+                    stage="project",
+                    operation="index_write",
+                    duration_ns=int(metrics.index_write_ms * 1e6),
+                    fields={"fileCount": len(next_index)},
+                )
         metrics.source_files_reused = len(inspected) - len(invalid)
         metrics.source_files_hashed = len(invalid)
         return cls(
