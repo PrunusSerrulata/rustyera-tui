@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-import time
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import Any, Iterator
 
 import apsw
@@ -15,16 +13,29 @@ from .sql_revision_store import (
     DATABASE_FORMAT_VERSION,
     MAXIMUM_DATABASE_BYTES,
     SQLITE_VERSION,
-    SqlChain,
     SqlRevisionStore,
     SqlRevisionStoreError,
     StorageLike,
     safe_resource_id,
     sql_identity_digest,
 )
+from .sql_provider_state import (
+    EXECUTION_BUDGET_NS,
+    SqlConnection,
+    SqlErrorCode,
+    SqlProviderFault,
+    SqlReader,
+    _OperationDeadline,
+    _SqlBudget,
+)
 from .wire import decode, encode, unwrap_variant, variant
 
 __all__ = ["LIMITS", "SqlErrorCode", "SqlProvider", "sql_identity_digest"]
+
+# Preserve the historical public module path for types previously defined here.
+for _provider_type in (SqlErrorCode, SqlConnection, SqlReader, SqlProviderFault):
+    _provider_type.__module__ = __name__
+del _provider_type
 
 SQL_OPERATION = "rustyera.sql"
 MAXIMUM_CONNECTIONS = 8
@@ -36,8 +47,6 @@ MAXIMUM_CELL_BYTES = 1024 * 1024
 MAXIMUM_MAP_ROWS = 100_000
 MAXIMUM_MAP_BYTES = 8 * 1024 * 1024
 MAXIMUM_READER_ROWS = 1_000_000
-EXECUTION_BUDGET_NS = 5_000_000_000
-
 LIMITS = {
     0: MAXIMUM_CONNECTIONS,
     1: MAXIMUM_READERS,
@@ -51,80 +60,6 @@ LIMITS = {
     9: MAXIMUM_READER_ROWS,
     10: EXECUTION_BUDGET_NS // 1_000_000,
 }
-
-
-class SqlErrorCode:
-    INVALID_REQUEST = 0
-    INVALID_NAME = 1
-    INVALID_SOURCE = 2
-    INVALID_CONNECTION_STRING = 3
-    CONNECTION_LIMIT = 4
-    CONNECTION_CONFLICT = 5
-    CONNECTION_NOT_FOUND = 6
-    READER_LIMIT = 7
-    READER_NOT_FOUND = 8
-    COLUMN_OUT_OF_RANGE = 9
-    TYPE_MISMATCH = 10
-    SQL_TOO_LARGE = 11
-    PARAMETER_LIMIT = 12
-    PARAMETER_BYTES_LIMIT = 13
-    CELL_TOO_LARGE = 14
-    DATABASE_TOO_LARGE = 15
-    MAP_ROW_LIMIT = 16
-    MAP_BYTES_LIMIT = 17
-    READER_ROW_LIMIT = 18
-    EXECUTION_TIMEOUT = 19
-    TRANSACTION_ACTIVE = 20
-    REVISION_CONFLICT = 21
-    REVISION_MISSING = 22
-    STORAGE_FAILURE = 23
-    SQLITE = 24
-    CANCELLED = 25
-    STALE_EPOCH = 26
-    INVALID_TABLE_NAME = 27
-    INVALID_STATE = 28
-    UNSUPPORTED = 29
-
-
-@dataclass(slots=True)
-class SqlConnection:
-    handle: tuple[int, int]
-    database: apsw.Connection
-    durable_revision: bytes | None = None
-    durable_bytes: bytes | None = None
-    chain: SqlChain | None = None
-    active_write_probe: list[bool] | None = None
-    allow_bare_vacuum: bool = False
-
-
-@dataclass(slots=True)
-class SqlReader:
-    handle: tuple[int, int]
-    connection: SqlConnection
-    cursor: apsw.Cursor | None
-    write_detected: bool
-    status: int = 0
-    rows_read: int = 0
-    row: tuple[Any, ...] | None = None
-
-
-class SqlProviderFault(Exception):
-    def __init__(
-        self,
-        code: int,
-        message: str,
-        *,
-        context: dict[str, str] | None = None,
-        sqlite_code: int | None = None,
-        connection: SqlConnection | None = None,
-        reader: SqlReader | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.context = context or {}
-        self.sqlite_code = sqlite_code
-        self.connection = connection
-        self.reader = reader
 
 
 class SqlProvider:
@@ -177,21 +112,13 @@ class SqlProvider:
             response = self._execute(provider, operation_kind, fields, storage, deadline)
         except SqlRevisionStoreError as error:
             fault = SqlProviderFault(error.code, str(error), context=error.context)
-            response = self._error_response(
-                provider or self.provider or (0, 0), operation_kind, operation, fault
-            )
         except SqlProviderFault as error:
-            response = self._error_response(
-                provider or self.provider or (0, 0), operation_kind, operation, error
-            )
+            fault = error
         except apsw.InterruptError as error:
             fault = SqlProviderFault(
                 SqlErrorCode.EXECUTION_TIMEOUT,
                 "SQL execution budget exceeded",
                 sqlite_code=getattr(error, "extendedresult", None),
-            )
-            response = self._error_response(
-                provider or self.provider or (0, 0), operation_kind, operation, fault
             )
         except apsw.Error as error:
             fault = SqlProviderFault(
@@ -199,15 +126,15 @@ class SqlProvider:
                 str(error),
                 sqlite_code=getattr(error, "extendedresult", None),
             )
-            response = self._error_response(
-                provider or self.provider or (0, 0), operation_kind, operation, fault
-            )
         except (KeyError, TypeError, ValueError) as error:
             fault = SqlProviderFault(SqlErrorCode.INVALID_REQUEST, str(error))
-            response = self._error_response(
+        else:
+            return encode(response)
+        return encode(
+            self._error_response(
                 provider or self.provider or (0, 0), operation_kind, operation, fault
             )
-        return encode(response)
+        )
 
     def _enter_provider(self, provider: tuple[int, int]) -> None:
         if self.provider == provider:
@@ -345,7 +272,7 @@ class SqlProvider:
                     probe,
                     allow_bare_vacuum=mode == 0 and not parameters and _is_bare_vacuum(sql),
                 ),
-                self._budget(connection.database, deadline),
+                _SqlBudget(connection.database, deadline),
             ):
                 cursor = (
                     connection.database.execute(sql, bindings)
@@ -404,7 +331,7 @@ class SqlProvider:
         probe = [False]
         with (
             self._write_probe(reader.connection, probe),
-            self._budget(reader.connection.database, deadline),
+            _SqlBudget(reader.connection.database, deadline),
         ):
             row = reader.cursor.fetchone()
         reader.write_detected = reader.write_detected or probe[0]
@@ -438,7 +365,7 @@ class SqlProvider:
         mode = _unsigned(fields[2], "SQL reader value mode", 1)
         if column >= len(reader.row):
             raise SqlProviderFault(SqlErrorCode.COLUMN_OUT_OF_RANGE, "SQL reader column is invalid")
-        value = _reader_value(_sql_value(reader.row[column]), mode, reader.connection.database)
+        value = _scalar_value(_sql_value(reader.row[column]), mode + 1)
         return self._response(
             provider, variant(5, _value_variant(value)), reader.connection, reader
         )
@@ -507,7 +434,7 @@ class SqlProvider:
         if byte_length > MAXIMUM_MAP_BYTES:
             raise SqlProviderFault(SqlErrorCode.MAP_BYTES_LIMIT, "SQL MAP bytes exceed their limit")
         quoted = f'"{table}"'
-        with self._budget(connection.database, deadline):
+        with _SqlBudget(connection.database, deadline):
             connection.database.execute("SAVEPOINT rustyera_map_import")
             try:
                 connection.database.execute(
@@ -583,9 +510,6 @@ class SqlProvider:
             raise SqlProviderFault(
                 SqlErrorCode.PARAMETER_BYTES_LIMIT, "SQL parameter bytes exceed their limit"
             )
-
-    def _budget(self, database: apsw.Connection, deadline: _OperationDeadline):
-        return _SqlBudget(database, deadline)
 
     @contextmanager
     def _write_probe(
@@ -866,38 +790,6 @@ class SqlProvider:
         return {0: _handle_map(reader.handle), 1: reader.status, 2: reader.rows_read}
 
 
-class _OperationDeadline:
-    def __init__(self, requested_deadline_ns: int | None) -> None:
-        now = time.monotonic_ns()
-        local_deadline = now + EXECUTION_BUDGET_NS
-        self.deadline_ns = (
-            min(local_deadline, requested_deadline_ns)
-            if requested_deadline_ns is not None
-            else local_deadline
-        )
-
-    def expired(self) -> bool:
-        return time.monotonic_ns() >= self.deadline_ns
-
-    def checkpoint(self) -> None:
-        if self.expired():
-            raise SqlProviderFault(SqlErrorCode.EXECUTION_TIMEOUT, "SQL execution budget exceeded")
-
-
-class _SqlBudget:
-    def __init__(self, database: apsw.Connection, deadline: _OperationDeadline) -> None:
-        self.database = database
-        self.deadline = deadline
-        self.identity = object()
-
-    def __enter__(self) -> _SqlBudget:
-        self.database.set_progress_handler(lambda: self.deadline.expired(), 1_000, id=self.identity)
-        return self
-
-    def __exit__(self, _kind: Any, _error: Any, _traceback: Any) -> None:
-        self.database.set_progress_handler(None, id=self.identity)
-
-
 def _map(value: Any, keys: set[int], name: str) -> dict[int, Any]:
     if not isinstance(value, dict) or set(value) != keys:
         raise ValueError(f"{name} has an invalid CBOR map shape")
@@ -993,14 +885,6 @@ def _scalar_value(value: Any, mode: int) -> Any:
     if mode == 2:
         return str(value)
     raise SqlProviderFault(SqlErrorCode.INVALID_REQUEST, "invalid SQL scalar mode")
-
-
-def _reader_value(value: Any, mode: int, _database: apsw.Connection) -> Any:
-    if value is None:
-        return None
-    if mode == 0:
-        return _scalar_value(value, 1)
-    return str(value)
 
 
 def _value_variant(value: Any) -> list[Any]:

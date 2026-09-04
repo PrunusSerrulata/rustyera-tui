@@ -703,12 +703,6 @@ def _projected_line_width(line: DisplayLineModel, width: int) -> int:
     return max(widest, current)
 
 
-def _merge_save_delete_lines(lines: list[DisplayLineModel]) -> list[DisplayLineModel]:
-    """Place a runtime save-slot delete action at the right edge of its slot row."""
-
-    return _merge_save_delete_lines_with_prefixes(lines)[0]
-
-
 def _merge_save_delete_lines_with_prefixes(
     lines: list[DisplayLineModel],
 ) -> tuple[list[DisplayLineModel], list[int]]:

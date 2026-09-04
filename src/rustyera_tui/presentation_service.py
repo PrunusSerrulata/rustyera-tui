@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from .presentation_replacement import ReplacementBoundary
 from .presentation_scene import apply_scene_delta, empty_scene, normalize_scene
-from .presentation_text import plain_line
+from .presentation_text import _escape_html, plain_line
 from .text_budget import utf8_length
 from .wire import unwrap_variant
 
@@ -185,16 +185,6 @@ class ServicePresentationModel:
 
     def physical_history_utf8_bytes(self) -> int:
         return sum(utf8_length(line.text) + 1 for line in self.lines)
-
-
-def _escape_html(text: str) -> str:
-    return (
-        text.replace("&", "&amp;")
-        .replace(">", "&gt;")
-        .replace("<", "&lt;")
-        .replace('"', "&quot;")
-        .replace("'", "&apos;")
-    )
 
 
 def _escaped_html_utf8_bytes(text: str) -> int:
