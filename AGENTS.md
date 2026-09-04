@@ -32,7 +32,7 @@ C ABI、协议版本和完整 TUI 测试。兄弟目录 `../eraTW`、core 构建
 
 ## 蛇版兼容开发
 
-- 使用 `codex/snake-compatibility` 分支及专用 worktree，`../rustyera-core` 必须是同组
+- 使用 `feature/snake-compatibility` 分支及专用 worktree，`../rustyera-core` 必须是同组
   core worktree；开工核对分支和工作树，不修改原 master 工作区。位置、共享输入和
   构建/会话隔离要求遵循主工作区规范。
 - 开工或续做前必须读取同组 core 的[改造思路](../rustyera-core/docs/snake-compatibility/SNAKE_EMUERA_MIGRATION_PLAN.md)
