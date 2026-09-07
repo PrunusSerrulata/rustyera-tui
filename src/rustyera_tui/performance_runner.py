@@ -19,7 +19,7 @@ from .performance_process import (
     publish_json_exclusive,
 )
 from .performance_replay import AuditWatchdog, ReplayVerifier, replay_once, write_probe_events
-from .performance_trace import PerformanceTrace, PerformanceTraceError
+from .performance_trace import PerformanceTrace
 
 
 def run_child_round(
