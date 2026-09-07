@@ -105,6 +105,7 @@ def test_allocation_tracking_is_a_second_explicit_opt_in() -> None:
 
 def test_new_performance_fd_mirrors_startup_into_unified_schema(monkeypatch) -> None:
     read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
     os.set_blocking(write_fd, False)
     monkeypatch.setenv(PERFORMANCE_FD_ENV, str(write_fd))
     install_performance_probe(None)
