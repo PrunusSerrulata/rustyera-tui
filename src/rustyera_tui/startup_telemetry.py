@@ -9,6 +9,8 @@ import sys
 import time
 from typing import Any
 
+from .performance import performance_probe
+
 try:
     import resource
 except ImportError:  # Windows does not provide the POSIX resource module.
@@ -18,7 +20,26 @@ STARTUP_TELEMETRY_FD_ENV = "RUSTYERA_STARTUP_TELEMETRY_FD"
 
 
 def emit_startup_milestone(event: str, **fields: Any) -> None:
-    """Write one compact event to an inherited descriptor when measurement is enabled."""
+    """Preserve the v1 startup wire and optionally mirror into the unified v2 probe."""
+
+    _emit_legacy_startup_milestone(event, fields)
+    probe = performance_probe()
+    if not probe.enabled:
+        return
+    duration_ms = fields.get("duration_ms")
+    duration_ns = int(float(duration_ms) * 1e6) if duration_ms is not None else None
+    probe.record(
+        event,
+        phase="loading",
+        stage=str(fields.get("phase", event)),
+        operation=event,
+        duration_ns=duration_ns,
+        fields=fields,
+    )
+
+
+def _emit_legacy_startup_milestone(event: str, fields: dict[str, Any]) -> None:
+    """Write the historical compact event byte-for-byte for old benchmark consumers."""
 
     raw_fd = os.environ.get(STARTUP_TELEMETRY_FD_ENV)
     if raw_fd is None or resource is None:

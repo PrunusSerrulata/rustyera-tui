@@ -17,6 +17,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .presentation import PresentationModel
+from .performance import PerformanceProbe
+from .performance_capture import AuditCaptureState
 from .runtime import FrontendEvent, PresentationBatch, RuntimeWorker
 from .storage import StorageBackend
 from .testing_reference import ReferenceProcess as ReferenceProcess
@@ -76,6 +78,8 @@ class RustTestSession:
     runtime_library: Path | None
     project_override: Path | None = None
     metrics_threshold_ms: float | None = None
+    performance_probe: PerformanceProbe | None = None
+    audit_capture: AuditCaptureState | None = None
     model: PresentationModel = field(default_factory=PresentationModel)
     previous_output: list[str] = field(default_factory=list)
     statuses: list[str] = field(default_factory=list)
@@ -98,6 +102,8 @@ class RustTestSession:
             new_game_seed=seed,
             metrics_threshold_ms=self.metrics_threshold_ms,
             initial_state=state,
+            performance=self.performance_probe,
+            audit_capture=self.audit_capture,
         )
         self.worker.start()
 

@@ -24,6 +24,7 @@ from .dialogs import (
 )
 from .log_model import BudgetedLogEntries, LogLevel, make_log_entry
 from .presentation import PresentationModel
+from .performance import SpanToken, performance_probe
 from .runtime import RuntimeWorker
 from .runtime_types import GameInformation
 from .version import CORE_VERSION
@@ -131,6 +132,12 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
         self.worker = worker or RuntimeWorker(
             runtime_library, resource_directory, initial_project_file=project_file
         )
+        worker_probe = getattr(self.worker, "performance_probe", None)
+        self.performance_probe = (
+            worker_probe if worker_probe is not None else performance_probe()
+        )
+        self._presentation_render_span: SpanToken | None = None
+        self._presentation_render_revision: int | None = None
         self.presentation = PresentationModel()
         self.game_information = GameInformation()
         self.core_version = CORE_VERSION
@@ -428,13 +435,37 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
             viewport.enable_interactions()
 
     def _begin_presentation_render(self) -> None:
+        if self.performance_probe.enabled and self._presentation_render_span is None:
+            self._presentation_render_span = self.performance_probe.start(
+                "frontend", "render", "next_refresh"
+            )
+            self._presentation_render_revision = self.presentation.revision
         self.presentation_rendering = True
         self._update_prompt()
         self._refresh_interaction_lock()
 
     def _finish_presentation_render(self, revision: int) -> None:
-        if revision != self.presentation.revision:
+        tracked_revision = self._presentation_render_revision
+        if tracked_revision is not None and revision != tracked_revision:
+            # A newer render owns the active audit span; this callback is stale.
             return
+        if revision != self.presentation.revision:
+            self._discard_presentation_render_span()
+            return
+        if self.performance_probe.enabled and self._presentation_render_span is not None:
+            lines = self.presentation.lines
+            self.performance_probe.finish(
+                self._presentation_render_span,
+                fields={
+                    "presentationRevision": revision,
+                    "lineCount": len(lines),
+                    "runCount": sum(len(line.segments) for line in lines),
+                    "resourceCount": None,
+                    "sceneLayerCount": len(self.presentation.scene.get(1, [])),
+                },
+            )
+        self._presentation_render_span = None
+        self._presentation_render_revision = None
         self.presentation_rendering = False
         self._update_prompt()
         self._refresh_interaction_lock()
@@ -442,3 +473,10 @@ class RustyEraTui(_WorkerEventMixin, _MenuAndExportMixin, _InteractionMixin, App
     def _queue_local_presentation_render(self) -> None:
         self._mark_presentation_dirty()
         self._presentation_commit_ready = True
+
+    def _discard_presentation_render_span(self) -> None:
+        """Invalidate refresh work belonging to an outgoing presentation revision."""
+
+        self._presentation_render_span = None
+        self._presentation_render_revision = None
+        self.presentation_rendering = False

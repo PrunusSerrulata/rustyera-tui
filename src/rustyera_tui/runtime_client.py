@@ -43,6 +43,8 @@ from .runtime_rejections import _RuntimeRejectionMixin
 from .runtime_transport import _RuntimeTransportMixin
 from .runtime_transfer import _RuntimeTransferMixin
 from .sql_provider import SqlProvider
+from .performance import DISABLED_PROBE, PerformanceProbe, performance_probe
+from .performance_capture import AuditCaptureState
 from .client_preferences import (
     LoadedPreferences,
     global_preferences_path,
@@ -60,6 +62,11 @@ class RuntimeClient(
 ):
     """Translate frontend intent to the public runtime and debug wire protocols."""
 
+    # Responsibility-mixin fixtures created with ``object.__new__`` inherit the no-op
+    # authority. Normal clients replace it exactly once in ``__init__``.
+    performance_probe: PerformanceProbe = DISABLED_PROBE
+    audit_capture: AuditCaptureState | None = None
+
     def __init__(
         self,
         abi: RuntimeAbi,
@@ -67,9 +74,17 @@ class RuntimeClient(
         *,
         new_game_seed: int | None = None,
         metrics_threshold_ms: float | None = None,
+        probe: PerformanceProbe | None = None,
+        audit_capture: AuditCaptureState | None = None,
     ) -> None:
         self.abi = abi
         self.events = events
+        # Resolve the opt-in once. Disabled production runs only pay a predictable boolean branch
+        # in instrumented hot paths and never construct metric detail objects.
+        self.performance_probe = probe if probe is not None else performance_probe()
+        self.audit_capture = audit_capture
+        if self.performance_probe.enabled:
+            self._submit_encoded = self._submit_encoded_measured
         self.new_game_seed = new_game_seed
         self.metrics_threshold_ms = metrics_threshold_ms
         self.runtime_sequence = 0
@@ -410,6 +425,15 @@ class RuntimeClient(
         self.source_index_misses = ()
         self.startup_core_durations = {}
         self._startup_core_phase_started = {}
+        probe = self.performance_probe
+        if probe.enabled:
+            probe.reset(
+                {
+                    "client": "tui",
+                    "startupScenario": self.startup_scenario,
+                    "attempt": self.startup_attempt,
+                }
+            )
         emit_startup_milestone(
             "attempt_started",
             attempt_id=self.startup_attempt,
@@ -427,8 +451,18 @@ class RuntimeClient(
         )
 
     def record_host_duration(self, field: str, started_ns: int) -> None:
-        duration_ms = (time.monotonic_ns() - started_ns) / 1e6
+        duration_ns = time.monotonic_ns() - started_ns
+        duration_ms = duration_ns / 1e6
         self.record_host_metrics({field: duration_ms})
+        probe = self.performance_probe
+        if probe.enabled:
+            probe.record(
+                "sample",
+                phase="loading",
+                stage="host",
+                operation=field.removesuffix("_ms"),
+                duration_ns=duration_ns,
+            )
 
     def fail_startup(self, error: object) -> None:
         if not self.startup_active:
@@ -439,6 +473,9 @@ class RuntimeClient(
             scenario=self.startup_scenario,
             error=str(error),
         )
+        probe = self.performance_probe
+        if probe.enabled:
+            probe.terminal("failed", error=str(error))
         self.startup_active = False
         self._startup_core_phase_started.clear()
 
