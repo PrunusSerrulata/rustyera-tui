@@ -1,4 +1,4 @@
 """Build-time pinned core version metadata."""
 
-CORE_REVISION = "23c01c5b"
-CORE_VERSION = f"0.8.0 ({CORE_REVISION})"
+CORE_REVISION = "463a54fe"
+CORE_VERSION = f"0.9.0-alpha.1 ({CORE_REVISION})"
