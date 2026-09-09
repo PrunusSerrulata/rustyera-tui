@@ -442,6 +442,11 @@ class PresentationDeltaAccumulator:
             # Every scene delta is revision-bound. Preserve the chain while still
             # reducing independent line replacements on either side of it.
             self._operations.append(operation)
+        elif tag == 15:
+            # Resource edits depend on the preceding complete resource baseline. Do not move a
+            # later SetResources backwards across this operation when coalescing state updates.
+            self._state_operations.pop(10, None)
+            self._operations.append(operation)
         elif tag in (3, 5, 6, 8, 9, 10, 11, 12):
             previous = self._state_operations.get(tag)
             if previous is None:

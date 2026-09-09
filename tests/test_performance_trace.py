@@ -79,7 +79,7 @@ def test_trace_recomputes_digest(tmp_path) -> None:
     path.write_text(json.dumps(trace), encoding="utf-8")
 
     with pytest.raises(PerformanceTraceError, match="trace digest mismatch"):
-        PerformanceTrace.load(path, scenario="fixture")
+        PerformanceTrace.load(path, scenario="changed")
 
 
 def test_trace_rejects_nonterminal_action(tmp_path) -> None:

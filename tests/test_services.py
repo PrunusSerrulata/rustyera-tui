@@ -77,7 +77,7 @@ def test_first_envelope_of_new_epoch_resets_storage_before_dispatch(tmp_path: Pa
                     0,
                     connection,
                     "memory",
-                    {0: variant(0), 1: "3.53.0", 2: 1},
+                    {0: variant(0), 1: "3.53.4", 2: 1},
                     variant(0),
                     dict(LIMITS),
                 ),

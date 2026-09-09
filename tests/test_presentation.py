@@ -20,6 +20,24 @@ from rustyera_tui.presentation import (
 from rustyera_tui.wire import variant
 
 
+def test_resource_delta_accumulator_preserves_complete_baseline_order() -> None:
+    operations = [
+        variant(10, {0: [], 1: [], 2: 0}),
+        variant(15, {0: [], 1: [], 2: 10}),
+        variant(10, {0: [], 1: [], 2: 20}),
+        variant(15, {0: [], 1: [], 2: 30}),
+    ]
+    accumulator = PresentationDeltaAccumulator()
+    for index, operation in enumerate(operations):
+        accumulator.add({0: index + 1, 1: index + 2, 2: [operation]})
+    combined = accumulator.take()
+    assert combined == {0: 1, 1: 5, 2: operations}
+    model = PresentationModel()
+    model.apply_snapshot(snapshot())
+    model.apply_delta(combined)
+    assert model.revision == 5
+
+
 def test_whole_line_background_fields_are_preserved_from_protocol() -> None:
     raw = line(1, "eligible")
     raw[6] = True
