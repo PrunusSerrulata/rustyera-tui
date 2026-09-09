@@ -68,7 +68,9 @@ def test_three_client_sql_contract_pins_identity_limits_and_errors() -> None:
     contract = snake_sql_contract()
 
     assert contract["schemaVersion"] == 1
-    assert contract["sqliteVersion"] == apsw.sqlitelibversion()
+    # The fixture records historical seed provenance, not the upgraded runtime.
+    assert contract["sqliteVersion"] == "3.53.0"
+    assert apsw.sqlitelibversion() == revision_store_module.SQLITE_VERSION
     assert contract["limits"] == {
         "maximumConnections": LIMITS[0],
         "maximumReaders": LIMITS[1],
@@ -139,7 +141,7 @@ def test_memory_provider_preserves_reader_long_and_string_conversion() -> None:
             0,
             CONNECTION,
             "memory",
-            {0: variant(0), 1: "3.53.0", 2: 1},
+            {0: variant(0), 1: revision_store_module.SQLITE_VERSION, 2: 1},
             variant(0),
             dict(LIMITS),
         ),
@@ -195,7 +197,11 @@ def test_resource_database_publishes_before_ack_and_reopens_current_revision(
         0,
         CONNECTION,
         "persistent",
-        {0: variant(1, {0: "plugins/seed.db", 1: seed_sha}), 1: "3.53.0", 2: 1},
+        {
+            0: variant(1, {0: "plugins/seed.db", 1: seed_sha}),
+            1: revision_store_module.SQLITE_VERSION,
+            2: 1,
+        },
         variant(0),
         dict(LIMITS),
     )
@@ -227,7 +233,7 @@ def test_scalar_conversions_match_numeric_text_and_type_error_semantics() -> Non
             0,
             CONNECTION,
             "memory",
-            {0: variant(0), 1: "3.53.0", 2: 1},
+            {0: variant(0), 1: revision_store_module.SQLITE_VERSION, 2: 1},
             variant(0),
             dict(LIMITS),
         ),
@@ -253,7 +259,7 @@ def open_memory(provider: SqlProvider, storage: Any) -> dict[int, Any]:
             0,
             CONNECTION,
             "memory",
-            {0: variant(0), 1: "3.53.0", 2: 1},
+            {0: variant(0), 1: revision_store_module.SQLITE_VERSION, 2: 1},
             variant(0),
             dict(LIMITS),
         ),
@@ -275,7 +281,11 @@ def persistent_fixture(tmp_path: Path) -> tuple[StorageBackend, list[Any], bytes
         0,
         CONNECTION,
         "persistent",
-        {0: variant(1, {0: "plugins/seed.db", 1: seed_sha}), 1: "3.53.0", 2: 1},
+        {
+            0: variant(1, {0: "plugins/seed.db", 1: seed_sha}),
+            1: revision_store_module.SQLITE_VERSION,
+            2: 1,
+        },
         variant(0),
         dict(LIMITS),
     )
@@ -290,14 +300,54 @@ def test_reader_get_core_canonical_cbor_uses_bare_mode_index() -> None:
     assert decode(payload)[1] == variant(3, reader, 2, 1)
 
 
-def test_open_reports_actual_pinned_sqlite_version(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("version", ["3.53.0", "3.53.1", "9.0.0"])
+def test_direct_open_rejects_noncurrent_identity(version: str) -> None:
+    response = request(
+        SqlProvider(),
+        variant(
+            0,
+            CONNECTION,
+            "db",
+            {0: variant(0), 1: version, 2: 1},
+            variant(0),
+            LIMITS,
+        ),
+        UnusedStorage(),
+    )
+    assert result(response)[0] == 10
+    assert result(response)[1][0][0] == SqlErrorCode.UNSUPPORTED
+
+
+def test_memory_exact_remains_unsupported_after_engine_upgrade() -> None:
+    response = request(
+        SqlProvider(),
+        variant(
+            0,
+            CONNECTION,
+            "db",
+            {0: variant(0), 1: revision_store_module.SQLITE_VERSION, 2: 1},
+            variant(1, {0: bytes(32)}),
+            LIMITS,
+        ),
+        UnusedStorage(),
+    )
+    assert result(response)[0] == 10
+    assert result(response)[1][0][0] == SqlErrorCode.INVALID_REQUEST
+
+
+@pytest.mark.parametrize("actual_version", ["3.53.0", "3.53.2", "9.0.0"])
+def test_open_reports_actual_pinned_sqlite_version(
+    monkeypatch: pytest.MonkeyPatch, actual_version: str
+) -> None:
     provider = SqlProvider()
     storage = UnusedStorage()
-    assert result(open_memory(provider, storage))[0] == 0
-    assert apsw.sqlite_lib_version() == "3.53.0"
+    opened = result(open_memory(provider, storage))
+    assert opened[0] == 0
+    assert opened[1][0] == "3.53.4"
+    assert apsw.sqlite_lib_version() == "3.53.4"
 
     mismatch = SqlProvider()
-    monkeypatch.setattr(apsw, "sqlite_lib_version", lambda: "3.53.1")
+    monkeypatch.setattr(apsw, "sqlite_lib_version", lambda: actual_version)
     rejected = open_memory(mismatch, storage)
     assert result(rejected)[0] == 10
     assert result(rejected)[1][0][0] == SqlErrorCode.UNSUPPORTED
@@ -487,7 +537,11 @@ def test_resource_vacuum_publishes_compaction_and_reopens_it(tmp_path: Path) -> 
         0,
         CONNECTION,
         "persistent",
-        {0: variant(1, {0: "plugins/seed.db", 1: seed_sha}), 1: "3.53.0", 2: 1},
+        {
+            0: variant(1, {0: "plugins/seed.db", 1: seed_sha}),
+            1: revision_store_module.SQLITE_VERSION,
+            2: 1,
+        },
         variant(0),
         dict(LIMITS),
     )
@@ -659,7 +713,11 @@ def test_digest_valid_non_database_resource_maps_to_invalid_source(tmp_path: Pat
         0,
         CONNECTION,
         "invalid",
-        {0: variant(1, {0: "plugins/invalid.db", 1: seed_sha}), 1: "3.53.0", 2: 1},
+        {
+            0: variant(1, {0: "plugins/invalid.db", 1: seed_sha}),
+            1: revision_store_module.SQLITE_VERSION,
+            2: 1,
+        },
         variant(0),
         dict(LIMITS),
     )

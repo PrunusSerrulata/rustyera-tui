@@ -30,6 +30,9 @@ async def test_prompt_submits_through_worker(tmp_path: Path) -> None:
         await pilot.press("1", "2", "enter")
         assert ("submit_text", "12") in worker.commands
         await pilot.press("3", "enter")
+        # Drain the queued submission while input is still disabled, before simulating
+        # a later provider rejection that re-enables the prompt.
+        await pilot.pause()
         assert worker.commands.count(("submit_text", "12")) == 1
         assert not any(command == ("submit_text", "3") for command in worker.commands)
         app._handle_worker_event(FrontendEvent("interaction_rejected", app.active_wait))

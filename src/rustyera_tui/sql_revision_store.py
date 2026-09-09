@@ -12,7 +12,9 @@ from typing import Any, Callable, Protocol
 from .frontend_io import IO_CONFLICT, IO_NOT_FOUND
 from .wire import unwrap_variant, variant
 
-SQLITE_VERSION = "3.53.0"
+SQLITE_VERSION = "3.53.4"
+# Frozen v1 storage lineage, not the running engine. Preserve all existing revision paths.
+SQL_STORAGE_IDENTITY_ANCHOR_V1 = "3.53.0"
 DATABASE_FORMAT_VERSION = 1
 MAXIMUM_DATABASE_BYTES = 64 * 1024 * 1024
 
@@ -358,7 +360,7 @@ def _identity_preimage(resource_id: str, seed_sha256: bytes) -> bytes:
             struct.pack(">I", len(resource)),
             resource,
             seed_sha256,
-            b"3.53.0\0",
+            SQL_STORAGE_IDENTITY_ANCHOR_V1.encode("ascii") + b"\0",
             struct.pack(">I", DATABASE_FORMAT_VERSION),
         )
     )
