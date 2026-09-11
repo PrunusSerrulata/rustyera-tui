@@ -249,6 +249,9 @@ def execute(args: argparse.Namespace) -> int:
         install_test_compiled_cache(
             rust_project,
             Path(cache_input) if cache_input else None,
+            compatibility_profile=os.environ.get(
+                "RUSTYERA_TEST_COMPILED_CACHE_PROFILE", "emuera.em"
+            ),
         )
         install_test_source_index(
             rust_project,

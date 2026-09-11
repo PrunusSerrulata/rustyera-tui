@@ -461,13 +461,17 @@ def isolated_project_copy(source: Path, root: Path, name: str) -> Path:
     return destination
 
 
-def install_test_compiled_cache(project: Path, source: Path | None) -> None:
+def install_test_compiled_cache(
+    project: Path, source: Path | None, *, compatibility_profile: str = "emuera.em"
+) -> None:
     """Install an opaque cross-host cache in an isolated CLI project."""
 
     if source is None:
         return
     cache = source.expanduser().resolve(strict=True)
-    destination = StorageBackend(project).compiled_cache_path()
+    destination = StorageBackend(
+        project, compatibility_profile=compatibility_profile
+    ).compiled_cache_path()
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(cache, destination)
 

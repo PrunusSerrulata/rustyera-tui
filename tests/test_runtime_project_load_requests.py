@@ -45,3 +45,19 @@ def test_project_submission_observation_uses_actual_command_id(materialized, tra
     identity[1].append(4)
     assert event.value["identity"][1] == [2, 3]
 
+
+def test_snake_test_cache_uses_existing_profile_storage_namespace(tmp_path, monkeypatch):
+    from rustyera_tui.storage import StorageBackend
+    from rustyera_tui.testing import install_test_compiled_cache
+
+    monkeypatch.delenv("ERA_TUI_DATA_DIR", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    incoming = tmp_path / "old-cache"
+    incoming.write_bytes(b"opaque-runtime-cache")
+    install_test_compiled_cache(project, incoming, compatibility_profile="emuera.skia.snake")
+    actual = StorageBackend(
+        project, compatibility_profile="emuera.skia.snake"
+    ).compiled_cache_path()
+    assert actual.read_bytes() == b"opaque-runtime-cache"
+    assert not StorageBackend(project).compiled_cache_path().exists()
