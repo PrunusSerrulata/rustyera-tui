@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 from .client_preferences import (
     PreferenceValues,
     load_preferences,
@@ -109,9 +111,20 @@ class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
             },
         )
 
-    def _handle_project_report(self, report: dict[int, Any]) -> None:
+    def _handle_project_report(
+        self, report: dict[int, Any], correlation_id: int | None = None
+    ) -> None:
         from . import runtime as runtime_facade
 
+        self.events.put(
+            FrontendEvent(
+                "project_load_report",
+                {
+                    "correlation_id": correlation_id,
+                    "report": copy.deepcopy(report),
+                },
+            )
+        )
         cache_hit = False
         diagnostic_bundle = next(
             (

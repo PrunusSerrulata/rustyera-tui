@@ -28,6 +28,30 @@ Use JSON `schema_version: 1`.
 
 Relative paths resolve from the scenario, never from the caller's current directory.
 
+## Expected old-identity rejection
+
+Fixed Rust-only inputs may use `{ "action": "reject_snapshot", "path": "old.snapshot",
+"expect_rejection": { "code": 3, "context": null } }`. Resolve paths relative to the
+scenario (or use an explicit absolute path); the file must exist. The driver submits through
+the real RuntimeWorker and requires exact structured command code/context, a correlated import
+or game-start rejection, cleared pending import state and the original phase/epoch/full input
+wait after frontend resynchronization. Set context to the exact protocol expectation; original
+3/3 snapshot-start rejection carries the active compatibility identity and `protocol` stage. It emits
+`snapshot_rejected` with the raw rejection and a new observation before continuing fixed inputs.
+Reference comparison cannot be combined with this frontend action. Wrong codes, unrelated errors,
+changed waits and timeouts fail the scenario; a corrupt-file rejection is not an identity pass.
+
+`compiled_cache_expectation` defaults to `"hit"` for an explicit
+`RUSTYERA_TEST_COMPILED_CACHE_INPUT`. The optional `"source_fallback"` requires an actual
+structured ignored-cache diagnostic and a project report requesting source payload, followed by
+successful source compilation and the scenario goal. Keep the raw reason and report correlation
+in evidence. Before attributing this fallback to an upgrade, separately prove the identical opaque
+cache was accepted by its old pinned core and retain producer/consumer source and artifact hashes.
+Binary fields in raw project reports are persisted as `{ "cbor_bytes_hex": "..." }`;
+this trace representation does not alter the in-memory reports used by assertions.
+
+Do not manufacture historical snapshots or relabel invalid containers as compatibility rejections.
+
 ## NDJSON events
 
 `run` and `serve` write the same event structure to stdout and `trace.ndjson`. The trace retains

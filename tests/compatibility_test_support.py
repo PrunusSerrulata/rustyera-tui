@@ -6,8 +6,8 @@ from typing import Any
 def reference_identity() -> dict[int, Any]:
     return {
         0: 0,
-        1: 1,
-        2: 1,
+        1: 3,
+        2: 3,
         3: "wrapping_i64_v1",
         4: "sfmt19937",
         5: 1,

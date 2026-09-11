@@ -1,0 +1,6 @@
+[meta]
+schema_version = 5
+
+[compatibility]
+profile = "emuera.em"
+east_asian_language = "japanese"

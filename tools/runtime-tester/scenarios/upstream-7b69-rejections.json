@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/upstream-7b69-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "inputs": [
+    {
+      "action": "reject_snapshot",
+      "path": "upstream-original-v2.snapshot",
+      "expect_rejection": {
+        "code": 3,
+        "context": {
+          "0": {
+            "0": 0,
+            "1": 3,
+            "2": 3,
+            "3": "wrapping_i64_v1",
+            "4": "sfmt19937",
+            "5": 1,
+            "6": "unicode_column_v1",
+            "7": "emuera1808",
+            "8": []
+          },
+          "1": "protocol"
+        }
+      },
+      "when": {
+        "output_contains": "UPSTREAM_READY"
+      }
+    },
+    {
+      "value": 7,
+      "when": {
+        "output_contains": "UPSTREAM_READY"
+      }
+    }
+  ],
+  "watches": [
+    "FLAG:10",
+    "FLAG:11",
+    "FLAG:12",
+    "FLAG:13",
+    "FLAG:14",
+    "FLAG:15",
+    "FLAG:16",
+    "FLAG:17",
+    "FLAG:18",
+    "FLAG:19"
+  ],
+  "goal": {
+    "output_contains": [
+      "UPSTREAM_ALIASES=1,3",
+      "UPSTREAM_CHKDATA=0,42,1,0",
+      "UPSTREAM_STRINGS=4,4,3",
+      "UPSTREAM_CONTINUED"
+    ],
+    "wait_kind": 2,
+    "watch_equals": {
+      "FLAG:10": 1,
+      "FLAG:11": 3,
+      "FLAG:12": 0,
+      "FLAG:13": 42,
+      "FLAG:14": 1,
+      "FLAG:15": 0,
+      "FLAG:16": 4,
+      "FLAG:17": 4,
+      "FLAG:18": 3,
+      "FLAG:19": 7
+    }
+  },
+  "limits": {
+    "max_steps": 5,
+    "timeout_seconds": 60
+  }
+}

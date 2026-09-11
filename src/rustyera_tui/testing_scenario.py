@@ -32,6 +32,7 @@ class Scenario:
     limits: dict[str, int]
     comparison: dict[str, Any]
     checkpoint: dict[str, Any] | None
+    compiled_cache_expectation: str = "hit"
 
     @classmethod
     def load(cls, path: Path, project_override: Path | None = None) -> Scenario:
@@ -62,15 +63,41 @@ class Scenario:
             {"value": item} if isinstance(item, (str, int)) else dict(item)
             for item in raw.get("inputs", [])
         )
-        rust_only_actions = {"skip_message", "activate_last_button"}
+        rust_only_actions = {"skip_message", "activate_last_button", "reject_snapshot"}
         if any(item.get("action", "input") not in {"input", *rust_only_actions} for item in inputs):
             raise TestDriverError(
-                "scenario input action must be input, skip_message, or activate_last_button"
+                "scenario input action must be input, skip_message, activate_last_button, or reject_snapshot"
             )
         if any(item.get("action") in rust_only_actions for item in inputs) and raw.get(
             "comparison", {}
         ).get("reference"):
             raise TestDriverError("frontend action scenario inputs cannot be compared by value")
+        for item in inputs:
+            if item.get("action") == "reject_snapshot":
+                expected = item.get("expect_rejection")
+                if (
+                    not item.get("path")
+                    or not isinstance(expected, dict)
+                    or set(expected) != {"code", "context"}
+                ):
+                    raise TestDriverError(
+                        "reject_snapshot requires path and exact code/context expectation"
+                    )
+                if type(expected["code"]) is not int or not 0 <= expected["code"] <= 6:
+                    raise TestDriverError(
+                        "reject_snapshot code must be a protocol command error code"
+                    )
+                if expected["context"] is not None and not isinstance(expected["context"], dict):
+                    raise TestDriverError("reject_snapshot context must be null or an object")
+                candidate = Path(item["path"]).expanduser()
+                item["path"] = str(
+                    (candidate if candidate.is_absolute() else resolved.parent / candidate).resolve(
+                        strict=True
+                    )
+                )
+        cache_expectation = raw.get("compiled_cache_expectation", "hit")
+        if cache_expectation not in {"hit", "source_fallback"}:
+            raise TestDriverError("compiled_cache_expectation must be hit or source_fallback")
         limits = {**DEFAULT_LIMITS, **raw.get("limits", {})}
         if limits["max_steps"] <= 0 or limits["timeout_seconds"] <= 0:
             raise TestDriverError("scenario limits must be positive")
@@ -92,6 +119,7 @@ class Scenario:
             limits,
             dict(raw.get("comparison", {})),
             checkpoint,
+            cache_expectation,
         )
 
     @classmethod

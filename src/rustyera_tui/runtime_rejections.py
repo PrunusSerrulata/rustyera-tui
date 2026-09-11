@@ -116,6 +116,18 @@ class _RuntimeRejectionMixin:
             elif was_save:
                 self.events.put(FrontendEvent("client_preferences_save_failed", str(rejection)))
         if import_rejection:
+            self.events.put(
+                FrontendEvent(
+                    "command_rejected",
+                    {
+                        "code": value.get(0),
+                        "context": copy.deepcopy(value.get(4)),
+                        "correlation_id": correlation_id,
+                        "import_purpose": pending_import.purpose,
+                        "error_message": f"状态导入命令被拒绝：{rejection}",
+                    },
+                )
+            )
             self._fail_pending_import(f"状态导入命令被拒绝：{rejection}")
         elif cache_export_rejection:
             if pending_export is not None:
@@ -192,4 +204,17 @@ class _RuntimeRejectionMixin:
             if non_notified_input_warning:
                 self.events.put(log_event(message, LogLevel.WARNING))
             else:
+                if game_transition_rejection:
+                    self.events.put(
+                        FrontendEvent(
+                            "command_rejected",
+                            {
+                                "code": value.get(0),
+                                "context": copy.deepcopy(value.get(4)),
+                                "correlation_id": correlation_id,
+                                "import_purpose": "game_state",
+                                "error_message": message,
+                            },
+                        )
+                    )
                 self.events.put(FrontendEvent("runtime_error", message))

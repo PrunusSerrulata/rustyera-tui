@@ -13,7 +13,7 @@ from rustyera_tui.wire import (
 
 
 def test_protocol_version_matches_rust_canonical_fixture() -> None:
-    assert RUNTIME_VERSION == (47, 0)
+    assert RUNTIME_VERSION == (47, 1)
     assert DEBUG_VERSION == (4, 1)
     assert encode(version(1, 0)) == bytes.fromhex("a200010100")
 

@@ -85,6 +85,7 @@ class RustTestSession:
     statuses: list[str] = field(default_factory=list)
     logs: list[str] = field(default_factory=list)
     metrics: list[dict[str, Any]] = field(default_factory=list)
+    project_load_reports: list[dict[str, Any]] = field(default_factory=list)
     _last_wait: tuple[int, Any] | None = None
     project_root: Path = field(init=False)
     worker: RuntimeWorker = field(init=False)
@@ -235,7 +236,9 @@ class RustTestSession:
             observed.append(f"{event.kind}: {event.value}")
             if self._acknowledge_frontend_boundary(event):
                 continue
-            if event.kind == "status":
+            if event.kind == "project_load_report":
+                self.project_load_reports.append(event.value)
+            elif event.kind == "status":
                 self.statuses.append(str(event.value))
                 completed = completed or (
                     completion_status is not None and completion_status in str(event.value)
@@ -310,6 +313,7 @@ class RustTestSession:
             "output_tail": current[-30:],
             "metrics": list(self.metrics),
             "statuses": list(self.statuses[-20:]),
+            "project_load_reports": list(getattr(self, "project_load_reports", [])),
             "logs": list(self.logs[-50:]),
         }
 

@@ -15,6 +15,7 @@ from typing import Any
 
 from .abi import discover_library
 from .test_cli_arguments import build_parser
+from .testing_rejections import check_compiled_cache_expectation, reject_snapshot
 from .testing import (
     ReferenceProcess,
     RustTestSession,
@@ -288,11 +289,6 @@ def execute(args: argparse.Namespace) -> int:
                     f"reused={reused}, hashed={hashed}, "
                     f"misses={misses}"
                 )
-        if cache_input and not any("runtime.compiled_cache_hit" in log for log in rust.logs):
-            raise TestDriverError(
-                "cross-host compiled cache was not accepted: "
-                f"statuses={rust.statuses[-10:]}, logs={rust.logs[-20:]}"
-            )
         reference_observation = reference.start(scenario, reference_project) if reference else None
         decorated = _decorate(rust_observation, reference_observation, scenario, rust, deadline)
         trace.emit(
@@ -303,6 +299,12 @@ def execute(args: argparse.Namespace) -> int:
                 "seed": scenario.seed,
                 **decorated,
             }
+        )
+        check_compiled_cache_expectation(
+            scenario.compiled_cache_expectation,
+            bool(cache_input),
+            rust_observation.get("project_load_reports", []),
+            rust.logs,
         )
         input_index = 0
         while step < scenario.limits["max_steps"]:
@@ -376,6 +378,24 @@ def execute(args: argparse.Namespace) -> int:
                 completed_successfully = status == "passed"
                 return 0 if status == "passed" else 2 if status == "input_exhausted" else 1
             if agent_dispatch is None:
+                if input_action == "reject_snapshot":
+                    outcome = reject_snapshot(
+                        rust, Path(item["path"]), item["expect_rejection"], deadline
+                    )
+                    step += 1
+                    trace.emit(
+                        {
+                            "type": "snapshot_rejected",
+                            "step": step,
+                            "source": "fixed",
+                            "path": item["path"],
+                            "rejection": outcome["rejection"],
+                            "wait_preserved": outcome["wait_preserved"],
+                        }
+                    )
+                    decorated = _decorate(outcome["observation"], None, scenario, rust, deadline)
+                    trace.emit({"type": "observation", "step": step, **decorated})
+                    continue
                 if input_action == "skip_message":
                     trace.emit(_input_event(step, source, input_action, value))
                     rust.skip_message()

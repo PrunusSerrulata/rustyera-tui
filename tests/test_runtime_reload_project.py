@@ -149,6 +149,9 @@ def test_failed_reload_keeps_the_active_bundle_for_later_diagnosis(tmp_path: Pat
     assert client.bundle is active
     assert client.reload_candidate is None
     assert client.reload_message_id is None
+    report = client.events.get_nowait()
+    assert report.kind == "project_load_report"
+    assert report.value["report"] == {0: 8, 1: False, 2: []}
     assert client.events.get_nowait().kind == "runtime_error"
 
 
@@ -177,6 +180,9 @@ def test_successful_reload_projects_game_information_from_the_protocol(tmp_path:
     assert client.bundle is candidate
     assert client.reload_candidate is None
     assert client.reload_message_id is None
+    report = client.events.get_nowait()
+    assert report.kind == "project_load_report"
+    assert report.value["report"][1] is True
     events = [client.events.get_nowait(), client.events.get_nowait()]
     assert events[0].kind == "status"
     assert events[1] == FrontendEvent(

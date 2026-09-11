@@ -532,7 +532,7 @@ class RuntimeClient(
             self.fail_startup(f"protocol version rejected: {value.get(1, '')}")
             self.events.put(FrontendEvent("runtime_error", f"协议版本被拒绝：{value.get(1, '')}"))
         elif tag == 11:  # ProjectLoadReport
-            self._handle_project_report(value)
+            self._handle_project_report(value, correlation_id)
         elif tag == 73:  # ProjectCompatibilityResolved
             self._handle_project_compatibility(value, correlation_id)
         elif tag == 25:  # ConfigurationUpdatePrepared

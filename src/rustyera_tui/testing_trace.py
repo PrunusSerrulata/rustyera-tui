@@ -9,6 +9,12 @@ from typing import Any, TextIO
 STREAM_OUTPUT_LINES = 30
 
 
+def trace_json_default(value: Any) -> dict[str, str]:
+    if isinstance(value, bytes):
+        return {"cbor_bytes_hex": value.hex()}
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 class TraceWriter:
     def __init__(self, path: Path, stream: TextIO):
         self.path = path
@@ -17,7 +23,9 @@ class TraceWriter:
         self.stream = stream
 
     def emit(self, event: dict[str, Any]) -> None:
-        line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        line = json.dumps(
+            event, ensure_ascii=False, separators=(",", ":"), default=trace_json_default
+        )
         self.file.write(line + "\n")
         self.file.flush()
         stream_event = dict(event)
@@ -39,7 +47,10 @@ class TraceWriter:
                             }
                     stream_event[implementation] = streamed_observation
         self.stream.write(
-            json.dumps(stream_event, ensure_ascii=False, separators=(",", ":")) + "\n"
+            json.dumps(
+                stream_event, ensure_ascii=False, separators=(",", ":"), default=trace_json_default
+            )
+            + "\n"
         )
         self.stream.flush()
 
