@@ -86,6 +86,8 @@ class RustTestSession:
     logs: list[str] = field(default_factory=list)
     metrics: list[dict[str, Any]] = field(default_factory=list)
     project_load_reports: list[dict[str, Any]] = field(default_factory=list)
+    project_load_requests: list[dict[str, Any]] = field(default_factory=list)
+    protocol_diagnostics: list[dict[str, Any]] = field(default_factory=list)
     _last_wait: tuple[int, Any] | None = None
     project_root: Path = field(init=False)
     worker: RuntimeWorker = field(init=False)
@@ -173,6 +175,17 @@ class RustTestSession:
         self.worker.send("restore_snapshot", path)
 
     def _acknowledge_frontend_boundary(self, event: FrontendEvent) -> bool:
+        field_name = {
+            "project_load_submitted": "project_load_requests",
+            "protocol_diagnostic": "protocol_diagnostics",
+        }.get(event.kind)
+        if field_name is not None:
+            records = getattr(self, field_name, None)
+            if records is None:
+                records = []
+                setattr(self, field_name, records)
+            records.append(event.value)
+            return True
         if event.kind != "device_pump":
             return False
         # The CLI has no Textual event loop, so its next driver callback is the
@@ -314,6 +327,8 @@ class RustTestSession:
             "metrics": list(self.metrics),
             "statuses": list(self.statuses[-20:]),
             "project_load_reports": list(getattr(self, "project_load_reports", [])),
+            "project_load_requests": list(getattr(self, "project_load_requests", [])),
+            "protocol_diagnostics": list(getattr(self, "protocol_diagnostics", [])),
             "logs": list(self.logs[-50:]),
         }
 

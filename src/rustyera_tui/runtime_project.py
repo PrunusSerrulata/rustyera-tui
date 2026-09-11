@@ -590,5 +590,16 @@ class _RuntimeProjectMixin(_RuntimeProjectReloadMixin):
                 request[1] = manifest
         if cache_transfer_id is not None:
             request[2] = cache_transfer_id
-        self.send_runtime(19, request)
+        message_id = self.send_runtime(19, request)
+        self.events.put(
+            FrontendEvent(
+                "project_load_submitted",
+                {
+                    "message_id": message_id,
+                    "identity": copy.deepcopy(request[0]),
+                    "has_source": self.pending_bundle.is_materialized,
+                    "cache_transfer_id": cache_transfer_id,
+                },
+            )
+        )
         self.record_host_duration("submission_transfer_ms", started)

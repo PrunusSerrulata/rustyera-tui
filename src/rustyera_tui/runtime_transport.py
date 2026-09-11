@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 from .client_hello import build_client_hello
 
 from .runtime_dependencies import (
@@ -179,6 +181,19 @@ class _RuntimeTransportMixin:
             value = message_value(envelope.payload, envelope.payload_tag)
             if self.audit_capture is not None:
                 self.audit_capture.observe_runtime(envelope.payload_tag, value)
+            if envelope.payload_tag == 97:
+                # Retain the public wire diagnostic separately from its human log.
+                self.events.put(
+                    FrontendEvent(
+                        "protocol_diagnostic",
+                        {
+                            "epoch": envelope.epoch,
+                            "sequence": envelope.sequence,
+                            "correlation_id": envelope.correlation_id,
+                            "diagnostic": copy.deepcopy(value),
+                        },
+                    )
+                )
             self._handle_runtime(envelope.payload_tag, value, envelope.correlation_id)
             return envelope.sequence
         if envelope.channel == CHANNEL_DEBUG:

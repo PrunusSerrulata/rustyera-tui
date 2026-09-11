@@ -322,3 +322,60 @@ def test_snapshot_start_rejection_preserves_structured_correlation():
         next(event.value for event in events if event.kind == "runtime_error")
         == rejection["error_message"]
     )
+
+
+def test_public_diagnostics_and_load_requests_survive_observation(tmp_path):
+    from rustyera_tui.runtime import FrontendEvent
+
+    session, _, _, _ = rejection_session(tmp_path)
+    diagnostic = {
+        "epoch": 3,
+        "sequence": 42,
+        "correlation_id": None,
+        "diagnostic": {
+            0: "compat.rand.variable_range",
+            1: 2,
+            4: 1,
+            3: {0: "ERB/main.erb", 3: 14},
+            5: {1: "execution"},
+        },
+    }
+    request = {"message_id": 7, "identity": {0: 1}, "has_source": True, "cache_transfer_id": None}
+    assert session._acknowledge_frontend_boundary(FrontendEvent("protocol_diagnostic", diagnostic))
+    assert session._acknowledge_frontend_boundary(FrontendEvent("project_load_submitted", request))
+    observation = session._observation(session.worker.client.active_wait)
+    assert observation["protocol_diagnostics"] == [diagnostic]
+    assert observation["project_load_requests"] == [request]
+    assert session._observation(session.worker.client.active_wait)["protocol_diagnostics"] == [
+        diagnostic
+    ]
+
+
+def test_runtime_wire_diagnostic_projection_keeps_source_and_identity(monkeypatch):
+    import queue
+    from rustyera_tui import runtime_transport
+
+    client, _ = client_with_capture()
+    client.audit_capture = None
+    client._handle_runtime = lambda *_args: None
+    client.events = queue.Queue()
+    diagnostic = {
+        0: "compat.rand.variable_range",
+        1: 2,
+        2: "opaque message",
+        3: {0: "ERB/main.erb", 1: 10, 2: 20, 3: 14},
+        4: 1,
+        5: {0: {0: 1, 1: 15, 2: 15}, 1: "runtime", 2: "CallNative"},
+    }
+    envelope = SimpleNamespace(
+        epoch=None, channel=0, sequence=10, correlation_id=None, payload_tag=97, payload=b""
+    )
+    monkeypatch.setattr(runtime_transport, "decode_envelope", lambda _: envelope)
+    monkeypatch.setattr(runtime_transport, "message_value", lambda *_: diagnostic)
+    client._handle_envelope(b"")
+    event = client.events.get_nowait()
+    diagnostic[5][0][2] = 99
+    assert event.kind == "protocol_diagnostic"
+    assert event.value["sequence"] == 10
+    assert event.value["diagnostic"][5][0][2] == 15
+    assert event.value["diagnostic"][3][3] == 14
