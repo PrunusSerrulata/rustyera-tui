@@ -21,8 +21,8 @@ def snake_identity() -> dict[int, Any]:
     return {
         **reference_identity(),
         0: 1,
-        1: 12,
-        2: 12,
+        1: 15,
+        2: 15,
         3: "snake_saturating_i64_v1",
         7: "snake_emuera1808_interop_v1",
         8: [

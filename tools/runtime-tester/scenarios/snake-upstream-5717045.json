@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "project": "../../../tests/fixtures/snake-upstream-5717045-project",
+  "mode": "fixed",
+  "seed": 123456,
+  "inputs": [
+    {
+      "value": 7,
+      "when": {
+        "output_contains": "SNAKE_UPSTREAM_READY"
+      }
+    }
+  ],
+  "watches": [
+    "FLAG:12",
+    "FLAG:13",
+    "FLAG:14",
+    "FLAG:15",
+    "FLAG:16",
+    "FLAG:17",
+    "FLAG:18",
+    "FLAG:19",
+    "FLAG:20",
+    "FLAG:21",
+    "FLAG:22",
+    "FLAG:23",
+    "FLAG:24",
+    "FLAG:25",
+    "FLAG:26",
+    "FLAG:27",
+    "FLAG:28",
+    "FLAG:29"
+  ],
+  "goal": {
+    "output_contains": [
+      "SNAKE_UPSTREAM_CHKDATA=0,42,1,0",
+      "SNAKE_UPSTREAM_STRINGS=4,4,3",
+      "SNAKE_UPSTREAM_RAND=0,5",
+      "SNAKE_UPSTREAM_ERD=1,0,2,0,9,1",
+      "SNAKE_UPSTREAM_RAND_CONTINUED=0,8",
+      "SNAKE_UPSTREAM_CONTINUED"
+    ],
+    "wait_kind": 2,
+    "watch_equals": {
+      "FLAG:12": 0,
+      "FLAG:13": 42,
+      "FLAG:14": 1,
+      "FLAG:15": 0,
+      "FLAG:16": 4,
+      "FLAG:17": 4,
+      "FLAG:18": 3,
+      "FLAG:19": 7,
+      "FLAG:20": 0,
+      "FLAG:21": 5,
+      "FLAG:22": 1,
+      "FLAG:23": 0,
+      "FLAG:24": 2,
+      "FLAG:25": 0,
+      "FLAG:26": 9,
+      "FLAG:27": 1,
+      "FLAG:28": 0,
+      "FLAG:29": 8
+    }
+  },
+  "limits": {
+    "max_steps": 5,
+    "timeout_seconds": 60
+  }
+}
